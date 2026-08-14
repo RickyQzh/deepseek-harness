@@ -4,7 +4,7 @@
 
 Rust 宿主的仅追加会话日志类型：品牌化的 `SessionId` / `MessageId` / `CallId`、`SESSION_FORMAT_VERSION = 0`、封闭的第一方 `SessionEvent` 枚举、surface 折叠、`derive_messages`、请求头折叠、中断轮次修复，以及打包的 chunk 行编码。
 
-本 crate 不依赖 `dsh-compose` 或 `dsh-kernel`。JSONL 成帧与 zstd 位于 `dsh-session-persist`。产品 id 在此以 `dsh_brand::Branded` 别名定义；`dsh-brand` 不命名它们。
+本 crate 不依赖 `dsh-compose` 或 `dsh-kernel`。JSONL 成帧与 zstd 位于 `dsh-session-persist`。产品 id 是包住 `dsh_brand::Branded` 的本地 newtype；`dsh-brand` 不命名它们。
 
 ## 已知限制与暂缓事项
 

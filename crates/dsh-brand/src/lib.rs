@@ -8,8 +8,6 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
 /// A string carrying a compile-time brand `B`.
 ///
 /// Two `Branded` values are interchangeable only when their tag types match.
@@ -99,18 +97,6 @@ impl<B> Hash for Branded<B> {
     }
 }
 
-impl<B> Serialize for Branded<B> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de, B> Deserialize<'de> for Branded<B> {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        String::deserialize(deserializer).map(Self::new)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::Branded;
@@ -143,22 +129,6 @@ mod tests {
         let id = Branded::<CallTag>::new("call-9");
         assert_eq!(id.to_string(), "call-9");
         assert_eq!(AsRef::<str>::as_ref(&id), "call-9");
-    }
-
-    #[test]
-    fn serializes_as_a_json_string() {
-        let id = Branded::<SessionTag>::new("sess-1");
-        let value = serde_json::to_value(&id).expect("serialize");
-        assert_eq!(value, serde_json::json!("sess-1"));
-        let back: Branded<SessionTag> = serde_json::from_value(value).expect("deserialize");
-        assert_eq!(back.as_str(), "sess-1");
-    }
-
-    #[test]
-    fn rejects_a_json_number() {
-        let err = serde_json::from_value::<Branded<SessionTag>>(serde_json::Value::from(123))
-            .unwrap_err();
-        assert!(err.to_string().contains("string") || err.to_string().contains("invalid type"));
     }
 
     #[test]

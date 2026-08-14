@@ -14,8 +14,8 @@ let id = SessionId::new("sess-1");
 assert_eq!(id.as_str(), "sess-1");
 ```
 
-Comparison, hashing, display, logging, and JSON string serde use the inner string. The TypeScript package `@deepseek-ai/dsh-brand` remains the type-only primitive for the TypeScript tree.
+Comparison, hashing, display, and logging use the inner string. The TypeScript package `@deepseek-ai/dsh-brand` remains the type-only primitive for the TypeScript tree.
 
 ## Known Limitations and Deferred Work
 
-- Product ids are named in owning crates. `impl Serialize for Branded<LocalTag>` is orphan-illegal, so string serde lives on `Branded<B>` here.
+- Serde and JSON codecs belong in persistence and wire crates, not here.

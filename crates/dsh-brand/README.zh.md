@@ -14,8 +14,8 @@ let id = SessionId::new("sess-1");
 assert_eq!(id.as_str(), "sess-1");
 ```
 
-比较、哈希、显示、日志和 JSON 字符串 serde 均使用内部字符串。TypeScript 包 `@deepseek-ai/dsh-brand` 仍是 TypeScript 树中的仅类型原语。
+比较、哈希、显示和日志均使用内部字符串。TypeScript 包 `@deepseek-ai/dsh-brand` 仍是 TypeScript 树中的仅类型原语。
 
 ## 已知限制与暂缓事项
 
-- 产品 id 由所属 crate 命名。`impl Serialize for Branded<LocalTag>` 违反孤儿规则，因此字符串 serde 实现在本 crate 的 `Branded<B>` 上。
+- Serde 与 JSON 编解码器属于持久化和协议 crate，不属于本 crate。

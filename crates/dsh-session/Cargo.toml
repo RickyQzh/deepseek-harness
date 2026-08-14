@@ -11,8 +11,9 @@ repository.workspace = true
 [dependencies]
 dsh-brand = { path = "../dsh-brand" }
 serde = { workspace = true }
+
+[dev-dependencies]
 serde_json = { workspace = true }
-thiserror = { workspace = true }
 
 [lints]
 workspace = true

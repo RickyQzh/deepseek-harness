@@ -5,10 +5,6 @@ version = 4
 [[package]]
 name = "dsh-brand"
 version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
 
 [[package]]
 name = "dsh-compose"
@@ -53,7 +49,6 @@ dependencies = [
  "dsh-brand",
  "serde",
  "serde_json",
- "thiserror",
 ]
 
 [[package]]

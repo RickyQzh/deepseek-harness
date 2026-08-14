@@ -1,22 +1,71 @@
 //! Product ids branded in this crate.
 //!
-//! JSON string serde is implemented on [`dsh_brand::Branded`].
-//! `impl Serialize for Branded<LocalTag>` is orphan-illegal.
+//! Each id is a local newtype around [`Branded`] so string serde lives here.
+//! `dsh-brand` does not implement serde.
 
 use dsh_brand::Branded;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Tag for [`SessionId`].
 pub struct SessionIdTag;
+
 /// Session identity in the store and on disk.
-pub type SessionId = Branded<SessionIdTag>;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionId(Branded<SessionIdTag>);
+
 /// Tag for [`MessageId`].
 pub struct MessageIdTag;
+
 /// Stable identity of one model-visible message.
-pub type MessageId = Branded<MessageIdTag>;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MessageId(Branded<MessageIdTag>);
+
 /// Tag for [`CallId`].
 pub struct CallIdTag;
+
 /// Provider-issued tool-call identity.
-pub type CallId = Branded<CallIdTag>;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallId(Branded<CallIdTag>);
+
+macro_rules! impl_product_id {
+    ($id:ident) => {
+        impl $id {
+            /// Brand `value` as this product id.
+            #[must_use]
+            pub fn new(value: impl Into<String>) -> Self {
+                Self(Branded::new(value))
+            }
+
+            /// Borrow the inner string.
+            #[must_use]
+            pub fn as_str(&self) -> &str {
+                self.0.as_str()
+            }
+
+            /// Unwrap the inner string.
+            #[must_use]
+            pub fn into_inner(self) -> String {
+                self.0.into_inner()
+            }
+        }
+
+        impl Serialize for $id {
+            fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_str(self.as_str())
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $id {
+            fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                String::deserialize(deserializer).map(Self::new)
+            }
+        }
+    };
+}
+
+impl_product_id!(SessionId);
+impl_product_id!(MessageId);
+impl_product_id!(CallId);
 
 #[cfg(test)]
 mod tests {
@@ -26,6 +75,8 @@ mod tests {
     #[test]
     fn session_id_serializes_as_a_json_string() {
         let id = SessionId::new("sess-1");
+        assert_eq!(id.as_str(), "sess-1");
+        assert_eq!(id.clone().into_inner(), "sess-1");
         let value = serde_json::to_value(&id).expect("serialize");
         assert_eq!(value, json!("sess-1"));
         let back: SessionId = serde_json::from_value(value).expect("deserialize");
