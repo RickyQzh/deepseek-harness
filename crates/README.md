@@ -9,3 +9,4 @@ Rust workspace members for the DeepSeek Harness host process. Layout, keep-or-dr
 | Crate | Responsibility |
 |---|---|
 | [`dsh-brand`](dsh-brand/README.md) | Branded-id primitive (`Branded<B>`). Product ids live in owning crates. |
+| [`dsh-kernel`](dsh-kernel/README.md) | Context, Fiber, services, effects, isolate, event bus. |

@@ -11,3 +11,7 @@ repository = "https://github.com/deepseek-ai/deepseek-harness"
 
 [workspace.lints.rust]
 missing_docs = "warn"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+thiserror = "2"
