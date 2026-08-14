@@ -45,6 +45,8 @@ impl Context {
         let rt = Arc::new(Runtime {
             next_fiber: AtomicU64::new(1),
             fibers: Mutex::new(fibers),
+            services: Mutex::new(HashMap::new()),
+            service_notify: tokio::sync::Notify::new(),
         });
         Context {
             rt,
@@ -78,6 +80,103 @@ impl Context {
         Fut: Future<Output = Result<(), KernelError>> + Send + 'static,
     {
         self.spawn_plugin(PluginKind::Host, Vec::new(), setup)
+    }
+
+    /// Mount a host plugin that stays `Pending` until every `inject` name is present.
+    pub fn plugin_injecting<F, Fut>(&self, inject: &[&str], setup: F) -> FiberHandle
+    where
+        F: FnOnce(Context) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), KernelError>> + Send + 'static,
+    {
+        self.spawn_plugin(
+            PluginKind::Host,
+            inject.iter().map(|name| (*name).to_string()).collect(),
+            setup,
+        )
+    }
+
+    pub(crate) fn realm_u64(&self, service: &str) -> u64 {
+        self.isolate.get(service).copied().unwrap_or(0)
+    }
+
+    /// Publish `value` under `name` in this context's realm for that name.
+    ///
+    /// # Errors
+    ///
+    /// `ServiceAlreadyProvided` when the realm already has `name`; `InactiveEffect` when this fiber cannot register effects.
+    pub fn provide<T: Send + Sync + 'static>(
+        &self,
+        name: impl Into<String>,
+        value: T,
+    ) -> Result<crate::Disposer, KernelError> {
+        let name = name.into();
+        let realm = self.realm_u64(&name);
+        {
+            let mut services = self.rt.services.lock().expect("service table lock");
+            let key = (realm, name.clone());
+            if services.contains_key(&key) {
+                return Err(KernelError::ServiceAlreadyProvided { name });
+            }
+            services.insert(
+                key,
+                crate::fiber::ServiceSlot {
+                    value: Arc::new(value),
+                },
+            );
+        }
+        self.rt.service_notify.notify_waiters();
+        let rt = Arc::clone(&self.rt);
+        let removed = name.clone();
+        self.effect(move || async move {
+            rt.services
+                .lock()
+                .expect("service table lock")
+                .remove(&(realm, removed));
+            rt.service_notify.notify_waiters();
+        })
+    }
+
+    /// Return a service if it is present in this context's realm. Does not wait.
+    #[must_use]
+    pub fn get<T: Send + Sync + 'static>(&self, name: &str) -> Option<Arc<T>> {
+        let realm = self.realm_u64(name);
+        let services = self.rt.services.lock().expect("service table lock");
+        let slot = services.get(&(realm, name.to_string()))?;
+        Arc::clone(&slot.value).downcast::<T>().ok()
+    }
+
+    /// Wait until `name` is present in this context's realm or this fiber cannot wait.
+    ///
+    /// # Errors
+    ///
+    /// `InjectWaitDisposed` when this fiber is `Failed`, `Unloading`, or `Disposed` before the service appears; `ServiceTypeMismatch` when the stored value is not `T`.
+    pub async fn inject<T: Send + Sync + 'static>(
+        &self,
+        name: &str,
+    ) -> Result<Arc<T>, KernelError> {
+        loop {
+            match self.fiber_state() {
+                FiberState::Failed | FiberState::Unloading | FiberState::Disposed => {
+                    return Err(KernelError::InjectWaitDisposed {
+                        name: name.to_string(),
+                    });
+                }
+                FiberState::Pending | FiberState::Loading | FiberState::Active => {}
+            }
+            if let Some(slot) = {
+                let services = self.rt.services.lock().expect("service table lock");
+                services
+                    .get(&(self.realm_u64(name), name.to_string()))
+                    .cloned()
+            } {
+                return Arc::clone(&slot.value).downcast::<T>().map_err(|_| {
+                    KernelError::ServiceTypeMismatch {
+                        name: name.to_string(),
+                    }
+                });
+            }
+            self.rt.service_notify.notified().await;
+        }
     }
 
     /// Register an async cleanup on this fiber. Runs in reverse order on unload.
@@ -160,6 +259,32 @@ where
     F: FnOnce(Context) -> Fut + Send + 'static,
     Fut: Future<Output = Result<(), KernelError>> + Send + 'static,
 {
+    let inject = ctx
+        .rt
+        .fibers
+        .lock()
+        .expect("fiber table lock")
+        .get(&ctx.fiber_id)
+        .map(|rec| rec.inject.clone())
+        .unwrap_or_default();
+    while !inject.is_empty() {
+        match ctx.fiber_state() {
+            FiberState::Unloading | FiberState::Disposed => return,
+            FiberState::Failed => return,
+            FiberState::Pending | FiberState::Loading | FiberState::Active => {}
+        }
+        let ready = inject.iter().all(|name| {
+            ctx.rt
+                .services
+                .lock()
+                .expect("service table lock")
+                .contains_key(&(ctx.realm_u64(name), name.clone()))
+        });
+        if ready {
+            break;
+        }
+        ctx.rt.service_notify.notified().await;
+    }
     ctx.rt.set_state(ctx.fiber_id, FiberState::Loading);
     match setup(ctx.clone()).await {
         Ok(()) => ctx.rt.set_state(ctx.fiber_id, FiberState::Active),
@@ -308,5 +433,60 @@ mod tests {
         release_tx.send(()).unwrap();
         dispose_task.await.unwrap();
         assert_eq!(handle.state(), FiberState::Disposed);
+    }
+
+    #[tokio::test]
+    async fn inject_waits_until_provider_is_present() {
+        let root = Context::new();
+        let waiter = root.plugin_injecting(&["tools"], |ctx| async move {
+            let value = ctx
+                .get::<String>("tools")
+                .expect("visible after inject-wait");
+            assert_eq!(value.as_str(), "ok");
+            Ok(())
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(waiter.state(), FiberState::Pending);
+        let provider = root.plugin(|ctx| async move {
+            ctx.provide("tools", String::from("ok"))?;
+            Ok(())
+        });
+        provider.await_ready().await.unwrap();
+        waiter.await_ready().await.unwrap();
+        assert_eq!(waiter.state(), FiberState::Active);
+    }
+
+    #[tokio::test]
+    async fn inject_method_waits_and_downcasts() {
+        let root = Context::new();
+        let waiter = tokio::spawn({
+            let root = root.clone();
+            async move { root.inject::<u32>("n").await }
+        });
+        tokio::task::yield_now().await;
+        root.provide("n", 7_u32).unwrap();
+        assert_eq!(*waiter.await.unwrap().unwrap(), 7);
+    }
+
+    #[tokio::test]
+    async fn inject_unblocks_when_waiting_fiber_is_disposed() {
+        let root = Context::new();
+        let waiter = root.plugin_injecting(&["never"], |_ctx| async { Ok(()) });
+        tokio::task::yield_now().await;
+        assert_eq!(waiter.state(), FiberState::Pending);
+        waiter.dispose().await;
+        let err = waiter.await_ready().await.unwrap_err();
+        assert_eq!(err, KernelError::InactiveEffect);
+    }
+
+    #[tokio::test]
+    async fn provide_duplicate_in_same_realm_fails() {
+        let root = Context::new();
+        root.provide("dup", 1_u8).unwrap();
+        let err = root.provide("dup", 2_u8).unwrap_err();
+        assert_eq!(
+            err,
+            KernelError::ServiceAlreadyProvided { name: "dup".into() }
+        );
     }
 }

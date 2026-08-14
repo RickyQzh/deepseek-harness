@@ -1,10 +1,12 @@
 //! Fiber identifiers, states, handles, and the shared runtime table.
 
+use std::any::Any;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use tokio::sync::Notify;
 use tokio::sync::watch;
 
 use crate::KernelError;
@@ -134,6 +136,15 @@ pub struct Disposer {
     pub(crate) effect_id: u64,
 }
 
+impl std::fmt::Debug for Disposer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Disposer")
+            .field("fiber_id", &self.fiber_id)
+            .field("effect_id", &self.effect_id)
+            .finish()
+    }
+}
+
 impl Disposer {
     /// Run this disposer. A second call is a no-op once the slot is gone.
     pub async fn dispose(self) {
@@ -192,9 +203,16 @@ pub(crate) struct FiberRec {
     pub(crate) ready: watch::Sender<FiberState>,
 }
 
+#[derive(Clone)]
+pub(crate) struct ServiceSlot {
+    pub(crate) value: Arc<dyn Any + Send + Sync>,
+}
+
 pub(crate) struct Runtime {
     pub(crate) next_fiber: AtomicU64,
     pub(crate) fibers: Mutex<HashMap<FiberId, FiberRec>>,
+    pub(crate) services: Mutex<HashMap<(u64, String), ServiceSlot>>,
+    pub(crate) service_notify: Notify,
 }
 
 impl Runtime {
