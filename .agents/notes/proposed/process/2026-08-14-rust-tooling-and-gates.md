@@ -19,6 +19,8 @@ The repository has a Cargo workspace beside the TypeScript tree. Without a rustc
 
 Cite [the rewrite note](../architecture/2026-08-14-rust-rewrite.md) rather than restating keep-or-drop.
 
+`AGENTS.md` lists the cargo source-plane commands and its `verify-doc-budgets` ceiling is 1950 words because those lines put the file over 1900.
+
 ## Alternatives considered
 
 - **Fold cargo into `scripts/run-gates.ts` / `ci.yml` node-24** — rejected: the Node lane already saturates hosted runners; landlock-run already uses a sibling workflow for the same reason.
@@ -36,4 +38,4 @@ Cite [the rewrite note](../architecture/2026-08-14-rust-rewrite.md) rather than 
 
 ## Risks
 
-A path-filtered required check is skipped on PRs that do not touch `crates/**`, so a later accidental `Cargo.toml` edit on a docs PR could surprise. Pinning 1.85.0 rather than rolling stable makes edition upgrades an explicit PR.
+The Rust lane is skipped when none of `crates/**`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `rustfmt.toml`, or `.github/workflows/rust.yml` change. A surprise is a new unlisted toolchain file (for example `clippy.toml`) or a skipped-required-check merge when the workflow did not run. Pinning 1.85.0 rather than rolling stable makes edition upgrades an explicit PR.

@@ -19,6 +19,8 @@ Status: proposed
 
 引用[重写笔记](../architecture/2026-08-14-rust-rewrite.md)，不要复述保留或放弃表。
 
+`AGENTS.md` 列出 cargo 源码平面命令，其 `verify-doc-budgets` 上限为 1950 词，因为这些行使该文件超过 1900。
+
 ## 曾考虑的替代方案
 
 - **把 cargo 折进 `scripts/run-gates.ts` / `ci.yml` 的 node-24** — 否决：Node 车道已经占满托管 runner；landlock-run 已因同一理由使用兄弟工作流。
@@ -36,4 +38,4 @@ Status: proposed
 
 ## 风险
 
-按路径过滤的必需检查会在未改动 `crates/**` 的 PR 上跳过，因此文档 PR 上一次意外的 `Cargo.toml` 编辑可能令人措手不及。钉住 1.85.0 而不是滚动 stable，使 edition 升级成为一次显式 PR。
+当 `crates/**`、`Cargo.toml`、`Cargo.lock`、`rust-toolchain.toml`、`rustfmt.toml` 与 `.github/workflows/rust.yml` 均未改动时，Rust 车道会跳过。意外来自未列入过滤的新工具链文件（例如 `clippy.toml`），或工作流未运行时的跳过必需检查合并。钉住 1.85.0 而不是滚动 stable，使 edition 升级成为一次显式 PR。
