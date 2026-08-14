@@ -49,6 +49,7 @@ dependencies = [
  "dsh-brand",
  "serde",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]
