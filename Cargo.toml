@@ -1,0 +1,13 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+publish = false
+rust-version = "1.85"
+repository = "https://github.com/deepseek-ai/deepseek-harness"
+
+[workspace.lints.rust]
+missing_docs = "warn"
