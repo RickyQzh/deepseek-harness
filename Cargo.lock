@@ -7,6 +7,14 @@ name = "dsh-brand"
 version = "0.1.0"
 
 [[package]]
+name = "dsh-events"
+version = "0.1.0"
+dependencies = [
+ "dsh-kernel",
+ "tokio",
+]
+
+[[package]]
 name = "dsh-kernel"
 version = "0.1.0"
 dependencies = [

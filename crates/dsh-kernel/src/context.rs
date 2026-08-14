@@ -45,9 +45,11 @@ impl Context {
         let rt = Arc::new(Runtime {
             next_fiber: AtomicU64::new(1),
             next_realm: AtomicU64::new(1),
+            next_listener: AtomicU64::new(1),
             fibers: Mutex::new(fibers),
             services: Mutex::new(HashMap::new()),
             service_notify: tokio::sync::Notify::new(),
+            events: Mutex::new(crate::events::EventBus::default()),
         });
         Context {
             rt,

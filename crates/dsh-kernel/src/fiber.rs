@@ -200,9 +200,7 @@ pub(crate) fn push_effect(rec: &mut FiberRec, cleanup: Cleanup) -> u64 {
     effect_id
 }
 
-/// Per-fiber record. `kind`, `parent`, `inject`, and `next_effect` are written at
-/// allocation and read by later kernel APIs (effects, inject-wait, isolate).
-#[allow(dead_code)]
+/// Per-fiber record. `parent` is walked by scoped event delivery.
 pub(crate) struct FiberRec {
     pub(crate) state: FiberState,
     pub(crate) kind: PluginKind,
@@ -223,9 +221,11 @@ pub(crate) struct ServiceSlot {
 pub(crate) struct Runtime {
     pub(crate) next_fiber: AtomicU64,
     pub(crate) next_realm: AtomicU64,
+    pub(crate) next_listener: AtomicU64,
     pub(crate) fibers: Mutex<HashMap<FiberId, FiberRec>>,
     pub(crate) services: Mutex<HashMap<(u64, String), ServiceSlot>>,
     pub(crate) service_notify: Notify,
+    pub(crate) events: Mutex<crate::events::EventBus>,
 }
 
 impl Runtime {
