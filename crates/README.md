@@ -12,3 +12,4 @@ Rust workspace members for the DeepSeek Harness host process. Layout, keep-or-dr
 | [`dsh-kernel`](dsh-kernel/README.md) | Context, Fiber, services, effects, isolate, event bus. |
 | [`dsh-events`](dsh-events/README.md) | Re-export of the kernel event bus (`emit` / `serial` / `parallel` / `waterfall`). |
 | [`dsh-schema`](dsh-schema/README.md) | Plugin config schema + JSON Schema for Settings UI. |
+| [`dsh-compose`](dsh-compose/README.md) | Closed YAML dialect: interpolators, patches, layer order, disabled predicates. |
