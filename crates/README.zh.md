@@ -11,3 +11,4 @@ DeepSeek Harness 宿主进程的 Rust workspace 成员。布局、保留/放弃�
 | [`dsh-brand`](dsh-brand/README.md) | 品牌 id 原语（`Branded<B>`）。具体产品 id 放在所属 crate。 |
 | [`dsh-kernel`](dsh-kernel/README.md) | Context、Fiber、服务、effect、isolate、事件总线。 |
 | [`dsh-events`](dsh-events/README.md) | 内核事件总线的再导出（`emit` / `serial` / `parallel` / `waterfall`）。 |
+| [`dsh-schema`](dsh-schema/README.md) | 插件配置 schema + Settings UI 的 JSON Schema。 |
