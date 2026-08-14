@@ -141,12 +141,22 @@ impl Context {
             }
         }
         let rt = Arc::clone(&self.rt);
-        self.effect(move || async move {
+        let removed = name_owned.clone();
+        match self.effect(move || async move {
             let mut bus = rt.events.lock().expect("event bus lock");
             if let Some(list) = bus.listeners.get_mut(&name_owned) {
                 list.retain(|entry| entry.id != id);
             }
-        })
+        }) {
+            Ok(disposer) => Ok(disposer),
+            Err(error) => {
+                let mut bus = self.rt.events.lock().expect("event bus lock");
+                if let Some(list) = bus.listeners.get_mut(&removed) {
+                    list.retain(|entry| entry.id != id);
+                }
+                Err(error)
+            }
+        }
     }
 
     fn snapshot_listeners(&self, name: &str) -> Vec<AsyncListener> {
@@ -235,12 +245,22 @@ impl Context {
                 });
         }
         let rt = Arc::clone(&self.rt);
-        self.effect(move || async move {
+        let removed = name_owned.clone();
+        match self.effect(move || async move {
             let mut bus = rt.events.lock().expect("event bus lock");
             if let Some(list) = bus.waterfalls.get_mut(&name_owned) {
                 list.retain(|entry| entry.id != id);
             }
-        })
+        }) {
+            Ok(disposer) => Ok(disposer),
+            Err(error) => {
+                let mut bus = self.rt.events.lock().expect("event bus lock");
+                if let Some(list) = bus.waterfalls.get_mut(&removed) {
+                    list.retain(|entry| entry.id != id);
+                }
+                Err(error)
+            }
+        }
     }
 
     /// Run the waterfall. Listeners that return without `next` short-circuit.
@@ -282,7 +302,7 @@ impl Context {
 #[cfg(test)]
 mod tests {
     use super::{OnOptions, Payload};
-    use crate::Context;
+    use crate::{Context, KernelError};
     use std::sync::{Arc, Mutex};
 
     #[tokio::test]
@@ -424,5 +444,52 @@ mod tests {
             timed.is_err(),
             "child-scoped listener must not see root emit"
         );
+    }
+
+    #[tokio::test]
+    async fn on_on_disposed_fiber_does_not_orphan_listener() {
+        let root = Context::new();
+        let handle = root.plugin(|_ctx| async { Ok(()) });
+        handle.await_ready().await.unwrap();
+        handle.dispose().await;
+        let ran = Arc::new(Mutex::new(false));
+        let ran_cb = Arc::clone(&ran);
+        let err = handle
+            .context()
+            .on("ghost", move |_| {
+                let ran_cb = Arc::clone(&ran_cb);
+                async move {
+                    *ran_cb.lock().expect("ran") = true;
+                }
+            })
+            .map(|_| ())
+            .unwrap_err();
+        assert_eq!(err, KernelError::InactiveEffect);
+        root.serial("ghost", Payload::new(())).await;
+        assert!(!*ran.lock().expect("ran"));
+    }
+
+    #[tokio::test]
+    async fn on_waterfall_on_disposed_fiber_does_not_orphan_listener() {
+        let root = Context::new();
+        let handle = root.plugin(|_ctx| async { Ok(()) });
+        handle.await_ready().await.unwrap();
+        handle.dispose().await;
+        let ran = Arc::new(Mutex::new(false));
+        let ran_cb = Arc::clone(&ran);
+        let err = handle
+            .context()
+            .on_waterfall::<i32, _, _>("ghost", move |_value, _next| {
+                let ran_cb = Arc::clone(&ran_cb);
+                async move {
+                    *ran_cb.lock().expect("ran") = true;
+                    99
+                }
+            })
+            .map(|_| ())
+            .unwrap_err();
+        assert_eq!(err, KernelError::InactiveEffect);
+        assert_eq!(root.waterfall("ghost", 0).await, 0);
+        assert!(!*ran.lock().expect("ran"));
     }
 }
