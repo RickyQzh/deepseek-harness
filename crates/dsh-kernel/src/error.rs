@@ -27,4 +27,12 @@ pub enum KernelError {
         /// Service name that was awaited.
         name: String,
     },
+    /// A preset-owned fiber provided a service into the root realm.
+    #[error("preset row `{plugin}` provides `{service}` into the root realm")]
+    PresetProvidesIntoRoot {
+        /// Preset row id.
+        plugin: String,
+        /// Service name that was offered to the root realm.
+        service: String,
+    },
 }

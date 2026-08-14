@@ -16,6 +16,18 @@ use crate::context::Context;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct FiberId(pub u64);
 
+/// Explicit isolate realm. `RealmKey::root()` is the host realm (`0`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct RealmKey(pub u64);
+
+impl RealmKey {
+    /// The host / root realm.
+    #[must_use]
+    pub const fn root() -> Self {
+        Self(0)
+    }
+}
+
 /// Lifecycle state for one plugin fiber.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FiberState {
@@ -210,6 +222,7 @@ pub(crate) struct ServiceSlot {
 
 pub(crate) struct Runtime {
     pub(crate) next_fiber: AtomicU64,
+    pub(crate) next_realm: AtomicU64,
     pub(crate) fibers: Mutex<HashMap<FiberId, FiberRec>>,
     pub(crate) services: Mutex<HashMap<(u64, String), ServiceSlot>>,
     pub(crate) service_notify: Notify,

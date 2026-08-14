@@ -6,4 +6,4 @@ mod fiber;
 
 pub use context::Context;
 pub use error::KernelError;
-pub use fiber::{Disposer, FiberHandle, FiberId, FiberState, PluginKind};
+pub use fiber::{Disposer, FiberHandle, FiberId, FiberState, PluginKind, RealmKey};

@@ -44,6 +44,7 @@ impl Context {
         );
         let rt = Arc::new(Runtime {
             next_fiber: AtomicU64::new(1),
+            next_realm: AtomicU64::new(1),
             fibers: Mutex::new(fibers),
             services: Mutex::new(HashMap::new()),
             service_notify: tokio::sync::Notify::new(),
@@ -95,6 +96,47 @@ impl Context {
         )
     }
 
+    /// Mount a plugin with an explicit kind (host vs preset).
+    pub fn plugin_kind<F, Fut>(&self, kind: PluginKind, inject: &[&str], setup: F) -> FiberHandle
+    where
+        F: FnOnce(Context) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), KernelError>> + Send + 'static,
+    {
+        self.spawn_plugin(
+            kind,
+            inject.iter().map(|name| (*name).to_string()).collect(),
+            setup,
+        )
+    }
+
+    /// Allocate a realm id that is never `RealmKey::root()`.
+    #[must_use]
+    pub fn fresh_realm(&self) -> crate::RealmKey {
+        crate::RealmKey(
+            self.rt
+                .next_realm
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    /// Child context (same fiber) whose `service` lookups use `realm`.
+    #[must_use]
+    pub fn isolate(&self, service: &str, realm: crate::RealmKey) -> Context {
+        let mut map = (*self.isolate).clone();
+        map.insert(service.to_string(), realm.0);
+        Context {
+            rt: Arc::clone(&self.rt),
+            fiber_id: self.fiber_id,
+            isolate: Arc::new(map),
+        }
+    }
+
+    /// Realm used for `service` on this context (`root` when unset).
+    #[must_use]
+    pub fn realm_of(&self, service: &str) -> crate::RealmKey {
+        crate::RealmKey(self.realm_u64(service))
+    }
+
     pub(crate) fn realm_u64(&self, service: &str) -> u64 {
         self.isolate.get(service).copied().unwrap_or(0)
     }
@@ -103,7 +145,7 @@ impl Context {
     ///
     /// # Errors
     ///
-    /// `ServiceAlreadyProvided` when the realm already has `name`; `InactiveEffect` when this fiber cannot register effects.
+    /// `ServiceAlreadyProvided` when the realm already has `name`; `PresetProvidesIntoRoot` when a preset-owned fiber offers `name` in the root realm; `InactiveEffect` when this fiber cannot register effects.
     pub fn provide<T: Send + Sync + 'static>(
         &self,
         name: impl Into<String>,
@@ -111,6 +153,22 @@ impl Context {
     ) -> Result<crate::Disposer, KernelError> {
         let name = name.into();
         let realm = self.realm_u64(&name);
+        let kind = self
+            .rt
+            .fibers
+            .lock()
+            .expect("fiber table lock")
+            .get(&self.fiber_id)
+            .map(|rec| rec.kind.clone())
+            .unwrap_or(PluginKind::Host);
+        if let PluginKind::Preset { row_id } = kind {
+            if realm == 0 {
+                return Err(KernelError::PresetProvidesIntoRoot {
+                    plugin: row_id,
+                    service: name,
+                });
+            }
+        }
         {
             let mut services = self.rt.services.lock().expect("service table lock");
             let key = (realm, name.clone());
@@ -555,5 +613,72 @@ mod tests {
         assert_eq!(err, KernelError::InactiveEffect);
         assert!(root.get::<u8>("ghost").is_none());
         assert!(handle.context().get::<u8>("ghost").is_none());
+    }
+
+    #[tokio::test]
+    async fn isolate_keeps_same_name_apart() {
+        use crate::RealmKey;
+        let root = Context::new();
+        let realm = root.fresh_realm();
+        assert_ne!(realm, RealmKey::root());
+        let isolated = root.isolate("planMode", realm);
+        root.provide("planMode", String::from("host")).unwrap();
+        isolated
+            .provide("planMode", String::from("preset"))
+            .unwrap();
+        assert_eq!(root.get::<String>("planMode").unwrap().as_str(), "host");
+        assert_eq!(
+            isolated.get::<String>("planMode").unwrap().as_str(),
+            "preset"
+        );
+        assert_eq!(root.realm_of("planMode"), RealmKey::root());
+        assert_eq!(isolated.realm_of("planMode"), realm);
+    }
+
+    #[tokio::test]
+    async fn preset_provide_into_root_realm_is_load_failure() {
+        use crate::PluginKind;
+        let root = Context::new();
+        let handle = root.plugin_kind(
+            PluginKind::Preset {
+                row_id: "plan".into(),
+            },
+            &[],
+            |ctx| async move {
+                ctx.provide("planMode", ())?;
+                Ok(())
+            },
+        );
+        let err = handle.await_ready().await.unwrap_err();
+        assert_eq!(
+            err,
+            KernelError::PresetProvidesIntoRoot {
+                plugin: "plan".into(),
+                service: "planMode".into(),
+            }
+        );
+        assert_eq!(handle.state(), FiberState::Failed);
+        assert!(root.get::<()>("planMode").is_none());
+    }
+
+    #[tokio::test]
+    async fn preset_provide_into_explicit_realm_succeeds() {
+        use crate::PluginKind;
+        let root = Context::new();
+        let realm = root.fresh_realm();
+        let isolated = root.isolate("planMode", realm);
+        let handle = isolated.plugin_kind(
+            PluginKind::Preset {
+                row_id: "plan".into(),
+            },
+            &[],
+            |ctx| async move {
+                ctx.provide("planMode", 1_u8)?;
+                Ok(())
+            },
+        );
+        handle.await_ready().await.unwrap();
+        assert!(root.get::<u8>("planMode").is_none());
+        assert_eq!(*isolated.get::<u8>("planMode").unwrap(), 1);
     }
 }
