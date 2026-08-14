@@ -166,6 +166,17 @@ pub(crate) struct EffectSlot {
     pub(crate) cleanup: Option<Cleanup>,
 }
 
+/// Push a cleanup onto `rec` and return the new slot id.
+pub(crate) fn push_effect(rec: &mut FiberRec, cleanup: Cleanup) -> u64 {
+    let effect_id = rec.next_effect;
+    rec.next_effect += 1;
+    rec.effects.push(EffectSlot {
+        id: effect_id,
+        cleanup: Some(cleanup),
+    });
+    effect_id
+}
+
 /// Per-fiber record. `kind`, `parent`, `inject`, and `next_effect` are written at
 /// allocation and read by later kernel APIs (effects, inject-wait, isolate).
 #[allow(dead_code)]

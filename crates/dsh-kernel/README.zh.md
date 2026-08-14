@@ -4,7 +4,7 @@
 
 为 Rust 宿主提供 Context、Fiber 生命周期、具名服务、effect、isolate realm 以及进程内事件总线。本 crate 保留 Cordis 语义（具名服务、inject 等待、逆序 dispose、waterfall 的 `next()`、isolate realm），不实现 Proxy、声明合并或 `!!js`。
 
-Fiber 状态为 PENDING → LOADING → ACTIVE | FAILED | UNLOADING → DISPOSED。`Context::plugin` 挂载子 fiber；`await_ready` 在 Active 上结束，或返回 setup 错误。事件总线在本 crate 实现；`dsh-events` 对其再导出。
+Fiber 状态为 PENDING → LOADING → ACTIVE | FAILED | UNLOADING → DISPOSED。`Context::effect` 登记异步 disposer；卸载与失败的 setup 按登记的逆序运行清理，fiber 处于 `Unloading` 时拒绝新的 `effect`。`Context::plugin` 挂载子 fiber；`await_ready` 在 Active 上结束，或返回 setup 错误。事件总线在本 crate 实现；`dsh-events` 对其再导出。
 
 ## 已知限制与暂缓事项
 
