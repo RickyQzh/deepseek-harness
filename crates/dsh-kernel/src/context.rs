@@ -127,13 +127,24 @@ impl Context {
         self.rt.service_notify.notify_waiters();
         let rt = Arc::clone(&self.rt);
         let removed = name.clone();
-        self.effect(move || async move {
+        match self.effect(move || async move {
             rt.services
                 .lock()
                 .expect("service table lock")
                 .remove(&(realm, removed));
             rt.service_notify.notify_waiters();
-        })
+        }) {
+            Ok(disposer) => Ok(disposer),
+            Err(error) => {
+                self.rt
+                    .services
+                    .lock()
+                    .expect("service table lock")
+                    .remove(&(realm, name));
+                self.rt.service_notify.notify_waiters();
+                Err(error)
+            }
+        }
     }
 
     /// Return a service if it is present in this context's realm. Does not wait.
@@ -155,27 +166,48 @@ impl Context {
         name: &str,
     ) -> Result<Arc<T>, KernelError> {
         loop {
-            match self.fiber_state() {
-                FiberState::Failed | FiberState::Unloading | FiberState::Disposed => {
-                    return Err(KernelError::InjectWaitDisposed {
-                        name: name.to_string(),
-                    });
-                }
-                FiberState::Pending | FiberState::Loading | FiberState::Active => {}
-            }
-            if let Some(slot) = {
-                let services = self.rt.services.lock().expect("service table lock");
-                services
-                    .get(&(self.realm_u64(name), name.to_string()))
-                    .cloned()
-            } {
-                return Arc::clone(&slot.value).downcast::<T>().map_err(|_| {
-                    KernelError::ServiceTypeMismatch {
-                        name: name.to_string(),
-                    }
+            if !self
+                .wait_until_ready_or_inactive(|| self.service_slot(name).is_some())
+                .await
+            {
+                return Err(KernelError::InjectWaitDisposed {
+                    name: name.to_string(),
                 });
             }
-            self.rt.service_notify.notified().await;
+            let Some(slot) = self.service_slot(name) else {
+                continue;
+            };
+            return Arc::clone(&slot.value).downcast::<T>().map_err(|_| {
+                KernelError::ServiceTypeMismatch {
+                    name: name.to_string(),
+                }
+            });
+        }
+    }
+
+    fn service_slot(&self, name: &str) -> Option<crate::fiber::ServiceSlot> {
+        let services = self.rt.services.lock().expect("service table lock");
+        services
+            .get(&(self.realm_u64(name), name.to_string()))
+            .cloned()
+    }
+
+    /// Park until `ready` is true, or this fiber is `Failed`, `Unloading`, or `Disposed`.
+    ///
+    /// Subscribes to `Notify::notified` before the last state and `ready` check.
+    /// `Notify::notify_waiters` stores no permit, so a subscribe-after-check wait
+    /// can miss a wake from `provide` or dispose.
+    async fn wait_until_ready_or_inactive(&self, mut ready: impl FnMut() -> bool) -> bool {
+        loop {
+            let notified = self.rt.service_notify.notified();
+            match self.fiber_state() {
+                FiberState::Failed | FiberState::Unloading | FiberState::Disposed => return false,
+                FiberState::Pending | FiberState::Loading | FiberState::Active => {}
+            }
+            if ready() {
+                return true;
+            }
+            notified.await;
         }
     }
 
@@ -267,23 +299,21 @@ where
         .get(&ctx.fiber_id)
         .map(|rec| rec.inject.clone())
         .unwrap_or_default();
-    while !inject.is_empty() {
-        match ctx.fiber_state() {
-            FiberState::Unloading | FiberState::Disposed => return,
-            FiberState::Failed => return,
-            FiberState::Pending | FiberState::Loading | FiberState::Active => {}
+    if !inject.is_empty() {
+        let services_ready = ctx
+            .wait_until_ready_or_inactive(|| {
+                inject.iter().all(|name| {
+                    ctx.rt
+                        .services
+                        .lock()
+                        .expect("service table lock")
+                        .contains_key(&(ctx.realm_u64(name), name.clone()))
+                })
+            })
+            .await;
+        if !services_ready {
+            return;
         }
-        let ready = inject.iter().all(|name| {
-            ctx.rt
-                .services
-                .lock()
-                .expect("service table lock")
-                .contains_key(&(ctx.realm_u64(name), name.clone()))
-        });
-        if ready {
-            break;
-        }
-        ctx.rt.service_notify.notified().await;
     }
     ctx.rt.set_state(ctx.fiber_id, FiberState::Loading);
     match setup(ctx.clone()).await {
@@ -488,5 +518,42 @@ mod tests {
             err,
             KernelError::ServiceAlreadyProvided { name: "dup".into() }
         );
+    }
+
+    #[tokio::test]
+    async fn inject_returns_disposed_when_waiting_fiber_is_disposed() {
+        let root = Context::new();
+        let waiter = tokio::spawn({
+            let root = root.clone();
+            async move { root.inject::<u32>("never").await }
+        });
+        root.dispose().await;
+        let err = tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
+            .await
+            .expect("inject must wake on dispose")
+            .expect("inject task join")
+            .expect_err("inject must fail after dispose");
+        assert_eq!(
+            err,
+            KernelError::InjectWaitDisposed {
+                name: "never".into()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn provide_on_disposed_fiber_does_not_orphan_slot() {
+        let root = Context::new();
+        let handle = root.plugin(|_ctx| async { Ok(()) });
+        handle.await_ready().await.unwrap();
+        handle.dispose().await;
+        let err = handle
+            .context()
+            .provide("ghost", 1_u8)
+            .map(|_| ())
+            .unwrap_err();
+        assert_eq!(err, KernelError::InactiveEffect);
+        assert!(root.get::<u8>("ghost").is_none());
+        assert!(handle.context().get::<u8>("ghost").is_none());
     }
 }

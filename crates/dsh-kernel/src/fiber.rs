@@ -217,10 +217,18 @@ pub(crate) struct Runtime {
 
 impl Runtime {
     pub(crate) fn set_state(&self, id: FiberId, state: FiberState) {
-        let mut fibers = self.fibers.lock().expect("fiber table lock");
-        if let Some(rec) = fibers.get_mut(&id) {
-            rec.state = state;
-            rec.ready.send_replace(state);
+        {
+            let mut fibers = self.fibers.lock().expect("fiber table lock");
+            if let Some(rec) = fibers.get_mut(&id) {
+                rec.state = state;
+                rec.ready.send_replace(state);
+            }
+        }
+        if matches!(
+            state,
+            FiberState::Failed | FiberState::Unloading | FiberState::Disposed
+        ) {
+            self.service_notify.notify_waiters();
         }
     }
 }
@@ -244,6 +252,7 @@ pub(crate) async fn dispose_fiber(rt: &Arc<Runtime>, id: FiberId) {
     if already {
         return;
     }
+    rt.service_notify.notify_waiters();
     let slots = {
         let mut fibers = rt.fibers.lock().expect("fiber table lock");
         fibers
