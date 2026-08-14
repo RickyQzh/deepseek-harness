@@ -298,9 +298,9 @@ TypeScript 包仍在交付时，其 Vitest + 覆盖率仍为必需。快照与 e
 
 **目标：** CI 会跑的 Cargo workspace，尚无产品行为。
 
-- [ ] 增加 `crates/` 以及 workspace `Cargo.toml`、`rust-toolchain.toml`、`cargo fmt`/`clippy` 配置。
-- [ ] 增加一条 GitHub Actions Rust 车道（fmt、clippy、test），在任何 `crates/**` 路径变化时为必需。
-- [ ] 为 rustc 记录源码平面与产物平面的划分（替换宿主代码的 tsx/lib 规则）。
+- [x] 增加 `crates/` 以及 workspace `Cargo.toml`、`rust-toolchain.toml`、`cargo fmt`/`clippy` 配置。
+- [x] 增加一条 GitHub Actions Rust 车道（fmt、clippy、test），在任何 `crates/**` 路径变化时为必需。
+- [x] 为 rustc 记录源码平面与产物平面的划分（替换宿主代码的 tsx/lib 规则）。
 - [ ] 退出：空的 `dsh-brand` crate 测试在 CI 上绿；Node 车道不变。
 
 ### 阶段 1 — 内核
@@ -409,7 +409,7 @@ TypeScript 包仍在交付时，其 Vitest + 覆盖率仍为必需。快照与 e
 
 | 笔记 | 时机 |
 |---|---|
-| `proposed/process/…-rust-tooling-and-gates.md` | 阶段 0，若 CI/工具链细节超出本文件 |
+| [2026-08-14-rust-tooling-and-gates.md](../process/2026-08-14-rust-tooling-and-gates.md) | 阶段 0 的钉住、CI 路径过滤与覆盖率后续 |
 | `proposed/testing/…-rust-snapshot-harness.md` | 阶段 5，若快照驱动需要自己的决策记录 |
 | `proposed/architecture/…-rust-gui-host-wire.md` | 阶段 7，若四象限映射需要冻结的 IDL |
 | `proposed/architecture/…-dynamic-plugins.md` | 仅当重新引入自修改时 |

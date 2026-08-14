@@ -298,9 +298,9 @@ Add a required Rust CI lane (fmt, clippy, test, llvm-cov) as soon as any crate i
 
 **Goal:** a Cargo workspace that CI runs, with no product behavior yet.
 
-- [ ] Add `crates/` with a workspace `Cargo.toml`, `rust-toolchain.toml`, `cargo fmt`/`clippy` config.
-- [ ] Add a GitHub Actions Rust lane (fmt, clippy, test) that is required when any `crates/**` path changes.
-- [ ] Document the source-vs-artifact split for rustc (replace the tsx/lib rule for host code).
+- [x] Add `crates/` with a workspace `Cargo.toml`, `rust-toolchain.toml`, `cargo fmt`/`clippy` config.
+- [x] Add a GitHub Actions Rust lane (fmt, clippy, test) that is required when any `crates/**` path changes.
+- [x] Document the source-vs-artifact split for rustc (replace the tsx/lib rule for host code).
 - [ ] Exit: empty `dsh-brand` crate tests green on CI; Node lanes unchanged.
 
 ### Phase 1 — Kernel
@@ -409,7 +409,7 @@ Do **not** start from [docs/architecture.md](../../../../docs/architecture.md) o
 
 | Note | When |
 |---|---|
-| `proposed/process/…-rust-tooling-and-gates.md` | Phase 0, if CI/toolchain detail exceeds this file |
+| [2026-08-14-rust-tooling-and-gates.md](../process/2026-08-14-rust-tooling-and-gates.md) | Phase 0 pin, CI path filters, and coverage follow-up |
 | `proposed/testing/…-rust-snapshot-harness.md` | Phase 5, if the snapshot driver needs its own decision record |
 | `proposed/architecture/…-rust-gui-host-wire.md` | Phase 7, if the four-quadrant map needs a frozen IDL |
 | `proposed/architecture/…-dynamic-plugins.md` | Only if self-modification is reintroduced |
