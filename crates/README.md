@@ -15,3 +15,4 @@ Rust workspace members for the DeepSeek Harness host process. Layout, keep-or-dr
 | [`dsh-compose`](dsh-compose/README.md) | Closed YAML dialect: interpolators, patches, layer order, disabled predicates. |
 | [`dsh-session`](dsh-session/README.md) | Session ids, closed `SessionEvent` enum, surface, derive, repair, chunk rows. |
 | [`dsh-session-persist`](dsh-session-persist/README.md) | JSONL + zstd session codec (SQLite later). |
+| [`dsh-tools`](dsh-tools/README.md) | Tool execution types and lossless-JSON argument freeze. |
