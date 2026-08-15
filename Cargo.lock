@@ -36,6 +36,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-credentials"
+version = "0.1.0"
+dependencies = [
+ "dsh-brand",
+ "serde_yaml",
+ "thiserror",
+]
+
+[[package]]
 name = "dsh-events"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,17 @@
+[package]
+name = "dsh-credentials"
+version = "0.1.0"
+description = "Per-request credential-reference resolve for the DeepSeek Harness Rust host"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+dsh-brand = { path = "../dsh-brand" }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
