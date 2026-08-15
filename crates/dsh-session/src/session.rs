@@ -4,7 +4,8 @@ use crate::error::SessionError;
 use crate::event::{LogEvent, SessionEvent};
 use crate::header::SessionHeader;
 use crate::ids::SessionId;
-use crate::message::Message;
+use crate::message::{EpochHeader, Message};
+use crate::request_header::fold_request_header_iter;
 use crate::surface::{SurfaceManager, derive_event_message};
 
 /// Append-only session log with an incremental message-producing surface.
@@ -125,6 +126,20 @@ impl Session {
     #[must_use]
     pub fn replace_generation(&self) -> u64 {
         self.surface.replace_generation()
+    }
+
+    /// Fold known `request/header` events into the header in force after the last snapshot.
+    ///
+    /// Leftovers are skipped. Returns `None` before the first header event.
+    #[must_use]
+    pub fn request_header(&self) -> Option<EpochHeader> {
+        fold_request_header_iter(
+            self.events.iter().filter_map(|event| match event {
+                LogEvent::Known(event) => Some(event),
+                LogEvent::Leftover(_) => None,
+            }),
+            None,
+        )
     }
 }
 
