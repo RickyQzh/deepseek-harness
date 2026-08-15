@@ -1,0 +1,17 @@
+[package]
+name = "dsh-system-prompt"
+version = "0.1.0"
+description = "System-prompt assembly and strict {{var}} interpolation for the DeepSeek Harness Rust host"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+dsh-session = { path = "../dsh-session" }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

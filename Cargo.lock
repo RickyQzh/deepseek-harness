@@ -82,6 +82,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-system-prompt"
+version = "0.1.0"
+dependencies = [
+ "dsh-session",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "dsh-tools"
 version = "0.1.0"
 dependencies = [
