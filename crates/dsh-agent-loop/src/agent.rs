@@ -456,6 +456,19 @@ impl LoopAgent {
 
         let mut turn_ends: Option<TurnEndReason> = None;
         let body = self.run_turn_steps(turn, &mut turn_ends).await;
+        if let Err(error) = &body {
+            if turn_ends.is_none() {
+                turn_ends = Some(if self.is_aborted() {
+                    TurnEndReason::Aborted {
+                        reason: self.cancel_reason_json(),
+                    }
+                } else {
+                    TurnEndReason::Error {
+                        error: llm_failure_from_loop_error(error),
+                    }
+                });
+            }
+        }
         let reason = turn_ends.unwrap_or(TurnEndReason::Completed);
         let end_result = self.push_event(|seq| SessionEvent::TurnEnd {
             seq,
@@ -631,6 +644,8 @@ impl LoopAgent {
                 });
             }
             let request = self.build_request(assembly)?;
+            let provider = request.provider.clone();
+            let model = request.model.clone();
             let chunks = self.collect_stream(request).await;
             let mut assembler = BlockAssembler::new();
             let mut chunk_seqs = Vec::new();
@@ -658,7 +673,7 @@ impl LoopAgent {
                     }
                 }
                 finish => {
-                    self.append_assistant(turn, step, &assembler, &chunk_seqs)?;
+                    self.append_assistant(turn, step, &assembler, &chunk_seqs, &provider, &model)?;
                     if assembler
                         .blocks()
                         .iter()
@@ -755,10 +770,12 @@ impl LoopAgent {
         step: u64,
         assembler: &BlockAssembler,
         chunk_seqs: &[u64],
+        provider: &str,
+        model: &str,
     ) -> Result<(), LoopError> {
         let message = assembler.message(dsh_session::MessageSource::Model {
-            provider: self.options.provider.clone(),
-            model: self.options.model.clone(),
+            provider: provider.to_string(),
+            model: model.to_string(),
             replay_state: assembler.replay_state().cloned(),
         });
         self.push_event(|seq| SessionEvent::AssistantMessage {
@@ -803,6 +820,16 @@ impl LoopAgent {
     }
 }
 
+fn llm_failure_from_loop_error(error: &LoopError) -> LlmFailure {
+    LlmFailure {
+        message: error.to_string(),
+        code: "UNKNOWN".into(),
+        status: None,
+        provider_retry_after_ms: None,
+        request_id: None,
+    }
+}
+
 fn last_turn_from(session: &Session) -> u64 {
     session
         .events()
@@ -840,11 +867,11 @@ pub(crate) use crate::{event_types, test_header, user_text};
 mod tests {
     #[allow(unused_imports)]
     use super::{
-        AgentStatus, CancelCause, CancelOptions, LoopAgent, LoopOptions, Phase, PreStepDecision,
-        event_types, test_header, user_text,
+        AgentStatus, CancelCause, CancelOptions, LoopAgent, LoopError, LoopOptions, Phase,
+        PreStepDecision, event_types, test_header, user_text,
     };
-    use dsh_llm::{LlmRuntime, MockAdapter, MockScript, text_response};
-    use dsh_session::{Session, TurnEndReason};
+    use dsh_llm::{LlmRuntime, MockAdapter, MockScript, text_response, tool_call_response};
+    use dsh_session::{LlmCallConfig, MessageSource, Session, TurnEndReason};
     use dsh_system_prompt::{SystemPrompt, SystemPromptConfig};
     use dsh_tools::ToolRuntime;
     use std::sync::Arc;
@@ -1025,5 +1052,71 @@ mod tests {
             })
             .count();
         assert_eq!(snapshots, 1);
+    }
+
+    #[tokio::test]
+    async fn tool_call_stub_stamps_error_turn_end() {
+        let (mut agent, _) = harness(vec![MockScript::Chunks(tool_call_response(
+            "c1",
+            "echo",
+            &serde_json::json!({ "x": 1 }),
+            None,
+        ))]);
+        agent.followup(user_text("m1", "hi")).unwrap();
+        let error = agent.run_until_idle().await.unwrap_err();
+        assert!(
+            matches!(error, LoopError::Invalid(message) if message == "tool calls require Task 28")
+        );
+        let types = event_types(&agent.session);
+        assert!(types.iter().any(|t| t == "assistant/message"));
+        let end = agent
+            .session
+            .events()
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                dsh_session::LogEvent::Known(dsh_session::SessionEvent::TurnEnd {
+                    data, ..
+                }) => Some(data),
+                _ => None,
+            })
+            .unwrap();
+        match &end.reason {
+            TurnEndReason::Error { error } => {
+                assert_eq!(error.code, "UNKNOWN");
+                assert_eq!(error.message, "tool calls require Task 28");
+            }
+            other => panic!("expected error turn/end, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn assistant_source_uses_on_request_route() {
+        let (mut agent, adapter) = harness(vec![MockScript::Chunks(text_response("ok"))]);
+        agent.on_request(|config| LlmCallConfig {
+            model: "rerouted".into(),
+            ..config.clone()
+        });
+        agent.followup(user_text("m1", "hi")).unwrap();
+        agent.run_until_idle().await.unwrap();
+        assert_eq!(adapter.requests.lock().unwrap()[0].model, "rerouted");
+        let source = agent
+            .session
+            .events()
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                dsh_session::LogEvent::Known(dsh_session::SessionEvent::AssistantMessage {
+                    data,
+                    ..
+                }) => Some(&data.message.source),
+                _ => None,
+            })
+            .unwrap();
+        assert!(matches!(
+            source,
+            MessageSource::Model { provider, model, .. }
+                if provider == "mock" && model == "rerouted"
+        ));
     }
 }
