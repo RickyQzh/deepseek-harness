@@ -207,4 +207,30 @@ mod tests {
         let error = session.append(user(3, "x")).expect_err("seq");
         assert!(error.to_string().contains("not contiguous"));
     }
+
+    #[test]
+    fn append_replace_bumps_replace_generation() {
+        let mut session = Session::new(header());
+        session.append(user(0, "a")).unwrap();
+        session.append(user(1, "b")).unwrap();
+        let before = session.replace_generation();
+        session
+            .append(SessionEvent::UserMessage {
+                seq: 2,
+                time: 2,
+                data: Message {
+                    id: crate::MessageId::new("m2"),
+                    role: MessageRole::User,
+                    content: vec![ContentBlock::Text {
+                        text: "summary".into(),
+                    }],
+                    source: MessageSource::User,
+                },
+                surface_op: Some(SurfaceOp::Replace { start: 0, end: 1 }),
+                source_event_seqs: Some(vec![0, 1]),
+                ignorable: None,
+            })
+            .unwrap();
+        assert!(session.replace_generation() > before);
+    }
 }

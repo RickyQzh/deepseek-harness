@@ -333,9 +333,10 @@ fn apply_surface_plan(
 mod tests {
     use super::{derive_event_message, fold_surface};
     use crate::message::{
-        AssistantMessageData, ContentBlock, Message, MessageRole, MessageSource, TurnStartData,
+        AssistantMessageData, ContentBlock, Message, MessageRole, MessageSource, ToolResultData,
+        TurnStartData,
     };
-    use crate::{MessageId, SessionEvent, SurfaceOp};
+    use crate::{CallId, MessageId, SessionEvent, SurfaceOp};
 
     fn user(seq: u64, text: &str) -> SessionEvent {
         SessionEvent::UserMessage {
@@ -443,5 +444,110 @@ mod tests {
         ];
         let error = fold_surface(&events).expect_err("missing start");
         assert!(error.to_string().contains("start seq 9 not found"));
+    }
+
+    fn tool_result(
+        seq: u64,
+        call_id: &str,
+        surface_op: SurfaceOp,
+        source_event_seqs: Option<Vec<u64>>,
+    ) -> SessionEvent {
+        SessionEvent::ToolResult {
+            seq,
+            time: seq as i64,
+            data: ToolResultData {
+                turn: 1,
+                step: 1,
+                message: Message {
+                    id: MessageId::new(format!("tr{seq}")),
+                    role: MessageRole::User,
+                    content: vec![ContentBlock::ToolResult {
+                        tool_call_id: CallId::new(call_id),
+                        content: vec![ContentBlock::Text {
+                            text: format!("result {seq}"),
+                        }],
+                        is_error: Some(false),
+                    }],
+                    source: MessageSource::Tool {
+                        call_id: CallId::new(call_id),
+                    },
+                },
+                error: None,
+                meta: None,
+            },
+            surface_op: Some(surface_op),
+            source_event_seqs,
+            ignorable: None,
+        }
+    }
+
+    #[test]
+    fn replace_source_event_seqs_must_include_every_shadowed_node() {
+        let events = vec![
+            user(0, "a"),
+            user(1, "b"),
+            SessionEvent::UserMessage {
+                seq: 2,
+                time: 2,
+                data: Message {
+                    id: MessageId::new("m2"),
+                    role: MessageRole::User,
+                    content: vec![ContentBlock::Text {
+                        text: "summary".into(),
+                    }],
+                    source: MessageSource::User,
+                },
+                surface_op: Some(SurfaceOp::Replace { start: 0, end: 1 }),
+                source_event_seqs: Some(vec![0]),
+                ignorable: None,
+            },
+        ];
+        let error = fold_surface(&events).expect_err("incomplete provenance");
+        assert!(
+            error
+                .to_string()
+                .contains("sourceEventSeqs must include every shadowed surface node")
+        );
+    }
+
+    #[test]
+    fn surface_eligible_event_without_marker_fails() {
+        let events = vec![SessionEvent::UserMessage {
+            seq: 0,
+            time: 0,
+            data: Message {
+                id: MessageId::new("m0"),
+                role: MessageRole::User,
+                content: vec![ContentBlock::Text {
+                    text: "hidden".into(),
+                }],
+                source: MessageSource::User,
+            },
+            surface_op: None,
+            source_event_seqs: None,
+            ignorable: None,
+        }];
+        let error = fold_surface(&events).expect_err("missing marker");
+        assert!(error.to_string().contains("requires a surfaceOp marker"));
+    }
+
+    #[test]
+    fn tool_result_replace_must_rewrite_exactly_one_current_node() {
+        let events = vec![
+            user(0, "a"),
+            user(1, "b"),
+            tool_result(
+                2,
+                "rewrite",
+                SurfaceOp::Replace { start: 0, end: 1 },
+                Some(vec![0, 1]),
+            ),
+        ];
+        let error = fold_surface(&events).expect_err("multi-node tool rewrite");
+        assert!(
+            error
+                .to_string()
+                .contains("must rewrite exactly one current node")
+        );
     }
 }
