@@ -9,7 +9,7 @@ pub enum LoopError {
     /// Prompt assembly or render failure.
     #[error("{0}")]
     Prompt(String),
-    /// Invalid phase, splice, or a tool-call finish before Task 28.
+    /// Invalid phase, splice, or scheduler failure.
     #[error("{0}")]
     Invalid(String),
 }

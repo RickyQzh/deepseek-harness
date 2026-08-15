@@ -4,6 +4,7 @@ mod agent;
 mod error;
 mod inbox;
 mod runtime_context;
+mod tool_calls;
 
 pub use agent::{
     AgentStatus, CancelCause, CancelOptions, DEFAULT_MAX_PARALLEL_TOOL_CALLS, LoopAgent,

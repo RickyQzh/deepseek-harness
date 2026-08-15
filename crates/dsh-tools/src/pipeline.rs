@@ -130,6 +130,15 @@ impl ToolRuntime {
         self.tools.insert(definition.name.clone(), definition);
     }
 
+    /// Registered definition for `name`, if any.
+    ///
+    /// The loop scheduler looks up `execute` / `render` here so parallel bodies
+    /// can overlap without holding `&mut self` across `.await`.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&ToolDefinition> {
+        self.tools.get(name)
+    }
+
     /// Append a pre-execute waterfall listener.
     ///
     /// The listener must call `next()` to delegate. Returning
