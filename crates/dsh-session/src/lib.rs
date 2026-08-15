@@ -1,6 +1,7 @@
 //! Append-only session log types for the Rust host.
 
 mod catalog;
+mod chunk_rows;
 mod decode;
 mod error;
 mod event;
@@ -9,6 +10,10 @@ mod ids;
 mod message;
 
 pub use catalog::{KNOWN_SESSION_EVENT_TYPES, is_known_session_event_type};
+pub use chunk_rows::{
+    ChunkRow, MIN_CHUNK_RUN, StorageRecord, TextRunData, ToolCallRunData, decode_storage_record,
+    pack_chunk_runs,
+};
 pub use decode::{decode_log_event, decode_log_event_for_session, refuse_foreign_format_version};
 pub use error::{
     SessionError, SessionFormatError, session_format_version_refusal,
