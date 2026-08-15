@@ -552,6 +552,30 @@ pub fn decode_storage_record(value: Value) -> Result<Vec<SessionEvent>, SessionE
         tag.as_str(),
         "text-chunks" | "reasoning-chunks" | "tool-call-chunks"
     ) {
+        if !has_exact_keys(&value, &["type", "seq0", "time0", "data"]) {
+            return Err(malformed(
+                &tag,
+                "envelope must be exactly {type, seq0, time0, data}",
+            ));
+        }
+        let data = value.get("data").expect("exact envelope keys include data");
+        let data_ok = match tag.as_str() {
+            "tool-call-chunks" => {
+                has_exact_keys(data, &["turn", "step", "index", "id", "dt", "args"])
+                    || has_exact_keys(data, &["turn", "step", "index", "id", "name", "dt", "args"])
+            }
+            _ => has_exact_keys(data, &["turn", "step", "index", "dt", "texts"]),
+        };
+        if !data_ok {
+            return Err(malformed(
+                &tag,
+                if tag == "tool-call-chunks" {
+                    "data must be exactly {turn, step, index, id, name?, dt, args}"
+                } else {
+                    "data must be exactly {turn, step, index, dt, texts}"
+                },
+            ));
+        }
         let row: ChunkRow = serde_json::from_value(value).map_err(|error| {
             SessionError::Corrupt(format!("malformed {tag} storage row: {error}"))
         })?;
@@ -627,6 +651,19 @@ mod tests {
             "data": {"turn": 1, "step": 1, "index": 0, "dt": [], "texts": []}
         }))
         .expect_err("empty texts");
+        assert!(error.to_string().contains("malformed text-chunks"));
+    }
+
+    #[test]
+    fn extra_envelope_key_fails_loud() {
+        let error = decode_storage_record(json!({
+            "type": "text-chunks",
+            "seq0": 0,
+            "time0": 1,
+            "extra": true,
+            "data": {"turn": 1, "step": 1, "index": 0, "dt": [], "texts": ["a"]}
+        }))
+        .expect_err("extra envelope key");
         assert!(error.to_string().contains("malformed text-chunks"));
     }
 
