@@ -37,6 +37,18 @@ pub type ToolRender =
 /// Returns whether this call may overlap other parallel calls.
 pub type ToolConcurrencySafe = Box<dyn Fn(&serde_json::Value) -> bool + Send + Sync>;
 
+type StoredBody = Arc<
+    dyn Fn(
+            serde_json::Value,
+            ToolExecution,
+        ) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, ToolError>> + Send>>
+        + Send
+        + Sync,
+>;
+type StoredRender =
+    Arc<dyn Fn(&serde_json::Value, &serde_json::Value) -> Vec<ContentBlock> + Send + Sync>;
+type StoredClassify = Arc<dyn Fn(&serde_json::Value) -> bool + Send + Sync>;
+
 type PreNext = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = PreToolDecision> + Send>> + Send>;
 type PreFn = Arc<
     dyn Fn(ToolExecution, PreNext) -> Pin<Box<dyn Future<Output = PreToolDecision> + Send>>
@@ -84,6 +96,51 @@ pub enum ToolExecutionMode {
     Exclusive,
 }
 
+/// Outcome of [`ToolRuntime::prepare`].
+#[derive(Clone, Debug)]
+pub enum ScheduledToolPreparation {
+    /// Policy allowed the call; [`ToolRuntime::dispatch`] may run the body.
+    Dispatch {
+        /// Tokenized execution passed to dispatch and finalize.
+        exec: ToolExecution,
+    },
+    /// Denied or aborted after policy; still runs [`ToolRuntime::finalize`].
+    PostResult {
+        /// Tokenized execution for post-execute.
+        exec: ToolExecution,
+        /// Result before post-execute.
+        result: ToolExecutionResult,
+    },
+    /// Collapse, freeze failure, or abort before policy; skip post-execute.
+    FinalResult {
+        /// Tokenized execution that never reached the body.
+        exec: ToolExecution,
+        /// Final result.
+        result: ToolExecutionResult,
+    },
+}
+
+/// Outcome of [`ToolRuntime::dispatch`].
+#[derive(Clone, Debug)]
+pub enum ScheduledToolDispatch {
+    /// Body finished; still runs [`ToolRuntime::finalize`].
+    PostResult {
+        /// Result before post-execute.
+        result: ToolExecutionResult,
+    },
+    /// Pipeline failure that skips post-execute.
+    FinalResult {
+        /// Final result.
+        result: ToolExecutionResult,
+    },
+}
+
+struct RegisteredTool {
+    execute: StoredBody,
+    render: StoredRender,
+    is_concurrency_safe: Option<StoredClassify>,
+}
+
 /// Outcome of an approval hook after pre-execute [`PreToolDecision::Ask`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApprovalOutcome {
@@ -101,7 +158,7 @@ pub enum ApprovalOutcome {
 pub struct ToolRuntime {
     mode: ToolPresentationMode,
     next_token: u64,
-    tools: HashMap<String, ToolDefinition>,
+    tools: HashMap<String, RegisteredTool>,
     pre: Vec<PreFn>,
     post: Vec<PostFn>,
     guards: Vec<ToolGuard>,
@@ -127,16 +184,14 @@ impl ToolRuntime {
     ///
     /// Does not reserve [`RUN_CODE_NAME`]; collapse only denies model-direct native names.
     pub fn register(&mut self, definition: ToolDefinition) {
-        self.tools.insert(definition.name.clone(), definition);
-    }
-
-    /// Registered definition for `name`, if any.
-    ///
-    /// The loop scheduler looks up `execute` / `render` here so parallel bodies
-    /// can overlap without holding `&mut self` across `.await`.
-    #[must_use]
-    pub fn get(&self, name: &str) -> Option<&ToolDefinition> {
-        self.tools.get(name)
+        self.tools.insert(
+            definition.name.clone(),
+            RegisteredTool {
+                execute: Arc::from(definition.execute),
+                render: Arc::from(definition.render),
+                is_concurrency_safe: definition.is_concurrency_safe.map(Arc::from),
+            },
+        );
     }
 
     /// Append a pre-execute waterfall listener.
@@ -204,16 +259,32 @@ impl ToolRuntime {
         }
     }
 
-    /// Run freeze → collapse → pre → approval → guards → body → post.
+    /// Freeze, collapse, abort-before-body, pre-execute, approval, and guards.
     ///
-    /// A collapsed model-direct call never reaches pre-execute.
-    pub async fn execute(&mut self, input: ToolExecutionInput) -> ToolExecutionResult {
+    /// Assigns a real execution token. A deny, unknown-tool failure after policy, or
+    /// abort after policy is [`ScheduledToolPreparation::PostResult`]. Collapse, freeze
+    /// failure, and abort before policy are [`ScheduledToolPreparation::FinalResult`].
+    pub async fn prepare(&mut self, input: ToolExecutionInput) -> ScheduledToolPreparation {
         let token = ToolExecutionToken(self.next_token);
         self.next_token += 1;
         let root_call_id = input.root_call_id.unwrap_or_else(|| input.call_id.clone());
         let arguments = match freeze_args(&input.arguments) {
             Ok(args) => args,
-            Err(error) => return result_from_tool_error(&error),
+            Err(error) => {
+                let exec = ToolExecution {
+                    token,
+                    call_id: input.call_id,
+                    root_call_id,
+                    name: input.name,
+                    arguments: input.arguments,
+                    parent: input.parent,
+                    signal: input.signal,
+                };
+                return ScheduledToolPreparation::FinalResult {
+                    exec,
+                    result: result_from_tool_error(&error),
+                };
+            }
         };
         let exec = ToolExecution {
             token,
@@ -227,16 +298,25 @@ impl ToolRuntime {
         let visible = self.tools.contains_key(&exec.name);
         let collapsed = self.collapses(visible, &exec.name, exec.parent.is_none());
         if collapsed && exec.signal.is_aborted() {
-            return aborted_before_dispatch();
+            return ScheduledToolPreparation::FinalResult {
+                exec,
+                result: aborted_before_dispatch(),
+            };
         }
         if collapsed {
-            return result_from_tool_error(&ToolError::UnknownToolHint {
-                name: exec.name.clone(),
-                hint: collapse_hint(&exec.name),
-            });
+            return ScheduledToolPreparation::FinalResult {
+                exec: exec.clone(),
+                result: result_from_tool_error(&ToolError::UnknownToolHint {
+                    name: exec.name.clone(),
+                    hint: collapse_hint(&exec.name),
+                }),
+            };
         }
         if exec.signal.is_aborted() {
-            return aborted_before_dispatch();
+            return ScheduledToolPreparation::FinalResult {
+                exec,
+                result: aborted_before_dispatch(),
+            };
         }
 
         let pre = run_pre(self.pre.clone(), 0, exec.clone()).await;
@@ -245,7 +325,10 @@ impl ToolRuntime {
             other => (other, false),
         };
         if approval_cancelled && exec.signal.is_aborted() {
-            return self.finish_post(&exec, aborted_before_dispatch()).await;
+            return ScheduledToolPreparation::PostResult {
+                exec,
+                result: aborted_before_dispatch(),
+            };
         }
         let denial = match decision {
             PreToolDecision::Allow => self.guard_reason(&exec),
@@ -258,51 +341,96 @@ impl ToolRuntime {
             })),
         };
         if let Some(reason) = denial {
-            return self.finish_post(&exec, deny_result(reason)).await;
+            return ScheduledToolPreparation::PostResult {
+                exec,
+                result: deny_result(reason),
+            };
         }
         if exec.signal.is_aborted() {
-            return self.finish_post(&exec, aborted_before_dispatch()).await;
+            return ScheduledToolPreparation::PostResult {
+                exec,
+                result: aborted_before_dispatch(),
+            };
         }
+        ScheduledToolPreparation::Dispatch { exec }
+    }
 
-        if !self.tools.contains_key(&exec.name) {
-            return self
-                .finish_post(
-                    &exec,
-                    result_from_tool_error(&ToolError::UnknownTool(exec.name.clone())),
-                )
-                .await;
-        }
-        let body = {
-            let tool = self
-                .tools
-                .get(&exec.name)
-                .expect("tool present after contains_key");
-            (tool.execute)(exec.arguments.clone(), exec.clone())
+    /// Run `definition.execute` and render. The future does not borrow `self`.
+    ///
+    /// Call only after [`prepare`](Self::prepare) returned
+    /// [`ScheduledToolPreparation::Dispatch`]. Unknown names fail as a post-result so
+    /// [`finalize`](Self::finalize) still runs. Overlapping callers join these futures
+    /// without holding `&mut ToolRuntime` across the body `.await`.
+    #[must_use]
+    pub fn dispatch(
+        &self,
+        exec: &ToolExecution,
+    ) -> Pin<Box<dyn Future<Output = ScheduledToolDispatch> + Send + 'static>> {
+        let exec = exec.clone();
+        let Some(tool) = self.tools.get(&exec.name) else {
+            let result = result_from_tool_error(&ToolError::UnknownTool(exec.name.clone()));
+            return Box::pin(async move { ScheduledToolDispatch::PostResult { result } });
         };
-        let body_result = match body.await {
-            Ok(value) => {
-                let content = {
-                    let tool = self
-                        .tools
-                        .get(&exec.name)
-                        .expect("tool present after contains_key");
-                    (tool.render)(&exec.arguments, &value)
-                };
-                if exec.signal.is_aborted() {
-                    aborted_after_body()
-                } else {
-                    ToolExecutionResult::Success {
-                        value,
-                        content,
-                        meta: None,
-                        additional_contexts: vec![],
-                        concludes_turn: false,
+        let execute = Arc::clone(&tool.execute);
+        let render = Arc::clone(&tool.render);
+        let body = execute(exec.arguments.clone(), exec.clone());
+        Box::pin(async move {
+            match body.await {
+                Ok(value) => {
+                    if exec.signal.is_aborted() {
+                        ScheduledToolDispatch::PostResult {
+                            result: aborted_after_body(),
+                        }
+                    } else {
+                        let content = render(&exec.arguments, &value);
+                        ScheduledToolDispatch::PostResult {
+                            result: ToolExecutionResult::Success {
+                                value,
+                                content,
+                                meta: None,
+                                additional_contexts: vec![],
+                                concludes_turn: false,
+                            },
+                        }
                     }
                 }
+                Err(error) => ScheduledToolDispatch::PostResult {
+                    result: result_from_tool_error(&error),
+                },
             }
-            Err(error) => result_from_tool_error(&error),
-        };
-        self.finish_post(&exec, body_result).await
+        })
+    }
+
+    /// Run post-execute listeners over `result`.
+    pub async fn finalize(
+        &self,
+        exec: &ToolExecution,
+        result: ToolExecutionResult,
+    ) -> ToolExecutionResult {
+        self.finish_post(exec, result).await
+    }
+
+    /// Run freeze → collapse → pre → approval → guards → body → post.
+    ///
+    /// Composes [`prepare`](Self::prepare), [`dispatch`](Self::dispatch), and
+    /// [`finalize`](Self::finalize). A collapsed model-direct call never reaches
+    /// pre-execute. Exclusive callers may use this for the whole pipeline.
+    pub async fn execute(&mut self, input: ToolExecutionInput) -> ToolExecutionResult {
+        match self.prepare(input).await {
+            ScheduledToolPreparation::Dispatch { exec } => {
+                let dispatched = self.dispatch(&exec).await;
+                match dispatched {
+                    ScheduledToolDispatch::PostResult { result } => {
+                        self.finalize(&exec, result).await
+                    }
+                    ScheduledToolDispatch::FinalResult { result } => result,
+                }
+            }
+            ScheduledToolPreparation::PostResult { exec, result } => {
+                self.finalize(&exec, result).await
+            }
+            ScheduledToolPreparation::FinalResult { result, .. } => result,
+        }
     }
 
     fn collapses(&self, visible: bool, name: &str, model_direct: bool) -> bool {
@@ -855,6 +983,97 @@ mod tests {
             }
             ToolExecutionResult::Success { .. } => panic!("expected unknown"),
         }
+    }
+
+    #[tokio::test]
+    async fn prepare_deny_skips_dispatch_and_assigns_a_real_token() {
+        let mut tools = ToolRuntime::new(ToolPresentationMode::Native);
+        let ran = Arc::new(AtomicUsize::new(0));
+        let ran_body = ran.clone();
+        tools.register(ToolDefinition {
+            name: "echo".into(),
+            description: "echo".into(),
+            parameters: json!({}),
+            execute: Box::new(move |args, _| {
+                ran_body.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move { Ok(args) })
+            }),
+            render: Box::new(|_, _| vec![ContentBlock::Text { text: "ok".into() }]),
+            is_concurrency_safe: Some(Box::new(|_| true)),
+        });
+        let seen_token = Arc::new(AtomicUsize::new(0));
+        let token_slot = seen_token.clone();
+        tools.on_pre(move |exec, _next| {
+            token_slot.store(exec.token.0 as usize, Ordering::SeqCst);
+            Box::pin(async {
+                PreToolDecision::Deny {
+                    reason: "denied by policy".into(),
+                }
+            })
+        });
+        let prepared = tools
+            .prepare(input("echo", json!({"text": "hi"}), AbortFlag::new()))
+            .await;
+        match prepared {
+            crate::ScheduledToolPreparation::PostResult { exec, result } => {
+                assert!(exec.token.0 >= 1);
+                assert_eq!(seen_token.load(Ordering::SeqCst), exec.token.0 as usize);
+                assert!(result.is_error());
+            }
+            other => panic!("expected post-result deny, got {other:?}"),
+        }
+        assert_eq!(ran.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn dispatch_futures_overlap_without_mut_runtime() {
+        let mut tools = ToolRuntime::new(ToolPresentationMode::Native);
+        let live = Arc::new(AtomicUsize::new(0));
+        let max_live = Arc::new(AtomicUsize::new(0));
+        let live_c = live.clone();
+        let max_c = max_live.clone();
+        tools.register(ToolDefinition {
+            name: "p".into(),
+            description: "p".into(),
+            parameters: json!({}),
+            execute: Box::new(move |args, _| {
+                let live_c = live_c.clone();
+                let max_c = max_c.clone();
+                Box::pin(async move {
+                    let n = live_c.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_c.fetch_max(n, Ordering::SeqCst);
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    live_c.fetch_sub(1, Ordering::SeqCst);
+                    Ok(args)
+                })
+            }),
+            render: Box::new(|_, _| vec![ContentBlock::Text { text: "ok".into() }]),
+            is_concurrency_safe: Some(Box::new(|_| true)),
+        });
+        let a = tools
+            .prepare(input("p", json!({"id": 1}), AbortFlag::new()))
+            .await;
+        let b = tools
+            .prepare(input("p", json!({"id": 2}), AbortFlag::new()))
+            .await;
+        let crate::ScheduledToolPreparation::Dispatch { exec: ea } = a else {
+            panic!("expected dispatch");
+        };
+        let crate::ScheduledToolPreparation::Dispatch { exec: eb } = b else {
+            panic!("expected dispatch");
+        };
+        let fa = tools.dispatch(&ea);
+        let fb = tools.dispatch(&eb);
+        let (ra, rb) = tokio::join!(fa, fb);
+        assert!(!matches!(
+            ra,
+            crate::ScheduledToolDispatch::PostResult { result } if result.is_error()
+        ));
+        assert!(!matches!(
+            rb,
+            crate::ScheduledToolDispatch::PostResult { result } if result.is_error()
+        ));
+        assert!(max_live.load(Ordering::SeqCst) >= 2);
     }
 
     #[tokio::test]

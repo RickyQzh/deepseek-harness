@@ -8,9 +8,9 @@ use dsh_session::{
     SurfaceOp, ToolCallData, ToolResultData, ToolResultError,
 };
 use dsh_tools::{
-    AbortFlag, TOOL_ABORTED, TOOL_ABORTED_BEFORE_DISPATCH, ToolError, ToolErrorInfo, ToolExecution,
-    ToolExecutionInput, ToolExecutionMode, ToolExecutionResult, ToolExecutionToken, ToolFailure,
-    ToolRuntime, freeze_args_from_raw,
+    AbortFlag, ScheduledToolDispatch, ScheduledToolPreparation, TOOL_ABORTED_BEFORE_DISPATCH,
+    ToolErrorInfo, ToolExecution, ToolExecutionInput, ToolExecutionMode, ToolExecutionResult,
+    ToolFailure, ToolRuntime, freeze_args_from_raw,
 };
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
@@ -18,8 +18,9 @@ use serde_json::Value;
 
 use crate::error::LoopError;
 
-type BodyFuture = Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send>>;
-type InFlightFuture = Pin<Box<dyn Future<Output = (usize, Result<Value, ToolError>)> + Send>>;
+type DispatchFuture = Pin<Box<dyn Future<Output = ScheduledToolDispatch> + Send>>;
+type InFlightFuture =
+    Pin<Box<dyn Future<Output = (usize, ToolExecution, ScheduledToolDispatch)> + Send>>;
 
 /// Whether the scheduled calls ended the turn or stopped on abort.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -46,12 +47,15 @@ struct GroupOutcome {
 /// Schedule one assistant step's tool-call blocks in model order.
 ///
 /// Exclusive calls are a barrier of one and run the full tool pipeline.
-/// Parallel-safe calls share a pool of `max_parallel` in-flight bodies; a later
-/// sibling is reclassified before start, and an exclusive reclassification
-/// stops replenishing the pool. Abort stops new starts, drains in-flight
-/// bodies, and appends synthetic `ABORTED_BEFORE_DISPATCH` results for
-/// not-started calls. Committed results stay in model order; additional
-/// contexts are handed to `accept_context`.
+/// Parallel-safe calls run [`ToolRuntime::prepare`] serially on `&mut ToolRuntime`
+/// (pre / approval / guards, collapse, abort-before-body, real tokens), then
+/// join [`ToolRuntime::dispatch`] futures without holding `&mut ToolRuntime`
+/// across the body `.await`, then [`ToolRuntime::finalize`]. A later sibling
+/// is reclassified before start, and an exclusive reclassification stops
+/// replenishing the pool. Abort stops new starts, drains in-flight bodies, and
+/// appends synthetic `ABORTED_BEFORE_DISPATCH` results for not-started calls.
+/// Committed results stay in model order; additional contexts are handed to
+/// `accept_context`.
 ///
 /// # Errors
 ///
@@ -173,14 +177,21 @@ async fn run_group(
                 }
             }
             let index = next_to_start;
-            call_seqs[index] = append_tool_call(session, turn, step, &group[index])?;
+            call_seqs[index] = match append_tool_call(session, turn, step, &group[index]) {
+                Ok(seq) => seq,
+                Err(error) => {
+                    drain_in_flight(&mut in_flight).await;
+                    return Err(error);
+                }
+            };
             started += 1;
             next_to_start += 1;
             if mode == ToolExecutionMode::Parallel {
-                if let Some(body) = parallel_body(tools, &group[index], signal) {
-                    in_flight.push(Box::pin(async move { (index, body.await) }));
-                } else {
-                    slots[index] = Some(tools.execute(planned_input(&group[index], signal)).await);
+                match start_parallel(tools, &group[index], signal).await {
+                    StartKind::InFlight { exec, body } => {
+                        in_flight.push(Box::pin(async move { (index, exec, body.await) }));
+                    }
+                    StartKind::Ready(result) => slots[index] = Some(result),
                 }
             } else {
                 slots[index] = Some(tools.execute(planned_input(&group[index], signal)).await);
@@ -188,7 +199,7 @@ async fn run_group(
             if signal.is_aborted() {
                 aborted = true;
             }
-            commit_ready(
+            if let Err(error) = commit_ready(
                 session,
                 turn,
                 step,
@@ -198,20 +209,23 @@ async fn run_group(
                 &mut committed,
                 &mut concluded,
                 accept_context,
-            )?;
+            ) {
+                drain_in_flight(&mut in_flight).await;
+                return Err(error);
+            }
         }
 
         if in_flight.is_empty() {
             break;
         }
-        let Some((index, body)) = in_flight.next().await else {
+        let Some((index, exec, dispatched)) = in_flight.next().await else {
             break;
         };
-        slots[index] = Some(materialize(tools, &group[index], body, signal));
+        slots[index] = Some(settle_dispatch(tools, &exec, dispatched).await);
         if signal.is_aborted() {
             aborted = true;
         }
-        commit_ready(
+        if let Err(error) = commit_ready(
             session,
             turn,
             step,
@@ -221,7 +235,10 @@ async fn run_group(
             &mut committed,
             &mut concluded,
             accept_context,
-        )?;
+        ) {
+            drain_in_flight(&mut in_flight).await;
+            return Err(error);
+        }
     }
 
     if aborted {
@@ -241,49 +258,45 @@ async fn run_group(
     })
 }
 
-fn parallel_body(
-    tools: &ToolRuntime,
-    call: &PlannedCall,
-    signal: &AbortFlag,
-) -> Option<BodyFuture> {
-    let def = tools.get(&call.name)?;
-    let exec = ToolExecution {
-        token: ToolExecutionToken(0),
-        call_id: call.id.clone(),
-        root_call_id: call.id.clone(),
-        name: call.name.clone(),
-        arguments: call.arguments.clone(),
-        parent: None,
-        signal: signal.clone(),
-    };
-    Some((def.execute)(call.arguments.clone(), exec))
+enum StartKind {
+    InFlight {
+        exec: ToolExecution,
+        body: DispatchFuture,
+    },
+    Ready(ToolExecutionResult),
 }
 
-fn materialize(
-    tools: &ToolRuntime,
+async fn start_parallel(
+    tools: &mut ToolRuntime,
     call: &PlannedCall,
-    body: Result<Value, ToolError>,
     signal: &AbortFlag,
-) -> ToolExecutionResult {
-    match body {
-        Ok(value) => {
-            if signal.is_aborted() {
-                return aborted_after_body();
-            }
-            let content = tools
-                .get(&call.name)
-                .map(|tool| (tool.render)(&call.arguments, &value))
-                .unwrap_or_default();
-            ToolExecutionResult::Success {
-                value,
-                content,
-                meta: None,
-                additional_contexts: vec![],
-                concludes_turn: false,
-            }
+) -> StartKind {
+    let prepared = tools.prepare(planned_input(call, signal)).await;
+    match prepared {
+        ScheduledToolPreparation::Dispatch { exec } => {
+            let body = tools.dispatch(&exec);
+            StartKind::InFlight { exec, body }
         }
-        Err(error) => result_from_tool_error(&error),
+        ScheduledToolPreparation::PostResult { exec, result } => {
+            StartKind::Ready(tools.finalize(&exec, result).await)
+        }
+        ScheduledToolPreparation::FinalResult { result, .. } => StartKind::Ready(result),
     }
+}
+
+async fn settle_dispatch(
+    tools: &ToolRuntime,
+    exec: &ToolExecution,
+    dispatched: ScheduledToolDispatch,
+) -> ToolExecutionResult {
+    match dispatched {
+        ScheduledToolDispatch::PostResult { result } => tools.finalize(exec, result).await,
+        ScheduledToolDispatch::FinalResult { result } => result,
+    }
+}
+
+async fn drain_in_flight(in_flight: &mut FuturesUnordered<InFlightFuture>) {
+    while in_flight.next().await.is_some() {}
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -456,52 +469,14 @@ fn aborted_before_dispatch() -> ToolExecutionResult {
     }
 }
 
-fn aborted_after_body() -> ToolExecutionResult {
-    ToolExecutionResult::Failure {
-        error: ToolFailure {
-            message: "tool call aborted".into(),
-            info: Some(ToolErrorInfo {
-                name: "AbortError".into(),
-                code: TOOL_ABORTED.into(),
-            }),
-        },
-        content: vec![ContentBlock::Text {
-            text: "Error: tool call aborted".into(),
-        }],
-        meta: None,
-        additional_contexts: vec![],
-    }
-}
-
-fn result_from_tool_error(error: &ToolError) -> ToolExecutionResult {
-    let message = error.to_string();
-    let info = match error {
-        ToolError::UnknownTool(_) | ToolError::UnknownToolHint { .. } => Some(ToolErrorInfo {
-            name: "ToolNotFoundError".into(),
-            code: "UNKNOWN_TOOL".into(),
-        }),
-        ToolError::ArgsNotJson | ToolError::Other(_) => None,
-    };
-    ToolExecutionResult::Failure {
-        error: ToolFailure {
-            message: message.clone(),
-            info,
-        },
-        content: vec![ContentBlock::Text {
-            text: format!("Error: {message}"),
-        }],
-        meta: None,
-        additional_contexts: vec![],
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{ToolCallsOutcome, execute_tool_calls};
     use crate::test_header;
     use dsh_session::{CallId, ContentBlock, LogEvent, Session, SessionEvent};
     use dsh_tools::{
-        AbortFlag, TOOL_ABORTED_BEFORE_DISPATCH, ToolDefinition, ToolPresentationMode, ToolRuntime,
+        AbortFlag, PreToolDecision, TOOL_ABORTED_BEFORE_DISPATCH, ToolDefinition,
+        ToolPresentationMode, ToolRuntime,
     };
     use serde_json::json;
     use std::sync::Arc;
@@ -627,5 +602,78 @@ mod tests {
         .unwrap();
         assert!(!outcome.aborted);
         assert_eq!(max_live.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn parallel_pre_deny_skips_the_body() {
+        let mut session = Session::new(test_header("deny"));
+        let mut tools = ToolRuntime::new(ToolPresentationMode::Native);
+        let ran = Arc::new(AtomicUsize::new(0));
+        let ran_body = ran.clone();
+        let seen_token = Arc::new(AtomicUsize::new(0));
+        let token_slot = seen_token.clone();
+        tools.register(ToolDefinition {
+            name: "par".into(),
+            description: "parallel".into(),
+            parameters: json!({"type": "object"}),
+            execute: Box::new(move |args, _exec| {
+                ran_body.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move { Ok(args) })
+            }),
+            render: Box::new(|_, v| {
+                vec![ContentBlock::Text {
+                    text: v.to_string(),
+                }]
+            }),
+            is_concurrency_safe: Some(Box::new(|_| true)),
+        });
+        tools.on_pre(move |exec, _next| {
+            token_slot.store(exec.token.0 as usize, Ordering::SeqCst);
+            Box::pin(async {
+                PreToolDecision::Deny {
+                    reason: "denied by policy".into(),
+                }
+            })
+        });
+        let blocks = vec![
+            tool_call("c1", "par", json!({"id": "a"})),
+            tool_call("c2", "par", json!({"id": "b"})),
+        ];
+        let mut extra = Vec::new();
+        let outcome = execute_tool_calls(
+            &mut session,
+            &mut tools,
+            1,
+            1,
+            &blocks,
+            &AbortFlag::new(),
+            10,
+            &mut |message| extra.push(message),
+        )
+        .await
+        .unwrap();
+        assert!(!outcome.aborted);
+        assert_eq!(ran.load(Ordering::SeqCst), 0);
+        assert!(seen_token.load(Ordering::SeqCst) >= 1);
+        let texts: Vec<_> = session
+            .events()
+            .iter()
+            .filter_map(|event| match event {
+                LogEvent::Known(SessionEvent::ToolResult { data, .. }) => {
+                    data.message.content.iter().find_map(|block| match block {
+                        ContentBlock::ToolResult { content, .. } => {
+                            content.iter().find_map(|inner| match inner {
+                                ContentBlock::Text { text } => Some(text.clone()),
+                                _ => None,
+                            })
+                        }
+                        _ => None,
+                    })
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts.len(), 2);
+        assert!(texts.iter().all(|text| text == "Error: denied by policy"));
     }
 }

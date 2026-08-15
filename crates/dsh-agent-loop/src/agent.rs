@@ -470,6 +470,7 @@ impl LoopAgent {
             }
         }
         let reason = turn_ends.unwrap_or(TurnEndReason::Completed);
+        let aborted_turn = self.is_aborted() || matches!(reason, TurnEndReason::Aborted { .. });
         let end_result = self.push_event(|seq| SessionEvent::TurnEnd {
             seq,
             time: seq as i64,
@@ -478,6 +479,9 @@ impl LoopAgent {
         });
         body?;
         end_result?;
+        if aborted_turn {
+            return Ok(false);
+        }
         if !self.inbox.has_pending() {
             return Ok(false);
         }
@@ -523,6 +527,9 @@ impl LoopAgent {
                         *turn_ends = Some(TurnEndReason::Completed);
                         return Ok(());
                     }
+                    if turn_ends.is_some() && messages.is_empty() {
+                        break;
+                    }
                     let step = match &mut self.phase {
                         Phase::Running { step, .. } => {
                             *step += 1;
@@ -565,8 +572,8 @@ impl LoopAgent {
                         .map(|reason| !matches!(reason, TurnEndReason::MaxTokens))
                         .unwrap_or(true)
                     {
-                        if let Some(end) = step_end {
-                            *turn_ends = Some(end);
+                        if let Some(ref end) = step_end {
+                            *turn_ends = Some(end.clone());
                         }
                     }
                     if self.is_aborted() {
@@ -575,7 +582,10 @@ impl LoopAgent {
                         });
                         return Ok(());
                     }
-                    if turn_ends.is_some() && self.inbox.next_step().is_empty() {
+                    if turn_ends.is_some()
+                        && self.inbox.next_step().is_empty()
+                        && !matches!(step_end, Some(TurnEndReason::MaxTokens))
+                    {
                         break;
                     }
                     target = InboxTarget::NextStep;
@@ -1167,12 +1177,8 @@ mod tests {
             }
         });
         agent.followup(user_text("m1", "go")).unwrap();
-        // After step 1 max-tokens the turn would stop unless next-step is filled.
-        // Steer a continuation before run so step 2 is admitted on next-step.
-        agent
-            .steer(user_text("cont-pre", "continue after truncation"))
-            .unwrap();
         agent.run_until_idle().await.unwrap();
+        assert_eq!(n.load(Ordering::SeqCst), 2);
         let reasons: Vec<_> = agent
             .session
             .events()
