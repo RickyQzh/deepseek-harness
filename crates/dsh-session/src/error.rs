@@ -21,6 +21,12 @@ pub enum SessionError {
     /// Malformed known event or storage row.
     #[error("{0}")]
     Corrupt(String),
+    /// Surface eligibility, provenance, range, or tool-result rewrite failure.
+    #[error("{0}")]
+    Surface(String),
+    /// Event `seq` is not the next contiguous log index.
+    #[error("{0}")]
+    Append(String),
 }
 
 /// Direction-aware refusal text for a stored session whose format version this build does not read.

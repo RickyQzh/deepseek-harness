@@ -8,6 +8,8 @@ mod event;
 mod header;
 mod ids;
 mod message;
+mod session;
+mod surface;
 
 pub use catalog::{KNOWN_SESSION_EVENT_TYPES, is_known_session_event_type};
 pub use chunk_rows::{
@@ -30,3 +32,5 @@ pub use message::{
     StreamChunk, TokenUsage, ToolCallData, ToolResultData, TurnEndData, TurnEndReason,
     TurnStartData,
 };
+pub use session::Session;
+pub use surface::{SurfaceFoldReplacement, SurfaceFoldResult, derive_event_message, fold_surface};
