@@ -19,3 +19,4 @@ DeepSeek Harness 宿主进程的 Rust workspace 成员。布局、保留/放弃�
 | [`dsh-system-prompt`](dsh-system-prompt/README.md) | 有序系统提示词段落、运行时上下文快照，以及严格的 `{{var}}` 插值。 |
 | [`dsh-credentials`](dsh-credentials/README.md) | 按次解析 POSIX 凭据引用（环境、YAML 映射、内存）。 |
 | [`dsh-llm`](dsh-llm/README.md) | 提供方无关的 LLM（大语言模型）流契约、块组装器与 mock 适配器。 |
+| [`dsh-llm-deepseek`](dsh-llm-deepseek/README.md) | DeepSeek `POST /chat/completions` SSE（Server-Sent Events）适配器：序列化、翻译、按次密钥、空闲超时。 |
