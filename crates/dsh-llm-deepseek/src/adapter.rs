@@ -1,9 +1,11 @@
 //! DeepSeek HTTP SSE adapter.
 //!
 //! [`DeepSeekAdapter::stream`] yields [`Result`](std::result::Result) chunks.
-//! Idle-timeout is mapped to `Ok(Finish { Error { code: TIMEOUT } })` inside
-//! this adapter so a direct consumer (without [`dsh_llm::LlmRuntime`]) still
-//! observes a terminal finish. Unexpected transport errors remain `Err` for the
+//! Idle-timeout and non-success HTTP statuses are mapped to
+//! `Ok(Finish { Error { .. } })` inside this adapter so a direct consumer
+//! (without [`dsh_llm::LlmRuntime`]) still observes a terminal finish. Caller
+//! abort remains `Err` with code `ABORTED` so the runtime wrap can emit
+//! [`FinishReason::Aborted`]. Unexpected transport errors remain `Err` for the
 //! runtime wrap.
 
 use std::pin::Pin;
@@ -147,7 +149,7 @@ fn request_headers(
     Ok(headers)
 }
 
-fn finish_timeout(error: LlmError) -> StreamChunk {
+fn finish_error(error: LlmError) -> StreamChunk {
     StreamChunk::Finish {
         reason: FinishReason::Error {
             failure: error.failure(),
@@ -161,7 +163,10 @@ fn as_stream_items(
 ) -> Vec<Result<StreamChunk, LlmError>> {
     match result {
         Ok(chunks) => chunks.into_iter().map(Ok).collect(),
-        Err(error) if error.code == "TIMEOUT" => vec![Ok(finish_timeout(error))],
+        Err(error) if error.code == "ABORTED" => vec![Err(error)],
+        Err(error) if error.code == "TIMEOUT" || error.status.is_some() => {
+            vec![Ok(finish_error(error))]
+        }
         Err(error) => vec![Err(error)],
     }
 }
@@ -542,6 +547,52 @@ mod tests {
                 ..
             }) => {
                 assert_eq!(failure.code, "TIMEOUT");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn http_unauthorized_is_auth_finish() {
+        let (base, _) = spawn_sse(401, "", Duration::ZERO).await;
+        let adapter = DeepSeekAdapter::new(
+            move || DeepSeekConnectionOptions {
+                base_url: base.clone(),
+                api_key_env: credential_ref("PHASE3_DS_KEY").unwrap(),
+                defaults: RequestDefaults::default(),
+                max_tokens: 256_000,
+                default_context_window: 1_000_000,
+                stream_idle_timeout: Duration::from_secs(5),
+            },
+            |_| Ok("sk-auth".into()),
+            "anon-1",
+        );
+        let options = GenerateOptions {
+            provider: "deepseek".into(),
+            model: "deepseek-chat".into(),
+            reasoning_effort: None,
+            messages: user_hi(),
+            system: None,
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+            stop: None,
+            signal: AbortFlag::new(),
+            session_id: None,
+            purpose: None,
+        };
+        let mut stream = adapter.stream(options);
+        let mut last = None;
+        while let Some(chunk) = stream.next().await {
+            last = Some(chunk.unwrap());
+        }
+        match last {
+            Some(StreamChunk::Finish {
+                reason: FinishReason::Error { failure },
+                ..
+            }) => {
+                assert_eq!(failure.code, "AUTH");
+                assert_eq!(failure.status, Some(401));
             }
             other => panic!("{other:?}"),
         }
