@@ -550,4 +550,117 @@ mod tests {
                 .contains("must rewrite exactly one current node")
         );
     }
+
+    /// Same rest fields across seqs so only inner `content` or an explicit rest patch differs.
+    fn rewriteable_tool_result(
+        seq: u64,
+        call_id: &str,
+        content_text: &str,
+        is_error: Option<bool>,
+        meta: Option<serde_json::Value>,
+        surface_op: SurfaceOp,
+        source_event_seqs: Option<Vec<u64>>,
+    ) -> SessionEvent {
+        SessionEvent::ToolResult {
+            seq,
+            time: seq as i64,
+            data: ToolResultData {
+                turn: 1,
+                step: 1,
+                message: Message {
+                    id: MessageId::new("tr-stable"),
+                    role: MessageRole::User,
+                    content: vec![ContentBlock::ToolResult {
+                        tool_call_id: CallId::new(call_id),
+                        content: vec![ContentBlock::Text {
+                            text: content_text.into(),
+                        }],
+                        is_error,
+                    }],
+                    source: MessageSource::Tool {
+                        call_id: CallId::new(call_id),
+                    },
+                },
+                error: None,
+                meta,
+            },
+            surface_op: Some(surface_op),
+            source_event_seqs,
+            ignorable: None,
+        }
+    }
+
+    fn tool_result_rewrite_pair(replacement_content: &str) -> (SessionEvent, SessionEvent) {
+        (
+            rewriteable_tool_result(0, "call", "old", Some(false), None, SurfaceOp::Append, None),
+            rewriteable_tool_result(
+                1,
+                "call",
+                replacement_content,
+                Some(false),
+                None,
+                SurfaceOp::Replace { start: 0, end: 0 },
+                Some(vec![0]),
+            ),
+        )
+    }
+
+    #[test]
+    fn tool_result_replace_must_target_a_current_tool_result() {
+        let events = vec![
+            user(0, "a"),
+            tool_result(
+                1,
+                "rewrite",
+                SurfaceOp::Replace { start: 0, end: 0 },
+                Some(vec![0]),
+            ),
+        ];
+        let error = fold_surface(&events).expect_err("non-result target");
+        assert!(
+            error
+                .to_string()
+                .contains("must target a current tool/result")
+        );
+    }
+
+    fn assert_tool_result_rest_drift(patch: impl FnOnce(&mut ToolResultData)) {
+        let (original, mut replacement) = tool_result_rewrite_pair("old");
+        let SessionEvent::ToolResult { data, .. } = &mut replacement else {
+            panic!("replacement is a tool/result");
+        };
+        patch(data);
+        let error = fold_surface(&[original, replacement]).expect_err("rest-field drift");
+        assert!(error.to_string().contains("may change only content"));
+    }
+
+    #[test]
+    fn tool_result_replace_may_change_only_content() {
+        assert_tool_result_rest_drift(|data| {
+            if let Some(ContentBlock::ToolResult { tool_call_id, .. }) =
+                data.message.content.first_mut()
+            {
+                *tool_call_id = CallId::new("other");
+            }
+        });
+        assert_tool_result_rest_drift(|data| {
+            if let Some(ContentBlock::ToolResult { is_error, .. }) =
+                data.message.content.first_mut()
+            {
+                *is_error = Some(true);
+            }
+        });
+        assert_tool_result_rest_drift(|data| {
+            data.meta = Some(serde_json::json!({ "k": 1 }));
+        });
+    }
+
+    #[test]
+    fn tool_result_replace_accepts_content_only_rewrite() {
+        let (original, replacement) = tool_result_rewrite_pair("rewritten");
+        let folded = fold_surface(&[original, replacement]).expect("content-only rewrite");
+        assert_eq!(folded.nodes, vec![1]);
+        assert_eq!(folded.replacements.len(), 1);
+        assert_eq!(folded.replacements[0].shadowed_seqs, vec![0]);
+    }
 }
