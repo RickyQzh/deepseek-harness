@@ -14,3 +14,4 @@ DeepSeek Harness 宿主进程的 Rust workspace 成员。布局、保留/放弃�
 | [`dsh-schema`](dsh-schema/README.md) | 插件配置 schema + Settings UI 的 JSON Schema。 |
 | [`dsh-compose`](dsh-compose/README.md) | 封闭 YAML 方言：插值器、补丁、层序、disabled 谓词。 |
 | [`dsh-session`](dsh-session/README.md) | 会话 id、封闭 `SessionEvent` 枚举、surface、derive、修复、chunk 行。 |
+| [`dsh-session-persist`](dsh-session-persist/README.md) | JSONL + zstd 会话编解码（SQLite 稍后）。 |
