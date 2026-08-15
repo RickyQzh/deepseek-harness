@@ -88,6 +88,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-agent-loop"
+version = "0.1.0"
+dependencies = [
+ "dsh-llm",
+ "dsh-session",
+ "dsh-system-prompt",
+ "dsh-tools",
+ "futures",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "dsh-brand"
 version = "0.1.0"
 
