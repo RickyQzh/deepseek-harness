@@ -2,12 +2,12 @@
 
 use std::future::Future;
 
-use dsh_llm::{BlockAssembler, GenerateOptions, LlmRuntime, ToolSchema};
+use dsh_llm::{BlockAssembler, GenerateOptions, LlmRuntime};
 use dsh_session::{
     AssistantChunkData, AssistantMessageData, ContentBlock, EpochHeader, FinishReason, InboxTarget,
     LlmCallConfig, LlmFailure, LogEvent, Message, RequestHeaderData, RequestHeaderReason, Session,
     SessionEvent, SessionId, StepBoundaryData, StreamChunk, SurfaceOp, TurnEndData, TurnEndReason,
-    TurnStartData, canonical_header,
+    TurnStartData, canonical_header, header_equals,
 };
 use dsh_system_prompt::{
     AssembleContext, PromptAssembly, SystemPrompt, join_context_sections, render_context_sections,
@@ -128,6 +128,23 @@ impl Default for LoopOptions {
             max_parallel_tool_calls: DEFAULT_MAX_PARALLEL_TOOL_CALLS,
         }
     }
+}
+
+/// Drop adapter-default `reasoning_effort` and `max_tokens` before the next seed.
+fn request_proposal(header: &EpochHeader) -> LlmCallConfig {
+    let mut proposal = header.config.clone();
+    if header
+        .adapter_defaults
+        .as_ref()
+        .and_then(|d| d.reasoning_effort)
+        == Some(true)
+    {
+        proposal.reasoning_effort = None;
+    }
+    if header.adapter_defaults.as_ref().and_then(|d| d.max_tokens) == Some(true) {
+        proposal.max_tokens = None;
+    }
+    proposal
 }
 
 /// Scripted driver over one session's inbox, prompt, tools, and LLM runtime.
@@ -665,7 +682,12 @@ impl LoopAgent {
                     reason: self.cancel_reason_json(),
                 }));
             }
-            let request = self.build_request(assembly)?;
+            let system =
+                render_prompt(assembly).map_err(|error| LoopError::Prompt(error.to_string()))?;
+            let boundary_messages = self.session.derive_messages();
+            let request = self
+                .build_request(turn, step, &assembly.tools, &system, boundary_messages)
+                .await?;
             let provider = request.provider.clone();
             let model = request.model.clone();
             let chunks = self.collect_stream(request).await;
@@ -752,36 +774,66 @@ impl LoopAgent {
         }
     }
 
-    fn build_request(&mut self, assembly: &PromptAssembly) -> Result<GenerateOptions, LoopError> {
-        let system =
-            render_prompt(assembly).map_err(|error| LoopError::Prompt(error.to_string()))?;
-        let messages = self.session.derive_messages();
-        let mut config = LlmCallConfig {
-            provider: self.options.provider.clone(),
-            model: self.options.model.clone(),
-            reasoning_effort: None,
-            temperature: None,
-            max_tokens: self.options.max_tokens,
-            stop: None,
+    /// Compose one frozen request from step-boundary messages and the header fold.
+    async fn build_request(
+        &mut self,
+        turn: u64,
+        step: u64,
+        tools: &[dsh_llm::ToolSchema],
+        system: &str,
+        boundary_messages: Vec<Message>,
+    ) -> Result<GenerateOptions, LoopError> {
+        let _ = (turn, step);
+        let mut config = if self.request_header_logged {
+            request_proposal(&self.session.request_header().unwrap())
+        } else {
+            let persisted = self.session.request_header();
+            let reasoning_effort = persisted.as_ref().and_then(|header| {
+                if header.config.provider == self.options.provider
+                    && header.config.model == self.options.model
+                    && header
+                        .adapter_defaults
+                        .as_ref()
+                        .and_then(|defaults| defaults.reasoning_effort)
+                        != Some(true)
+                {
+                    header.config.reasoning_effort.clone()
+                } else {
+                    None
+                }
+            });
+            LlmCallConfig {
+                provider: self.options.provider.clone(),
+                model: self.options.model.clone(),
+                reasoning_effort,
+                temperature: None,
+                max_tokens: self.options.max_tokens,
+                stop: None,
+            }
         };
         for listener in &self.on_request {
             config = listener(&config);
         }
-        let (config, adapter_defaults) = match self.llm.prepare_call(&config) {
-            Ok(prepared) => (prepared.config, Some(prepared.adapter_defaults)),
-            Err(_) => (config, None),
-        };
+        let prepared = self
+            .llm
+            .prepare_call(&config)
+            .map_err(|error| LoopError::Invalid(error.to_string()))?;
         let header = canonical_header(&EpochHeader {
-            config: config.clone(),
-            adapter_defaults,
-            system: (!system.is_empty()).then_some(system),
-            tools: tools_json(&assembly.tools),
-        });
-        if !self.request_header_logged {
-            let reason = if self.session.request_header().is_some() {
-                RequestHeaderReason::Resume
+            config: prepared.config.clone(),
+            adapter_defaults: Some(prepared.adapter_defaults),
+            system: (!system.is_empty()).then(|| system.to_string()),
+            tools: if tools.is_empty() {
+                None
             } else {
+                serde_json::to_value(tools).ok()
+            },
+        });
+        let baseline = self.session.request_header();
+        if !self.request_header_logged {
+            let reason = if baseline.is_none() {
                 RequestHeaderReason::Initial
+            } else {
+                RequestHeaderReason::Resume
             };
             self.push_event(|seq| SessionEvent::RequestHeader {
                 seq,
@@ -793,6 +845,19 @@ impl LoopAgent {
                 ignorable: None,
             })?;
             self.request_header_logged = true;
+        } else if baseline
+            .as_ref()
+            .is_none_or(|baseline| !header_equals(baseline, &header))
+        {
+            self.push_event(|seq| SessionEvent::RequestHeader {
+                seq,
+                time: seq as i64,
+                data: RequestHeaderData {
+                    header: header.clone(),
+                    reason: RequestHeaderReason::Change,
+                },
+                ignorable: None,
+            })?;
         }
         let signal = match &self.phase {
             Phase::Running { abort, .. } | Phase::Maintenance { abort, .. } => abort.clone(),
@@ -802,14 +867,14 @@ impl LoopAgent {
             provider: header.config.provider.clone(),
             model: header.config.model.clone(),
             reasoning_effort: header.config.reasoning_effort.clone(),
-            messages,
+            messages: boundary_messages,
             system: header.system.clone(),
-            tools: (!assembly.tools.is_empty()).then(|| assembly.tools.clone()),
+            tools: (!tools.is_empty()).then(|| tools.to_vec()),
             temperature: header.config.temperature,
             max_tokens: header.config.max_tokens,
             stop: header.config.stop.clone(),
             signal,
-            session_id: Some(self.id.clone()),
+            session_id: Some(self.session.id().clone()),
             purpose: None,
         })
     }
@@ -902,24 +967,6 @@ fn last_turn_from(session: &Session) -> u64 {
             _ => None,
         })
         .unwrap_or(0)
-}
-
-fn tools_json(tools: &[ToolSchema]) -> Option<serde_json::Value> {
-    if tools.is_empty() {
-        return None;
-    }
-    Some(serde_json::Value::Array(
-        tools
-            .iter()
-            .map(|tool| {
-                serde_json::json!({
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.parameters,
-                })
-            })
-            .collect(),
-    ))
 }
 
 #[cfg(test)]
@@ -1454,5 +1501,198 @@ mod tests {
             max_live.load(Ordering::SeqCst) >= 2,
             "parallel siblings must overlap"
         );
+    }
+
+    mod reconstruction {
+        use super::{LoopAgent, LoopOptions, harness, test_header, user_text};
+        use dsh_llm::{
+            GenerateOptions, LlmRuntime, MockAdapter, MockScript, text_response, tool_call_response,
+        };
+        use dsh_session::{RequestHeaderReason, Session};
+        use dsh_system_prompt::{SystemPrompt, SystemPromptConfig};
+        use dsh_tools::ToolRuntime;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        fn expect_prefix_extension(previous: &GenerateOptions, current: &GenerateOptions) {
+            assert!(current.messages.len() > previous.messages.len());
+            assert_eq!(
+                &current.messages[..previous.messages.len()],
+                previous.messages.as_slice()
+            );
+            assert_eq!(current.system, previous.system);
+            assert_eq!(current.tools, previous.tools);
+        }
+
+        #[tokio::test]
+        async fn each_step_request_append_extends_the_previous() {
+            use dsh_tools::{ToolDefinition, ToolPresentationMode};
+            use serde_json::json;
+            let adapter = Arc::new(MockAdapter::new(vec![
+                MockScript::Chunks(tool_call_response(
+                    "c1",
+                    "echo",
+                    &json!({"text":"one"}),
+                    Some("first"),
+                )),
+                MockScript::Chunks(tool_call_response(
+                    "c2",
+                    "echo",
+                    &json!({"text":"two"}),
+                    Some("second"),
+                )),
+                MockScript::Chunks(text_response("done")),
+            ]));
+            let mut llm = LlmRuntime::new();
+            llm.register_adapter("mock", adapter.clone());
+            let mut tools = ToolRuntime::new(ToolPresentationMode::Native);
+            tools.register(ToolDefinition {
+                name: "echo".into(),
+                description: "echo back".into(),
+                parameters: json!({"type": "object"}),
+                execute: Box::new(|args, _exec| {
+                    Box::pin(async move { Ok(args.get("text").cloned().unwrap_or(json!(""))) })
+                }),
+                render: Box::new(|_args, value| {
+                    vec![dsh_session::ContentBlock::Text {
+                        text: format!("echo: {}", value.as_str().unwrap_or("")),
+                    }]
+                }),
+                is_concurrency_safe: None,
+            });
+            let mut agent = LoopAgent::new(
+                Session::new(test_header("a1")),
+                LoopOptions {
+                    provider: "mock".into(),
+                    model: "mock".into(),
+                    max_tokens: None,
+                    max_parallel_tool_calls: 10,
+                },
+                tools,
+                SystemPrompt::new(SystemPromptConfig {
+                    persona: "stable base".into(),
+                    ..SystemPromptConfig::default()
+                })
+                .unwrap(),
+                llm,
+            )
+            .unwrap();
+            agent.followup(user_text("m1", "go")).unwrap();
+            agent.run_until_idle().await.unwrap();
+            let requests = adapter.requests.lock().unwrap().clone();
+            assert_eq!(requests.len(), 3);
+            expect_prefix_extension(&requests[0], &requests[1]);
+            expect_prefix_extension(&requests[1], &requests[2]);
+            let headers: Vec<_> = agent
+                .session
+                .events()
+                .iter()
+                .filter_map(|e| match e {
+                    dsh_session::LogEvent::Known(dsh_session::SessionEvent::RequestHeader {
+                        data,
+                        ..
+                    }) => Some(data.reason.clone()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(headers, vec![RequestHeaderReason::Initial]);
+            assert!(requests[1].messages.iter().any(|m| {
+                m.content
+                    .iter()
+                    .any(|b| matches!(b, dsh_session::ContentBlock::ToolResult { .. }))
+            }));
+        }
+
+        #[tokio::test]
+        async fn later_turn_append_extends_the_previous_turn() {
+            let (mut agent, adapter) = harness(vec![
+                MockScript::Chunks(text_response("one")),
+                MockScript::Chunks(text_response("two")),
+            ]);
+            agent.followup(user_text("m1", "first")).unwrap();
+            agent.run_until_idle().await.unwrap();
+            agent.followup(user_text("m2", "second")).unwrap();
+            agent.run_until_idle().await.unwrap();
+            let requests = adapter.requests.lock().unwrap().clone();
+            assert_eq!(requests.len(), 2);
+            expect_prefix_extension(&requests[0], &requests[1]);
+        }
+
+        #[tokio::test]
+        async fn header_change_is_logged_when_the_canonical_header_differs() {
+            let (mut agent, adapter) = harness(vec![
+                MockScript::Chunks(text_response("one")),
+                MockScript::Chunks(text_response("two")),
+            ]);
+            let n = Arc::new(AtomicUsize::new(0));
+            agent.on_request({
+                let n = n.clone();
+                move |config| {
+                    let count = n.fetch_add(1, Ordering::SeqCst) + 1;
+                    let mut next = config.clone();
+                    if count >= 2 {
+                        next.model = "other".into();
+                    }
+                    next
+                }
+            });
+            agent.followup(user_text("m1", "first")).unwrap();
+            agent.run_until_idle().await.unwrap();
+            agent.followup(user_text("m2", "second")).unwrap();
+            agent.run_until_idle().await.unwrap();
+            let reasons: Vec<_> = agent
+                .session
+                .events()
+                .iter()
+                .filter_map(|e| match e {
+                    dsh_session::LogEvent::Known(dsh_session::SessionEvent::RequestHeader {
+                        data,
+                        ..
+                    }) => Some(data.reason.clone()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                reasons,
+                vec![RequestHeaderReason::Initial, RequestHeaderReason::Change]
+            );
+            assert_eq!(adapter.requests.lock().unwrap()[1].model, "other");
+        }
+
+        #[tokio::test]
+        async fn adapter_default_max_tokens_is_marked_and_stripped_from_the_next_proposal() {
+            let adapter = Arc::new(
+                MockAdapter::new(vec![
+                    MockScript::Chunks(text_response("one")),
+                    MockScript::Chunks(text_response("two")),
+                ])
+                .with_defaults(Some(256), None),
+            );
+            let mut llm = LlmRuntime::new();
+            llm.register_adapter("mock", adapter.clone());
+            let mut agent = LoopAgent::new(
+                Session::new(test_header("adapter-max-tokens")),
+                LoopOptions {
+                    provider: "mock".into(),
+                    model: "mock".into(),
+                    max_tokens: None,
+                    max_parallel_tool_calls: 10,
+                },
+                ToolRuntime::new(dsh_tools::ToolPresentationMode::Native),
+                SystemPrompt::new(SystemPromptConfig::default()).unwrap(),
+                llm,
+            )
+            .unwrap();
+            agent.followup(user_text("m1", "first")).unwrap();
+            agent.run_until_idle().await.unwrap();
+            agent.followup(user_text("m2", "second")).unwrap();
+            agent.run_until_idle().await.unwrap();
+            let requests = adapter.requests.lock().unwrap();
+            assert_eq!(requests[0].max_tokens, Some(256));
+            let header = agent.session.request_header().unwrap();
+            assert_eq!(header.adapter_defaults.unwrap().max_tokens, Some(true));
+            // Second seed strips the adapter default; prepare_call re-materializes 256.
+            assert_eq!(requests[1].max_tokens, Some(256));
+        }
     }
 }

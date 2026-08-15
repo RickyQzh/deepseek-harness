@@ -2,11 +2,12 @@
 
 use dsh_session::{Message, SessionId};
 use dsh_tools::AbortFlag;
+use serde::Serialize;
 
 /// JSON Schema description of a tool, as sent to the model.
 ///
 /// Declared here because it is part of [`GenerateOptions`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ToolSchema {
     /// Model-facing tool name.
     pub name: String,
