@@ -1,0 +1,3 @@
+{
+  "install": "export NVM_DIR=\"${NVM_DIR:-$HOME/.nvm}\"\nif [ -s \"$NVM_DIR/nvm.sh\" ]; then\n  . \"$NVM_DIR/nvm.sh\"\n  nvm install 22\n  nvm use 22\n  export PATH=\"$(dirname \"$(command -v node)\"):$PATH\"\nfi\ncorepack enable\ncorepack prepare pnpm@11.7.0 --activate\nCI=true pnpm install"
+}
