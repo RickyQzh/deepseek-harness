@@ -6,6 +6,9 @@ mod inbox;
 mod runtime_context;
 mod tool_calls;
 
+#[cfg(test)]
+mod phase3_exit;
+
 pub use agent::{
     AgentStatus, CancelCause, CancelOptions, DEFAULT_MAX_PARALLEL_TOOL_CALLS, LoopAgent,
     LoopOptions, Phase, PreStepDecision, RequestErrorAction,
