@@ -2,10 +2,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use serde_json::Value;
-
 use crate::PromptError;
 use crate::interpolate::{interpolate, is_variable_name};
+
+pub use dsh_llm::ToolSchema;
 
 /// Deployment persona section name.
 pub const PERSONA_SECTION: &str = "deployment:persona";
@@ -22,17 +22,6 @@ pub const HARNESS_IDENTITY_TEXT: &str = "You are an AI agent powered by DeepSeek
 /// Model-facing prefix for a non-empty runtime-context snapshot.
 pub const CONTEXT_SNAPSHOT_PREFIX: &str =
     "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\n";
-
-/// Local tool schema until Task 25 replaces this with `dsh_llm::ToolSchema`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ToolSchema {
-    /// Model-facing tool name.
-    pub name: String,
-    /// Model-facing tool description.
-    pub description: String,
-    /// JSON Schema parameters object.
-    pub parameters: Value,
-}
 
 /// Per-assembly context passed to dynamic providers and assemble listeners.
 #[derive(Clone, Debug, Default)]

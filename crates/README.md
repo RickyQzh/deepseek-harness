@@ -18,3 +18,4 @@ Rust workspace members for the DeepSeek Harness host process. Layout, keep-or-dr
 | [`dsh-tools`](dsh-tools/README.md) | Tool execution types and lossless-JSON argument freeze. |
 | [`dsh-system-prompt`](dsh-system-prompt/README.md) | Ordered system-prompt sections, runtime-context snapshots, and strict `{{var}}` interpolation. |
 | [`dsh-credentials`](dsh-credentials/README.md) | Per-request POSIX credential-reference resolve (env, YAML map, memory). |
+| [`dsh-llm`](dsh-llm/README.md) | Provider-neutral LLM stream contract, block assembler, and mock adapter. |
