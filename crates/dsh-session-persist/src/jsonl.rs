@@ -161,3 +161,173 @@ mod tests {
         assert!(!error.to_string().contains("written by a newer harness"));
     }
 }
+
+#[cfg(test)]
+mod phase2_exit_tests {
+    use super::{decode_session_log, encode_session_log};
+    use crate::zstd::{compress_zstd_frame, decompress_zstd_frames};
+    use dsh_session::{
+        LogEvent, SESSION_FORMAT_VERSION, Session, SessionEvent, decode_log_event,
+        fold_request_header, interrupted_turn_closers,
+    };
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn fixture_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "../../examples/headless-agent/tests/snapshots/headless-profile/session.expected.jsonl",
+        )
+    }
+
+    fn parse_jsonl(text: &str) -> Vec<serde_json::Value> {
+        text.lines()
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_str(line).expect("json"))
+            .collect()
+    }
+
+    fn known_events(events: &[LogEvent]) -> Vec<SessionEvent> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                LogEvent::Known(event) => Some(event.clone()),
+                LogEvent::Leftover(_) => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn headless_profile_fixture_round_trips_normalized() {
+        let original = fs::read_to_string(fixture_path()).expect("read fixture");
+        let (header, events) = decode_session_log(&original).expect("decode fixture");
+        assert_eq!(header.version, SESSION_FORMAT_VERSION);
+        assert_eq!(events.len(), 32);
+        assert!(
+            events
+                .iter()
+                .all(|event| matches!(event, LogEvent::Known(_)))
+        );
+        let encoded = encode_session_log(&header, &events, false).expect("encode");
+        assert_eq!(parse_jsonl(&original), parse_jsonl(&encoded));
+    }
+
+    #[test]
+    fn headless_profile_fixture_survives_pack_chunks_true() {
+        let original = fs::read_to_string(fixture_path()).expect("read fixture");
+        let (header, events) = decode_session_log(&original).expect("decode");
+        let packed = encode_session_log(&header, &events, true).expect("pack");
+        let (header2, events2) = decode_session_log(&packed).expect("decode packed");
+        assert_eq!(header, header2);
+        assert_eq!(events, events2);
+    }
+
+    #[test]
+    fn headless_profile_fixture_survives_one_zstd_frame() {
+        let original = fs::read_to_string(fixture_path()).expect("read fixture");
+        let encoded = compress_zstd_frame(original.as_bytes()).expect("zstd");
+        let plain = decompress_zstd_frames(&encoded).expect("unzstd");
+        assert_eq!(plain, original.as_bytes());
+        decode_session_log(std::str::from_utf8(&plain).expect("utf8")).expect("decode");
+    }
+
+    #[test]
+    fn headless_profile_fixture_derives_four_surface_messages() {
+        let original = fs::read_to_string(fixture_path()).expect("read fixture");
+        let (header, events) = decode_session_log(&original).expect("decode");
+        let session = Session::from_events(header, events.clone()).expect("session");
+        let messages = session.derive_messages();
+        assert_eq!(messages.len(), 5);
+        assert!(
+            matches!(&messages[0].content[0], dsh_session::ContentBlock::Text { text } if text.contains("Prove the product headless"))
+        );
+        assert!(matches!(
+            &messages[3].content[0],
+            dsh_session::ContentBlock::ToolResult { .. }
+        ));
+        assert!(
+            matches!(&messages[4].content[0], dsh_session::ContentBlock::Text { text } if text.contains("CLI tool round trip complete"))
+        );
+        let known = known_events(&events);
+        assert!(fold_request_header(&known, None).is_some());
+        assert!(interrupted_turn_closers(&known).is_empty());
+    }
+
+    #[test]
+    fn refuses_newer_format_version_with_upgrade_direction() {
+        let text = concat!(
+            r#"{"type":"session","version":99,"id":"workspace-context-resume","createdAt":1,"delegationDepth":0}"#,
+            "\n",
+            r#"{"type":"turn/start","seq":0,"time":1,"data":{"turn":1}}"#,
+            "\n",
+        );
+        let error = decode_session_log(text).expect_err("refuse");
+        assert_eq!(
+            error.to_string(),
+            "session \"workspace-context-resume\" uses log format v99, but this harness reads only v0: the log was written by a newer harness — upgrade the harness to open it"
+        );
+    }
+
+    #[test]
+    fn refuses_older_format_version_without_upgrade_path() {
+        let text = concat!(
+            r#"{"type":"session","version":-1,"id":"v-older","createdAt":1,"delegationDepth":0}"#,
+            "\n",
+        );
+        let error = decode_session_log(text).expect_err("refuse");
+        assert_eq!(
+            error.to_string(),
+            "session \"v-older\" uses log format v-1, older than the supported v0, and this build ships no upgrade path for it"
+        );
+    }
+
+    #[test]
+    fn refuses_unknown_required_event_type() {
+        let text = concat!(
+            r#"{"type":"session","version":0,"id":"workspace-context-resume","createdAt":1,"delegationDepth":0}"#,
+            "\n",
+            r#"{"type":"turn/start","seq":0,"time":1,"data":{"turn":1}}"#,
+            "\n",
+            r#"{"type":"turn/end","seq":1,"time":2,"data":{"turn":1,"reason":{"kind":"completed"}}}"#,
+            "\n",
+            r#"{"type":"future/event","seq":2,"time":3,"data":{"payload":1}}"#,
+            "\n",
+        );
+        let error = decode_session_log(text).expect_err("refuse");
+        assert_eq!(
+            error.to_string(),
+            "session \"workspace-context-resume\" contains event type \"future/event\" (seq 2) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness"
+        );
+    }
+
+    #[test]
+    fn keeps_unknown_ignorable_leftover() {
+        let text = concat!(
+            r#"{"type":"session","version":0,"id":"unknown-ignorable","createdAt":1,"delegationDepth":0}"#,
+            "\n",
+            r#"{"type":"turn/start","seq":0,"time":1,"data":{"turn":1}}"#,
+            "\n",
+            r#"{"type":"turn/end","seq":1,"time":2,"data":{"turn":1,"reason":{"kind":"completed"}}}"#,
+            "\n",
+            r#"{"type":"future/event","seq":2,"time":99,"data":{"payload":1},"ignorable":true}"#,
+            "\n",
+        );
+        let (_header, events) = decode_session_log(text).expect("load");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type() == "future/event")
+        );
+        match decode_log_event(serde_json::json!({
+            "type": "future/event",
+            "seq": 2,
+            "time": 99,
+            "data": {"payload": 1},
+            "ignorable": true
+        }))
+        .expect("leftover")
+        {
+            LogEvent::Leftover(leftover) => assert_eq!(leftover.type_name, "future/event"),
+            LogEvent::Known(_) => panic!("expected leftover"),
+        }
+    }
+}
