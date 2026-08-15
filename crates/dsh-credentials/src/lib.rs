@@ -1,6 +1,7 @@
 //! Per-request credential references. Consumers re-resolve on every operation.
 
 use std::collections::{BTreeMap, HashMap};
+use std::fmt;
 
 use dsh_brand::Branded;
 
@@ -14,7 +15,7 @@ pub struct CredentialRef(Branded<CredentialRefTag>);
 impl CredentialRef {
     /// Brand `value` as a credential reference without POSIX validation.
     #[must_use]
-    pub fn new(value: impl Into<String>) -> Self {
+    pub(crate) fn new(value: impl Into<String>) -> Self {
         Self(Branded::new(value))
     }
 
@@ -113,10 +114,19 @@ pub trait CredentialProvider: Send + Sync {
 }
 
 /// Memory + optional YAML file map + live process environment.
-#[derive(Debug)]
 pub struct LayeredCredentials {
     memory: HashMap<String, String>,
     file: HashMap<String, String>,
+}
+
+/// Prints layer key names only; secret values stay out of the debug string.
+impl fmt::Debug for LayeredCredentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LayeredCredentials")
+            .field("memory_keys", &self.memory.keys())
+            .field("file_keys", &self.file.keys())
+            .finish()
+    }
 }
 
 impl LayeredCredentials {
@@ -245,9 +255,7 @@ pub enum CredentialError {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        CredentialError, CredentialProvider, CredentialRef, LayeredCredentials, credential_ref,
-    };
+    use super::{CredentialError, CredentialProvider, LayeredCredentials, credential_ref};
 
     #[test]
     fn brands_posix_identifiers() {
@@ -271,10 +279,20 @@ mod tests {
     }
 
     #[test]
-    fn brands_via_new_and_into_inner() {
-        let r = CredentialRef::new("DEEPSEEK_API_KEY");
+    fn brands_via_credential_ref_and_into_inner() {
+        let r = credential_ref("DEEPSEEK_API_KEY").unwrap();
         assert_eq!(r.as_str(), "DEEPSEEK_API_KEY");
         assert_eq!(r.into_inner(), "DEEPSEEK_API_KEY");
+    }
+
+    #[test]
+    fn debug_omits_secret_values() {
+        let mut creds = LayeredCredentials::new();
+        let r = credential_ref("PHASE3_CRED_DEBUG").unwrap();
+        creds.set(&r, "sk-must-not-appear".into()).unwrap();
+        let debug = format!("{creds:?}");
+        assert!(!debug.contains("sk-must-not-appear"));
+        assert!(debug.contains("PHASE3_CRED_DEBUG"));
     }
 
     #[test]
