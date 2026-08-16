@@ -565,17 +565,18 @@ describe('headless stream-json snapshots', () => {
         expect(end).toBeDefined()
         expect((end?.data as JsonObject | undefined)?.error).toBeUndefined()
         const endIndex = types.indexOf('compaction/end')
-        const laterTurn = types.findIndex((type, index) => type === 'turn/start' && index > endIndex)
-        expect(types.indexOf('turn/start')).toBeGreaterThanOrEqual(0)
-        expect(laterTurn === -1
-          || laterTurn > endIndex).toBe(true)
-        if (laterTurn === -1) {
-          expect(types.slice(endIndex + 1).some(type => (
+        // Overflow recovery continues the same step, so later progress may be
+        // chunk/message/step without a new turn/start.
+        const laterProgress = types.findIndex((type, index) => (
+          index > endIndex
+          && (
             type === 'assistant/chunk'
             || type === 'assistant/message'
             || type === 'step/start'
-          ))).toBe(true)
-        }
+            || type === 'turn/start'
+          )
+        ))
+        expect(laterProgress).toBeGreaterThan(endIndex)
         if (rustRuntime) return
         expect(types.filter(type => type === 'compaction/summary')).toHaveLength(1)
         expect(types.filter(type => type === 'compaction/end')).toHaveLength(1)
@@ -1022,11 +1023,13 @@ describe('headless stream-json snapshots', () => {
       processTimeoutMs: rustRuntime ? rustSmokeTimeoutMs : undefined,
       ...rustLaunch.launch === undefined ? {} : { launch: rustLaunch.launch },
       env: {
-        // The override fully supplies the parent script; the child fixture
-        // remains separate so replay binds it to the fresh child Session.
         DSH_SNAPSHOT_FILE: rustRuntime ? 'replay.jsonl' : parentReplay,
-        DSH_SNAPSHOT_OVERRIDE: parentOverride,
-        DSH_SNAPSHOT_CHILD_FILES: childReplay,
+        ...rustRuntime ? {} : {
+          // The override fully supplies the parent script; the child fixture
+          // remains separate so replay binds it to the fresh child Session.
+          DSH_SNAPSHOT_OVERRIDE: parentOverride,
+          DSH_SNAPSHOT_CHILD_FILES: childReplay,
+        },
         NODE_OPTIONS: [process.env.NODE_OPTIONS, '--disable-warning=ExperimentalWarning'].filter(Boolean).join(' '),
         ...rustLaunch.env,
       },
