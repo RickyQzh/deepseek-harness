@@ -25,6 +25,8 @@ pub const PLUGIN_LLM_REPLAY: &str = "@deepseek-ai/dsh-llm-replay";
 pub const PLUGIN_LLM_RETRY: &str = "@deepseek-ai/dsh-llm-retry";
 /// YAML `name` for the deterministic retry snapshot adapter.
 pub const PLUGIN_RETRY_SNAPSHOT_BACKEND: &str = "retry-snapshot-backend";
+/// YAML `name` for `@deepseek-ai/dsh-token-meter`.
+pub const PLUGIN_TOKEN_METER: &str = "@deepseek-ai/dsh-token-meter";
 /// YAML `name` for `@deepseek-ai/dsh-tools`.
 pub const PLUGIN_TOOLS: &str = "@deepseek-ai/dsh-tools";
 /// YAML `name` for `@deepseek-ai/dsh-user-approval`.

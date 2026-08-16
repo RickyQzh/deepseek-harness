@@ -23,6 +23,7 @@ DeepSeek Harness 宿主进程的 Rust workspace 成员。布局、保留/放弃�
 | [`dsh-credentials`](dsh-credentials/README.md) | 按次解析 POSIX 凭据引用（环境、YAML 映射、内存）。 |
 | [`dsh-llm`](dsh-llm/README.md) | 提供方无关的 LLM（大语言模型）流契约、块组装器与 mock 适配器。 |
 | [`dsh-llm-deepseek`](dsh-llm-deepseek/README.md) | DeepSeek `POST /chat/completions` SSE（Server-Sent Events）适配器：序列化、翻译、按次密钥、空闲超时。 |
+| [`dsh-token-meter`](dsh-token-meter/README.md) | 重放 token 计量：固定每 4 字符一 token 的启发式、surface fold、提供方 usage 锚点。 |
 | [`dsh-agent`](dsh-agent/README.md) | 按会话 id 持有的实时 LoopAgent 注册表；Session append-sink 工厂。 |
 | [`dsh-agent-loop`](dsh-agent-loop/README.md) | 脚本化循环：持久化 inbox、idle / maintenance / running、运行时上下文快照、请求重建、工具调用调度。 |
 | [`dsh-subprocess`](dsh-subprocess/README.md) | 完全指定的 argv 派发与凭据擦除后的子进程环境。 |
