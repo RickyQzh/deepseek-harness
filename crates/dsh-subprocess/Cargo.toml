@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 dsh-tools = { path = "../dsh-tools" }
+libc = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 

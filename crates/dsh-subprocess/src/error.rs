@@ -4,7 +4,7 @@
 pub const MAX_GRACE_MS: u64 = 2_147_483_647;
 
 /// Spawn, lookup, and platform failures for this crate.
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum SubprocessError {
     /// `argv` is empty or `argv[0]` is empty.
     #[error("invalid argv: expected a non-empty program name at argv[0]")]

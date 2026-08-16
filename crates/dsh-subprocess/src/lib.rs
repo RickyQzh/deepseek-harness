@@ -1,11 +1,17 @@
 //! Fully specified argv spawn, credential-scrubbed child environments, and POSIX process trees.
 
+mod collect;
 mod env;
 mod error;
+mod runtime;
+mod spawn;
 mod types;
 
+pub use collect::OutputCollector;
 pub use env::{DSH_ENV_PREFIX, EnvEntry, child_env, scrubbed_parent_env, sensitive_env_name};
 pub use error::{MAX_GRACE_MS, SubprocessError};
+pub use runtime::LocalSubprocessRuntime;
+pub use spawn::{SubprocessHandle, kill_group, spawn_subprocess, spawn_subprocess_with_spill_dir};
 pub use types::{
     CollectedOutput, SubprocessCollect, SubprocessOutcome, SubprocessOutput, SubprocessOutputRead,
     SubprocessSpawnSpec, SubprocessStdin, SubprocessStdio,
