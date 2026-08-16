@@ -44,10 +44,16 @@ impl AgentHandle {
         &self.id
     }
 
-    /// Lock the live agent so tests can read `session.events()`.
-    #[cfg(test)]
-    pub(crate) async fn lock_for_test(&self) -> tokio::sync::MutexGuard<'_, LoopAgent> {
+    /// Lock the live `LoopAgent`. Hold only for short reads or a single `followup`.
+    pub async fn lock(&self) -> tokio::sync::MutexGuard<'_, dsh_agent_loop::LoopAgent> {
         self.agent.lock().await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn lock_for_test(
+        &self,
+    ) -> tokio::sync::MutexGuard<'_, dsh_agent_loop::LoopAgent> {
+        self.lock().await
     }
 }
 

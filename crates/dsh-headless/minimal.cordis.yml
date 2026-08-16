@@ -1,0 +1,21 @@
+# Phase 5 minimal headless composition. Task comes from headlessStartup.
+- name: '@deepseek-ai/dsh-credentials'
+- name: '@deepseek-ai/dsh-llm'
+- name: '@deepseek-ai/dsh-llm-mock'
+  config:
+    provider: mock
+    text: headless-ok
+- name: '@deepseek-ai/dsh-tools'
+- name: '@deepseek-ai/dsh-system-prompt'
+  config:
+    persona: You are a headless test agent.
+    includeRuntimeContext: false
+- name: '@deepseek-ai/dsh-agent'
+- name: '@deepseek-ai/dsh-session-persistence-jsonl'
+- name: '@deepseek-ai/dsh-subprocess-local'
+- name: '@deepseek-ai/dsh-fs-local'
+- name: '@deepseek-ai/dsh-shell-bash-local'
+- name: '@deepseek-ai/dsh-tool-fs'
+- name: '@deepseek-ai/dsh-tool-bash'
+- name: headless-startup
+- name: headless-runner

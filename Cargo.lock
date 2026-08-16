@@ -185,6 +185,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-headless"
+version = "0.1.0"
+dependencies = [
+ "dsh-agent",
+ "dsh-agent-loop",
+ "dsh-boot",
+ "dsh-kernel",
+ "dsh-session",
+ "dsh-session-persist",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "dsh-kernel"
 version = "0.1.0"
 dependencies = [

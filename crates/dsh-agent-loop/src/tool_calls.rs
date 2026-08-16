@@ -69,7 +69,7 @@ pub(crate) async fn execute_tool_calls(
     tool_calls: &[ContentBlock],
     signal: &AbortFlag,
     max_parallel: usize,
-    accept_context: &mut dyn FnMut(Message),
+    accept_context: &mut (dyn FnMut(Message) + Send),
 ) -> Result<ToolCallsOutcome, LoopError> {
     let planned: Vec<PlannedCall> = tool_calls.iter().filter_map(plan_block).collect();
     let mut next = 0;
@@ -152,7 +152,7 @@ async fn run_group(
     mode: ToolExecutionMode,
     signal: &AbortFlag,
     max_parallel: usize,
-    accept_context: &mut dyn FnMut(Message),
+    accept_context: &mut (dyn FnMut(Message) + Send),
 ) -> Result<GroupOutcome, LoopError> {
     let pool_limit = if mode == ToolExecutionMode::Parallel {
         max_parallel.max(1)
@@ -309,7 +309,7 @@ fn commit_ready(
     call_seqs: &[u64],
     committed: &mut usize,
     concluded: &mut bool,
-    accept_context: &mut dyn FnMut(Message),
+    accept_context: &mut (dyn FnMut(Message) + Send),
 ) -> Result<(), LoopError> {
     while *committed < group.len() {
         let Some(result) = slots[*committed].take() else {
@@ -384,7 +384,7 @@ fn append_tool_result(
     call: &PlannedCall,
     result: &ToolExecutionResult,
     call_seq: u64,
-    accept_context: &mut dyn FnMut(Message),
+    accept_context: &mut (dyn FnMut(Message) + Send),
 ) -> Result<(), LoopError> {
     let seq = session.events().len() as u64;
     let is_error = result.is_error();

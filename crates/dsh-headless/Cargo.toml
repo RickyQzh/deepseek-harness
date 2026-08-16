@@ -1,0 +1,22 @@
+[package]
+name = "dsh-headless"
+version = "0.1.0"
+description = "One-shot headless runner for the DeepSeek Harness Rust host"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+dsh-agent = { path = "../dsh-agent" }
+dsh-agent-loop = { path = "../dsh-agent-loop" }
+dsh-boot = { path = "../dsh-boot" }
+dsh-kernel = { path = "../dsh-kernel" }
+dsh-session = { path = "../dsh-session" }
+dsh-session-persist = { path = "../dsh-session-persist" }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true
