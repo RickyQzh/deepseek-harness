@@ -25,4 +25,30 @@ pub enum ToolError {
     /// Other pipeline failure.
     #[error("{0}")]
     Other(String),
+    /// Structured failure whose `name` and `code` ride on [`crate::ToolErrorInfo`].
+    #[error("{message}")]
+    Coded {
+        /// Model-visible failure text.
+        message: String,
+        /// Structured error name, such as `FsError`.
+        name: String,
+        /// Stable routing code, such as `FS_NOT_OBSERVED`.
+        code: String,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TOOL_ABORTED, ToolError};
+
+    #[test]
+    fn coded_displays_message() {
+        let err = ToolError::Coded {
+            message: "edit requires reading \"a.txt\" first — read the file, then retry".into(),
+            name: "FsError".into(),
+            code: "FS_NOT_OBSERVED".into(),
+        };
+        assert!(err.to_string().contains("read the file"));
+        let _ = TOOL_ABORTED;
+    }
 }

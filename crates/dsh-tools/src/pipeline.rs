@@ -658,6 +658,10 @@ fn result_from_tool_error(error: &ToolError) -> ToolExecutionResult {
             name: "ToolNotFoundError".into(),
             code: "UNKNOWN_TOOL".into(),
         }),
+        ToolError::Coded { name, code, .. } => Some(ToolErrorInfo {
+            name: name.clone(),
+            code: code.clone(),
+        }),
         ToolError::ArgsNotJson | ToolError::Other(_) => None,
     };
     ToolExecutionResult::Failure {
@@ -1089,6 +1093,50 @@ mod tests {
         });
         let mode = tools.execution_mode(&input("p", json!({}), AbortFlag::new()));
         assert_eq!(mode, ToolExecutionMode::Parallel);
+    }
+
+    #[tokio::test]
+    async fn coded_error_sets_info_name_and_code() {
+        let mut tools = ToolRuntime::new(ToolPresentationMode::Native);
+        tools.register(ToolDefinition {
+            name: "boom".into(),
+            description: "boom".into(),
+            parameters: json!({}),
+            execute: Box::new(|_, _| {
+                Box::pin(async {
+                    Err(ToolError::Coded {
+                        message:
+                            "edit requires reading \"a.txt\" first — read the file, then retry"
+                                .into(),
+                        name: "FsError".into(),
+                        code: "FS_NOT_OBSERVED".into(),
+                    })
+                })
+            }),
+            render: Box::new(|_, _| vec![ContentBlock::Text { text: "ok".into() }]),
+            is_concurrency_safe: None,
+        });
+        let result = tools
+            .execute(input("boom", json!({}), AbortFlag::new()))
+            .await;
+        match result {
+            ToolExecutionResult::Failure { error, content, .. } => {
+                assert_eq!(error.info.as_ref().unwrap().name, "FsError");
+                assert_eq!(error.info.as_ref().unwrap().code, "FS_NOT_OBSERVED");
+                assert_eq!(
+                    error.message,
+                    "edit requires reading \"a.txt\" first — read the file, then retry"
+                );
+                assert_eq!(
+                    content,
+                    vec![ContentBlock::Text {
+                        text: "Error: edit requires reading \"a.txt\" first — read the file, then retry"
+                            .into()
+                    }]
+                );
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

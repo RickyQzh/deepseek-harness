@@ -25,3 +25,4 @@ DeepSeek Harness 宿主进程的 Rust workspace 成员。布局、保留/放弃�
 | [`dsh-sandbox`](dsh-sandbox/README.md) | 失败即关闭的沙箱模式、可写根与提权。 |
 | [`dsh-fs`](dsh-fs/README.md) | 文件系统类型与 `FS_*` 错误码。 |
 | [`dsh-shell`](dsh-shell/README.md) | shell 请求/规格类型、POSIX bash 执行器与退出状态解析。 |
+| [`dsh-tool-fs`](dsh-tool-fs/README.md) | 面向模型的 read/write/edit 文件系统工具。 |
