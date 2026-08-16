@@ -44,6 +44,35 @@ pub enum JsonRpcResponseError {
     Transport(String),
 }
 
+impl JsonRpcResponseError {
+    /// Wire `error.code` for [`Self::Response`]; `None` for [`Self::Transport`].
+    #[must_use]
+    pub fn code(&self) -> Option<i64> {
+        match self {
+            Self::Response { code, .. } => *code,
+            Self::Transport(_) => None,
+        }
+    }
+
+    /// Wire `error.message`, or the local transport failure text.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Response { message, .. } => message,
+            Self::Transport(message) => message,
+        }
+    }
+
+    /// Wire `error.data` for [`Self::Response`]; `None` for [`Self::Transport`].
+    #[must_use]
+    pub fn data(&self) -> Option<&Value> {
+        match self {
+            Self::Response { data, .. } => data.as_ref(),
+            Self::Transport(_) => None,
+        }
+    }
+}
+
 /// Decoded inbound line.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DecodedFrame {
@@ -72,6 +101,53 @@ pub enum DecodedFrame {
         /// Normalized params object.
         params: Value,
     },
+}
+
+impl DecodedFrame {
+    /// Request or response id.
+    #[must_use]
+    pub fn id(&self) -> Option<&JsonRpcId> {
+        match self {
+            Self::Request { id, .. } | Self::Response { id, .. } => Some(id),
+            Self::Notification { .. } => None,
+        }
+    }
+
+    /// Request or notification method name.
+    #[must_use]
+    pub fn method(&self) -> Option<&str> {
+        match self {
+            Self::Request { method, .. } | Self::Notification { method, .. } => Some(method),
+            Self::Response { .. } => None,
+        }
+    }
+
+    /// Normalized params for a request or notification.
+    #[must_use]
+    pub fn params(&self) -> Option<&Value> {
+        match self {
+            Self::Request { params, .. } | Self::Notification { params, .. } => Some(params),
+            Self::Response { .. } => None,
+        }
+    }
+
+    /// Success `result` member when this is a response that includes it.
+    #[must_use]
+    pub fn result(&self) -> Option<&Value> {
+        match self {
+            Self::Response { result, .. } => result.as_ref(),
+            Self::Request { .. } | Self::Notification { .. } => None,
+        }
+    }
+
+    /// Error member when this is a response that includes it.
+    #[must_use]
+    pub fn error(&self) -> Option<&Value> {
+        match self {
+            Self::Response { error, .. } => error.as_ref(),
+            Self::Request { .. } | Self::Notification { .. } => None,
+        }
+    }
 }
 
 fn object_params(params: Option<&Value>) -> Value {
@@ -224,7 +300,7 @@ impl JsonRpcLineTransport {
     ///
     /// # Errors
     ///
-    /// `Transport` when the input cannot be read.
+    /// `Transport` when the input cannot be read or a reply frame cannot be written.
     pub async fn serve(&self) -> Result<(), JsonRpcResponseError> {
         let mut reader = self
             .reader
@@ -248,7 +324,7 @@ impl JsonRpcLineTransport {
             };
             match frame {
                 DecodedFrame::Request { id, method, params } => {
-                    self.handle_request(id, method, params).await;
+                    self.handle_request(id, method, params).await?;
                 }
                 DecodedFrame::Response { id, result, error } => {
                     self.handle_response(id, result, error).await;
@@ -262,26 +338,27 @@ impl JsonRpcLineTransport {
         }
     }
 
-    async fn handle_request(&self, id: JsonRpcId, method: String, params: Value) {
+    async fn handle_request(
+        &self,
+        id: JsonRpcId,
+        method: String,
+        params: Value,
+    ) -> Result<(), JsonRpcResponseError> {
         let handler = self.inner.request.lock().expect("request").clone();
         let Some(handler) = handler else {
-            let _ = self
+            return self
                 .write_frame(encode_error(
                     &id,
                     ERR_METHOD_NOT_FOUND,
                     &format!("method not found: {method}"),
                 ))
                 .await;
-            return;
         };
         match handler(method, params).await {
-            Ok(result) => {
-                let _ = self.write_frame(encode_result(&id, &result)).await;
-            }
+            Ok(result) => self.write_frame(encode_result(&id, &result)).await,
             Err(message) => {
-                let _ = self
-                    .write_frame(encode_error(&id, ERR_INTERNAL, &message))
-                    .await;
+                self.write_frame(encode_error(&id, ERR_INTERNAL, &message))
+                    .await
             }
         }
     }
@@ -368,8 +445,8 @@ impl JsonRpcLineTransport {
 mod tests {
     use super::{
         DecodedFrame, ERR_INTERNAL, ERR_METHOD_NOT_FOUND, JSONRPC_VERSION, JsonRpcId,
-        JsonRpcLineTransport, decode_line, encode_error, encode_notification, encode_request,
-        encode_result,
+        JsonRpcLineTransport, JsonRpcResponseError, decode_line, encode_error, encode_notification,
+        encode_request, encode_result,
     };
     use serde_json::json;
     use std::sync::Arc;
@@ -526,5 +603,60 @@ mod tests {
         server.close().await;
         let _ = serve_server.await;
         let _ = serve_client.await;
+    }
+
+    #[test]
+    fn decoded_frame_and_response_error_are_readable_through_accessors() {
+        let req =
+            decode_line(r#"{"jsonrpc":"2.0","id":"1","method":"shutdown","params":{"cwd":"/"}}"#)
+                .expect("request");
+        assert_eq!(req.id(), Some(&JsonRpcId::String("1".into())));
+        assert_eq!(req.method(), Some("shutdown"));
+        assert_eq!(req.params(), Some(&json!({"cwd":"/"})));
+        assert!(req.result().is_none());
+        assert!(req.error().is_none());
+
+        let note = decode_line(
+            r#"{"jsonrpc":"2.0","method":"session.status","params":{"sessionId":"s"}}"#,
+        )
+        .expect("note");
+        assert!(note.id().is_none());
+        assert_eq!(note.method(), Some("session.status"));
+        assert_eq!(note.params(), Some(&json!({"sessionId":"s"})));
+        assert!(note.result().is_none());
+        assert!(note.error().is_none());
+
+        let resp = decode_line(r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#).expect("resp");
+        assert_eq!(resp.id(), Some(&JsonRpcId::Number(1)));
+        assert!(resp.method().is_none());
+        assert!(resp.params().is_none());
+        assert_eq!(resp.result(), Some(&json!({"ok": true})));
+        assert!(resp.error().is_none());
+
+        let err_frame =
+            decode_line(r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"nope"}}"#)
+                .expect("error frame");
+        assert_eq!(err_frame.id(), Some(&JsonRpcId::Number(2)));
+        assert!(err_frame.method().is_none());
+        assert!(err_frame.params().is_none());
+        assert!(err_frame.result().is_none());
+        assert_eq!(
+            err_frame.error(),
+            Some(&json!({"code":-32601,"message":"nope"}))
+        );
+
+        let rpc_err = JsonRpcResponseError::Response {
+            code: Some(-32601),
+            message: "method not found: nope".into(),
+            data: Some(json!({"hint": true})),
+        };
+        assert_eq!(rpc_err.code(), Some(-32601));
+        assert_eq!(rpc_err.message(), "method not found: nope");
+        assert_eq!(rpc_err.data(), Some(&json!({"hint": true})));
+
+        let transport = JsonRpcResponseError::Transport("broken pipe".into());
+        assert!(transport.code().is_none());
+        assert_eq!(transport.message(), "broken pipe");
+        assert!(transport.data().is_none());
     }
 }
