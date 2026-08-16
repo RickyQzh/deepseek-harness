@@ -861,6 +861,73 @@ mod tests {
     }
 
     #[test]
+    fn measure_estimated_baseline_when_provider_usage_undercuts_heuristic() {
+        let system = "system context";
+        let header = epoch_header("deepseek-v4-flash", Some(system));
+        let provider_text = "abcd".repeat(512);
+        let usage = TokenUsage {
+            input_tokens: 20,
+            output_tokens: 7,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+            reasoning_tokens: None,
+        };
+        let mut session = session_with_user_and_call(
+            "low-usage-anchor",
+            "",
+            header.clone(),
+            &provider_text,
+            &provider_text,
+            Some(usage),
+            CallProvenance::Exact,
+        );
+        let meter = TokenMeter::new();
+        let anchored = meter.measure(&session, None);
+        match anchored.baseline() {
+            TokenMeasurementBaseline::Estimated { .. } => {}
+            other => panic!("expected Estimated, got {other:?}"),
+        }
+
+        let assistant = anchored.nodes()[0].seq();
+        let seq = next_seq(&session);
+        append(
+            &mut session,
+            SessionEvent::UserMessage {
+                seq,
+                time: seq as i64,
+                data: Message {
+                    id: MessageId::new(format!("m{seq}")),
+                    role: MessageRole::User,
+                    content: vec![ContentBlock::Text {
+                        text: "short".into(),
+                    }],
+                    source: MessageSource::Plugin {
+                        plugin: "test".into(),
+                        form: None,
+                        sections: Vec::new(),
+                        summary: None,
+                    },
+                },
+                surface_op: Some(SurfaceOp::Replace {
+                    start: assistant,
+                    end: assistant,
+                }),
+                source_event_seqs: Some(vec![assistant]),
+                ignorable: None,
+            },
+        );
+
+        let shrunken = meter.measure(&session, None);
+        assert!(27 + shrunken.surface_delta_tokens() < 0);
+        assert!(shrunken.total_tokens() > 0);
+
+        let mut mismatched = header;
+        mismatched.config.model = "different-model".into();
+        let remasured = meter.measure(&session, Some(&mismatched));
+        assert_eq!(shrunken.total_tokens(), remasured.total_tokens());
+    }
+
+    #[test]
     fn measure_usage_tokens_do_not_count_reasoning_twice() {
         let usage = disjoint_usage();
         let session = session_with_user_and_call(
