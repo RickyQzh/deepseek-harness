@@ -17,6 +17,7 @@ DeepSeek Harness 宿主进程的 Rust workspace 成员。布局、保留/放弃�
 | [`dsh-session`](dsh-session/README.md) | 会话 id、封闭 `SessionEvent` 枚举、surface、derive、修复、chunk 行。 |
 | [`dsh-session-persist`](dsh-session-persist/README.md) | JSONL + zstd 会话编解码（SQLite 稍后）。 |
 | [`dsh-tools`](dsh-tools/README.md) | 工具执行类型与无损 JSON 参数冻结。 |
+| [`dsh-user-approval`](dsh-user-approval/README.md) | 失败即关闭的 `approval/request` waterfall（瀑布式事件）、每会话 ask/never 策略，以及 `headless-auto-approve`。 |
 | [`dsh-system-prompt`](dsh-system-prompt/README.md) | 有序系统提示词段落、运行时上下文快照，以及严格的 `{{var}}` 插值。 |
 | [`dsh-credentials`](dsh-credentials/README.md) | 按次解析 POSIX 凭据引用（环境、YAML 映射、内存）。 |
 | [`dsh-llm`](dsh-llm/README.md) | 提供方无关的 LLM（大语言模型）流契约、块组装器与 mock 适配器。 |

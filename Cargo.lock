@@ -150,6 +150,7 @@ dependencies = [
  "dsh-tool-bash",
  "dsh-tool-fs",
  "dsh-tools",
+ "dsh-user-approval",
  "serde_json",
  "thiserror",
  "tokio",
@@ -252,6 +253,7 @@ dependencies = [
  "dsh-kernel",
  "dsh-session",
  "dsh-session-persist",
+ "dsh-user-approval",
  "thiserror",
  "tokio",
 ]
@@ -449,6 +451,20 @@ dependencies = [
  "dsh-boot",
  "dsh-kernel",
  "dsh-session",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "dsh-user-approval"
+version = "0.1.0"
+dependencies = [
+ "dsh-boot",
+ "dsh-kernel",
+ "dsh-session",
+ "dsh-tools",
  "serde",
  "serde_json",
  "thiserror",

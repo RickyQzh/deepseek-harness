@@ -23,6 +23,8 @@ pub const PLUGIN_LLM_MOCK: &str = "@deepseek-ai/dsh-llm-mock";
 pub const PLUGIN_LLM_REPLAY: &str = "@deepseek-ai/dsh-llm-replay";
 /// YAML `name` for `@deepseek-ai/dsh-tools`.
 pub const PLUGIN_TOOLS: &str = "@deepseek-ai/dsh-tools";
+/// YAML `name` for `@deepseek-ai/dsh-user-approval`.
+pub const PLUGIN_USER_APPROVAL: &str = "@deepseek-ai/dsh-user-approval";
 /// YAML `name` for `@deepseek-ai/dsh-system-prompt`.
 pub const PLUGIN_SYSTEM_PROMPT: &str = "@deepseek-ai/dsh-system-prompt";
 /// YAML `name` for `@deepseek-ai/dsh-agent`.
@@ -43,5 +45,7 @@ pub const PLUGIN_TOOL_BASH: &str = "@deepseek-ai/dsh-tool-bash";
 pub const PLUGIN_HEADLESS_STARTUP: &str = "headless-startup";
 /// YAML `name` for the headless runner plugin.
 pub const PLUGIN_HEADLESS_RUNNER: &str = "headless-runner";
+/// YAML `name` for the headless auto-approve waterfall listener.
+pub const PLUGIN_HEADLESS_AUTO_APPROVE: &str = "headless-auto-approve";
 /// YAML `name` for the SDK JSON-RPC server plugin.
 pub const PLUGIN_SDK_JSONRPC: &str = "sdk-jsonrpc-server";

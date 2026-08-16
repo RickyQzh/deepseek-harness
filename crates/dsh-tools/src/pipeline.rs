@@ -8,7 +8,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use dsh_session::ContentBlock;
+use dsh_session::{ContentBlock, Session};
 
 use crate::freeze::freeze_args;
 use crate::{
@@ -70,6 +70,33 @@ type ApprovalHook = Box<
         + Send
         + Sync,
 >;
+type StoredGuard = Arc<dyn Fn(&ToolExecution) -> Option<String> + Send + Sync>;
+
+/// Decides a pre-execute [`PreToolDecision::Ask`] using the asking session log.
+pub trait Approver: Send + Sync {
+    /// Return one closed outcome for `exec`. The future may borrow `self` and `session`.
+    fn decide<'a>(
+        &'a self,
+        session: &'a mut Session,
+        exec: &'a ToolExecution,
+        reason: Option<String>,
+    ) -> Pin<Box<dyn Future<Output = ApprovalOutcome> + Send + 'a>>;
+}
+
+struct HookApprover {
+    hook: ApprovalHook,
+}
+
+impl Approver for HookApprover {
+    fn decide<'a>(
+        &'a self,
+        _session: &'a mut Session,
+        exec: &'a ToolExecution,
+        reason: Option<String>,
+    ) -> Pin<Box<dyn Future<Output = ApprovalOutcome> + Send + 'a>> {
+        (self.hook)(exec.clone(), reason)
+    }
+}
 
 /// Registered tool: schema, body, render, and optional concurrency classifier.
 pub struct ToolDefinition {
@@ -155,6 +182,85 @@ pub enum ApprovalOutcome {
     Unavailable,
 }
 
+impl ApprovalOutcome {
+    /// Session-log and TypeScript wire string.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AllowedOnce => "allowed-once",
+            Self::Rejected => "rejected",
+            Self::Cancelled => "cancelled",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+/// Frozen prepare state that can finish without holding [`ToolRuntime`].
+pub struct PrepareSnapshot {
+    exec: ToolExecution,
+    early: Option<ScheduledToolPreparation>,
+    pre: Vec<PreFn>,
+    approver: Option<Arc<dyn Approver>>,
+    guards: Vec<StoredGuard>,
+}
+
+impl PrepareSnapshot {
+    fn early(result: ScheduledToolPreparation) -> Self {
+        Self {
+            exec: match &result {
+                ScheduledToolPreparation::Dispatch { exec }
+                | ScheduledToolPreparation::PostResult { exec, .. }
+                | ScheduledToolPreparation::FinalResult { exec, .. } => exec.clone(),
+            },
+            early: Some(result),
+            pre: Vec::new(),
+            approver: None,
+            guards: Vec::new(),
+        }
+    }
+
+    /// Run pre-execute, approval, and guards on the Tokio worker.
+    pub async fn finish(self, session: Option<&mut Session>) -> ScheduledToolPreparation {
+        if let Some(early) = self.early {
+            return early;
+        }
+        let exec = self.exec;
+        let pre = run_pre(self.pre, 0, exec.clone()).await;
+        let (decision, approval_cancelled) = match pre {
+            PreToolDecision::Ask { reason } => {
+                resolve_ask(self.approver.as_ref(), session, &exec, reason).await
+            }
+            other => (other, false),
+        };
+        if approval_cancelled && exec.signal.is_aborted() {
+            return ScheduledToolPreparation::PostResult {
+                exec,
+                result: aborted_before_dispatch(),
+            };
+        }
+        let denial = match decision {
+            PreToolDecision::Allow => self.guards.iter().find_map(|guard| guard(&exec)),
+            PreToolDecision::Deny { reason } => Some(reason),
+            PreToolDecision::Ask { reason } => {
+                Some(reason.unwrap_or_else(|| unavailable_reason(&exec.name)))
+            }
+        };
+        if let Some(reason) = denial {
+            return ScheduledToolPreparation::PostResult {
+                exec,
+                result: deny_result(reason),
+            };
+        }
+        if exec.signal.is_aborted() {
+            return ScheduledToolPreparation::PostResult {
+                exec,
+                result: aborted_before_dispatch(),
+            };
+        }
+        ScheduledToolPreparation::Dispatch { exec }
+    }
+}
+
 /// Flat-map tool registry that runs the policy and dispatch pipeline.
 pub struct ToolRuntime {
     mode: ToolPresentationMode,
@@ -162,8 +268,8 @@ pub struct ToolRuntime {
     tools: HashMap<String, RegisteredTool>,
     pre: Vec<PreFn>,
     post: Vec<PostFn>,
-    guards: Vec<ToolGuard>,
-    approval: Option<ApprovalHook>,
+    guards: Vec<StoredGuard>,
+    approver: Option<Arc<dyn Approver>>,
 }
 
 impl Clone for ToolRuntime {
@@ -175,7 +281,7 @@ impl Clone for ToolRuntime {
             pre: self.pre.clone(),
             post: self.post.clone(),
             guards: Vec::new(),
-            approval: None,
+            approver: None,
         }
     }
 }
@@ -191,7 +297,7 @@ impl ToolRuntime {
             pre: Vec::new(),
             post: Vec::new(),
             guards: Vec::new(),
-            approval: None,
+            approver: None,
         }
     }
 
@@ -255,14 +361,21 @@ impl ToolRuntime {
     ///
     /// The first `Some(reason)` denies the call with content `Error: {reason}`.
     pub fn guard(&mut self, guard: ToolGuard) {
-        self.guards.push(guard);
+        self.guards.push(Arc::from(guard));
     }
 
-    /// Install or clear the approval hook used when pre-execute returns Ask.
+    /// Install or clear the [`Approver`] used when pre-execute returns Ask.
+    ///
+    /// `None` degrades Ask to [`ApprovalOutcome::Unavailable`].
+    pub fn set_approver(&mut self, approver: Option<Arc<dyn Approver>>) {
+        self.approver = approver;
+    }
+
+    /// Install or clear a session-free approval hook. Thin wrapper over [`set_approver`].
     ///
     /// `None` degrades Ask to deny.
     pub fn set_approval(&mut self, approval: Option<ApprovalHook>) {
-        self.approval = approval;
+        self.approver = approval.map(|hook| Arc::new(HookApprover { hook }) as Arc<dyn Approver>);
     }
 
     /// Parallel only when the visible, non-collapsed tool's classifier returns exactly `true`.
@@ -282,12 +395,11 @@ impl ToolRuntime {
         }
     }
 
-    /// Freeze, collapse, abort-before-body, pre-execute, approval, and guards.
+    /// Freeze, collapse, and abort-before-policy without `.await`.
     ///
-    /// Assigns a real execution token. A deny, unknown-tool failure after policy, or
-    /// abort after policy is [`ScheduledToolPreparation::PostResult`]. Collapse, freeze
-    /// failure, and abort before policy are [`ScheduledToolPreparation::FinalResult`].
-    pub async fn prepare(&mut self, input: ToolExecutionInput) -> ScheduledToolPreparation {
+    /// Callers that hold a tools mutex must drop it before
+    /// [`PrepareSnapshot::finish`].
+    pub fn begin_prepare(&mut self, input: ToolExecutionInput) -> PrepareSnapshot {
         let token = ToolExecutionToken(self.next_token);
         self.next_token += 1;
         let root_call_id = input.root_call_id.unwrap_or_else(|| input.call_id.clone());
@@ -303,10 +415,10 @@ impl ToolRuntime {
                     parent: input.parent,
                     signal: input.signal,
                 };
-                return ScheduledToolPreparation::FinalResult {
+                return PrepareSnapshot::early(ScheduledToolPreparation::FinalResult {
                     exec,
                     result: result_from_tool_error(&error),
-                };
+                });
             }
         };
         let exec = ToolExecution {
@@ -321,61 +433,52 @@ impl ToolRuntime {
         let visible = self.tools.contains_key(&exec.name);
         let collapsed = self.collapses(visible, &exec.name, exec.parent.is_none());
         if collapsed && exec.signal.is_aborted() {
-            return ScheduledToolPreparation::FinalResult {
+            return PrepareSnapshot::early(ScheduledToolPreparation::FinalResult {
                 exec,
                 result: aborted_before_dispatch(),
-            };
+            });
         }
         if collapsed {
-            return ScheduledToolPreparation::FinalResult {
+            return PrepareSnapshot::early(ScheduledToolPreparation::FinalResult {
                 exec: exec.clone(),
                 result: result_from_tool_error(&ToolError::UnknownToolHint {
                     name: exec.name.clone(),
                     hint: collapse_hint(&exec.name),
                 }),
-            };
+            });
         }
         if exec.signal.is_aborted() {
-            return ScheduledToolPreparation::FinalResult {
+            return PrepareSnapshot::early(ScheduledToolPreparation::FinalResult {
                 exec,
                 result: aborted_before_dispatch(),
-            };
+            });
         }
+        PrepareSnapshot {
+            exec,
+            early: None,
+            pre: self.pre.clone(),
+            approver: self.approver.clone(),
+            guards: self.guards.clone(),
+        }
+    }
 
-        let pre = run_pre(self.pre.clone(), 0, exec.clone()).await;
-        let (decision, approval_cancelled) = match pre {
-            PreToolDecision::Ask { reason } => self.resolve_ask(&exec, reason).await,
-            other => (other, false),
-        };
-        if approval_cancelled && exec.signal.is_aborted() {
-            return ScheduledToolPreparation::PostResult {
-                exec,
-                result: aborted_before_dispatch(),
-            };
-        }
-        let denial = match decision {
-            PreToolDecision::Allow => self.guard_reason(&exec),
-            PreToolDecision::Deny { reason } => Some(reason),
-            PreToolDecision::Ask { reason } => Some(reason.unwrap_or_else(|| {
-                format!(
-                    "tool \"{}\" requires approval (not yet supported)",
-                    exec.name
-                )
-            })),
-        };
-        if let Some(reason) = denial {
-            return ScheduledToolPreparation::PostResult {
-                exec,
-                result: deny_result(reason),
-            };
-        }
-        if exec.signal.is_aborted() {
-            return ScheduledToolPreparation::PostResult {
-                exec,
-                result: aborted_before_dispatch(),
-            };
-        }
-        ScheduledToolPreparation::Dispatch { exec }
+    /// Freeze, collapse, abort-before-body, pre-execute, approval, and guards.
+    ///
+    /// Assigns a real execution token. A deny, unknown-tool failure after policy, or
+    /// abort after policy is [`ScheduledToolPreparation::PostResult`]. Collapse, freeze
+    /// failure, and abort before policy are [`ScheduledToolPreparation::FinalResult`].
+    /// Ask with no [`Approver`] uses the Unavailable deny text.
+    pub async fn prepare(&mut self, input: ToolExecutionInput) -> ScheduledToolPreparation {
+        self.begin_prepare(input).finish(None).await
+    }
+
+    /// [`prepare`](Self::prepare) with a session for [`Approver::decide`].
+    pub async fn prepare_with_session(
+        &mut self,
+        session: &mut Session,
+        input: ToolExecutionInput,
+    ) -> ScheduledToolPreparation {
+        self.begin_prepare(input).finish(Some(session)).await
     }
 
     /// Run `definition.execute` and render. The future does not borrow `self`.
@@ -439,7 +542,25 @@ impl ToolRuntime {
     /// [`finalize`](Self::finalize). A collapsed model-direct call never reaches
     /// pre-execute. Exclusive callers may use this for the whole pipeline.
     pub async fn execute(&mut self, input: ToolExecutionInput) -> ToolExecutionResult {
-        match self.prepare(input).await {
+        let prepared = self.prepare(input).await;
+        self.continue_after_prepare(prepared).await
+    }
+
+    /// [`execute`](Self::execute) with a session for [`Approver::decide`].
+    pub async fn execute_with_session(
+        &mut self,
+        session: &mut Session,
+        input: ToolExecutionInput,
+    ) -> ToolExecutionResult {
+        let prepared = self.prepare_with_session(session, input).await;
+        self.continue_after_prepare(prepared).await
+    }
+
+    async fn continue_after_prepare(
+        &mut self,
+        prepared: ScheduledToolPreparation,
+    ) -> ToolExecutionResult {
+        match prepared {
             ScheduledToolPreparation::Dispatch { exec } => {
                 let dispatched = self.dispatch(&exec).await;
                 match dispatched {
@@ -460,51 +581,6 @@ impl ToolRuntime {
         visible && model_direct && self.mode == ToolPresentationMode::Code && name != RUN_CODE_NAME
     }
 
-    fn guard_reason(&self, exec: &ToolExecution) -> Option<String> {
-        self.guards.iter().find_map(|guard| guard(exec))
-    }
-
-    async fn resolve_ask(
-        &self,
-        exec: &ToolExecution,
-        reason: Option<String>,
-    ) -> (PreToolDecision, bool) {
-        let Some(hook) = &self.approval else {
-            let reason = reason.unwrap_or_else(|| {
-                format!(
-                    "tool \"{}\" requires approval (not yet supported)",
-                    exec.name
-                )
-            });
-            return (PreToolDecision::Deny { reason }, false);
-        };
-        let outcome = hook(exec.clone(), reason).await;
-        match outcome {
-            ApprovalOutcome::AllowedOnce => (PreToolDecision::Allow, false),
-            ApprovalOutcome::Rejected => (
-                PreToolDecision::Deny {
-                    reason: format!("the user rejected tool \"{}\"", exec.name),
-                },
-                false,
-            ),
-            ApprovalOutcome::Cancelled => (
-                PreToolDecision::Deny {
-                    reason: format!("approval for tool \"{}\" was cancelled", exec.name),
-                },
-                true,
-            ),
-            ApprovalOutcome::Unavailable => (
-                PreToolDecision::Deny {
-                    reason: format!(
-                        "tool \"{}\" requires approval, but no approval channel is available",
-                        exec.name
-                    ),
-                },
-                false,
-            ),
-        }
-    }
-
     async fn finish_post(
         &self,
         exec: &ToolExecution,
@@ -512,6 +588,56 @@ impl ToolRuntime {
     ) -> ToolExecutionResult {
         let decision = run_post(self.post.clone(), 0, exec.clone(), result.clone()).await;
         apply_post_decision(result, decision)
+    }
+}
+
+fn unavailable_reason(name: &str) -> String {
+    format!("tool \"{name}\" requires approval, but no approval channel is available")
+}
+
+async fn resolve_ask(
+    approver: Option<&Arc<dyn Approver>>,
+    session: Option<&mut Session>,
+    exec: &ToolExecution,
+    reason: Option<String>,
+) -> (PreToolDecision, bool) {
+    let Some(approver) = approver else {
+        return (
+            PreToolDecision::Deny {
+                reason: unavailable_reason(&exec.name),
+            },
+            false,
+        );
+    };
+    let Some(session) = session else {
+        return (
+            PreToolDecision::Deny {
+                reason: unavailable_reason(&exec.name),
+            },
+            false,
+        );
+    };
+    let outcome = approver.decide(session, exec, reason).await;
+    match outcome {
+        ApprovalOutcome::AllowedOnce => (PreToolDecision::Allow, false),
+        ApprovalOutcome::Rejected => (
+            PreToolDecision::Deny {
+                reason: format!("the user rejected tool \"{}\"", exec.name),
+            },
+            false,
+        ),
+        ApprovalOutcome::Cancelled => (
+            PreToolDecision::Deny {
+                reason: format!("approval for tool \"{}\" was cancelled", exec.name),
+            },
+            true,
+        ),
+        ApprovalOutcome::Unavailable => (
+            PreToolDecision::Deny {
+                reason: unavailable_reason(&exec.name),
+            },
+            false,
+        ),
     }
 }
 
@@ -737,12 +863,16 @@ fn aborted_after_body() -> ToolExecutionResult {
 #[cfg(test)]
 mod tests {
     use crate::{
-        AbortFlag, ApprovalOutcome, PostToolDecision, PreToolDecision, RUN_CODE_NAME, TOOL_ABORTED,
-        TOOL_ABORTED_BEFORE_DISPATCH, ToolDefinition, ToolError, ToolExecutionInput,
+        AbortFlag, ApprovalOutcome, Approver, PostToolDecision, PreToolDecision, RUN_CODE_NAME,
+        TOOL_ABORTED, TOOL_ABORTED_BEFORE_DISPATCH, ToolDefinition, ToolError, ToolExecutionInput,
         ToolExecutionMode, ToolExecutionResult, ToolPresentationMode, ToolRuntime,
     };
-    use dsh_session::{CallId, ContentBlock};
+    use dsh_session::{
+        CallId, ContentBlock, SESSION_FORMAT_VERSION, Session, SessionHeader, SessionId,
+    };
     use serde_json::json;
+    use std::future::Future;
+    use std::pin::Pin;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -849,13 +979,15 @@ mod tests {
         assert_eq!(
             result.content(),
             &[ContentBlock::Text {
-                text: "Error: needs approval".into()
+                text:
+                    "Error: tool \"echo\" requires approval, but no approval channel is available"
+                        .into()
             }]
         );
     }
 
     #[tokio::test]
-    async fn ask_without_reason_uses_not_yet_supported() {
+    async fn ask_without_reason_uses_unavailable_channel_text() {
         let mut tools = ToolRuntime::new(ToolPresentationMode::Native);
         tools.register(echo_tool());
         tools.on_pre(|_exec, _next| Box::pin(async { PreToolDecision::Ask { reason: None } }));
@@ -865,7 +997,52 @@ mod tests {
         assert_eq!(
             result.content(),
             &[ContentBlock::Text {
-                text: "Error: tool \"echo\" requires approval (not yet supported)".into()
+                text:
+                    "Error: tool \"echo\" requires approval, but no approval channel is available"
+                        .into()
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn ask_with_approver_allowed_once_dispatches() {
+        struct AllowAll;
+        impl Approver for AllowAll {
+            fn decide<'a>(
+                &'a self,
+                _session: &'a mut Session,
+                _exec: &'a crate::ToolExecution,
+                _reason: Option<String>,
+            ) -> Pin<Box<dyn Future<Output = ApprovalOutcome> + Send + 'a>> {
+                Box::pin(async { ApprovalOutcome::AllowedOnce })
+            }
+        }
+        let mut tools = ToolRuntime::new(ToolPresentationMode::Native);
+        tools.register(echo_tool());
+        tools.set_approver(Some(Arc::new(AllowAll)));
+        tools.on_pre(|_exec, _next| Box::pin(async { PreToolDecision::Ask { reason: None } }));
+        let mut session = Session::new(SessionHeader {
+            version: SESSION_FORMAT_VERSION,
+            id: SessionId::new("ask-approver"),
+            created_at: 1,
+            cwd: None,
+            parent_session: None,
+            seed_length: None,
+            origin: None,
+            delegation_depth: None,
+            agent_preset: None,
+        });
+        let result = tools
+            .execute_with_session(
+                &mut session,
+                input("echo", json!({"text": "hi"}), AbortFlag::new()),
+            )
+            .await;
+        assert!(!result.is_error());
+        assert_eq!(
+            result.content(),
+            &[ContentBlock::Text {
+                text: "echo: hi".into()
             }]
         );
     }

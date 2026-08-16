@@ -5,13 +5,13 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use dsh_session::{
-    CallId, ContentBlock, Message, MessageId, MessageRole, MessageSource, Session, SessionEvent,
-    SurfaceOp, ToolCallData, ToolResultData, ToolResultError,
+    CallId, ContentBlock, LogEvent, Message, MessageId, MessageRole, MessageSource, Session,
+    SessionEvent, SurfaceOp, ToolCallData, ToolResultData, ToolResultError,
 };
 use dsh_tools::{
-    AbortFlag, ScheduledToolDispatch, ScheduledToolPreparation, TOOL_ABORTED_BEFORE_DISPATCH,
-    ToolErrorInfo, ToolExecution, ToolExecutionInput, ToolExecutionMode, ToolExecutionResult,
-    ToolFailure, ToolRuntime, freeze_args_from_raw,
+    AbortFlag, PrepareSnapshot, ScheduledToolDispatch, ScheduledToolPreparation,
+    TOOL_ABORTED_BEFORE_DISPATCH, ToolErrorInfo, ToolExecution, ToolExecutionInput,
+    ToolExecutionMode, ToolExecutionResult, ToolFailure, ToolRuntime, freeze_args_from_raw,
 };
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
@@ -27,10 +27,15 @@ type InFlightFuture =
 pub(crate) trait ToolCallHost {
     /// Run `f` with exclusive access to the session log.
     fn with_session<R>(&mut self, f: impl FnOnce(&mut Session) -> R) -> R;
-    /// Shared tool runtime. `prepare` / `finalize` take this mutex on the
-    /// blocking pool; `dispatch` clones the body future under a brief lock
-    /// then drops the guard before polling.
+    /// Shared tool runtime. Snapshot `prepare` under this mutex without `.await`;
+    /// `dispatch` clones the body future under a brief lock then drops the guard
+    /// before polling. `finalize` may still use the blocking pool.
     fn tools(&self) -> &Arc<Mutex<ToolRuntime>>;
+    /// Direct `&mut Session` for [`PrepareSnapshot::finish`]. Shared hosts return
+    /// `None` and merge approval events after a detached clone.
+    fn session_mut(&mut self) -> Option<&mut Session> {
+        None
+    }
 }
 
 /// Direct session and tools mutex, used by in-process [`crate::LoopAgent`] tests.
@@ -48,6 +53,10 @@ impl ToolCallHost for DirectHost<'_> {
 
     fn tools(&self) -> &Arc<Mutex<ToolRuntime>> {
         self.tools
+    }
+
+    fn session_mut(&mut self) -> Option<&mut Session> {
+        Some(self.session)
     }
 }
 
@@ -76,9 +85,9 @@ struct GroupOutcome {
 /// Schedule one assistant step's tool-call blocks in model order.
 ///
 /// Exclusive calls are a barrier of one and run the full tool pipeline.
-/// Parallel-safe calls run [`ToolRuntime::prepare`] serially (mutex held on
-/// Tokio's blocking pool), overlap [`ToolRuntime::dispatch`] bodies without
-/// that mutex, then [`ToolRuntime::finalize`]. A later sibling
+/// Parallel-safe calls run [`ToolRuntime::begin_prepare`] under a brief mutex
+/// (no `.await`), overlap [`ToolRuntime::dispatch`] bodies without that mutex,
+/// then [`ToolRuntime::finalize`]. A later sibling
 /// is reclassified before start, and an exclusive reclassification stops
 /// replenishing the pool. Abort stops new starts, drains in-flight bodies, and
 /// appends synthetic `ABORTED_BEFORE_DISPATCH` results for not-started calls.
@@ -216,7 +225,7 @@ async fn run_group<H: ToolCallHost>(
             started += 1;
             next_to_start += 1;
             if mode == ToolExecutionMode::Parallel {
-                match start_parallel(host.tools(), &group[index], signal).await {
+                match start_parallel(host, &group[index], signal).await {
                     StartKind::InFlight { exec, body } => {
                         in_flight.push(Box::pin(async move { (index, exec, body.await) }));
                     }
@@ -224,7 +233,7 @@ async fn run_group<H: ToolCallHost>(
                 }
             } else {
                 slots[index] =
-                    Some(execute_locked(host.tools(), planned_input(&group[index], signal)).await);
+                    Some(execute_locked(host, planned_input(&group[index], signal)).await);
             }
             if signal.is_aborted() {
                 aborted = true;
@@ -296,37 +305,47 @@ enum StartKind {
     Ready(ToolExecutionResult),
 }
 
-async fn start_parallel(
-    tools: &Arc<Mutex<ToolRuntime>>,
+async fn start_parallel<H: ToolCallHost>(
+    host: &mut H,
     call: &PlannedCall,
     signal: &AbortFlag,
 ) -> StartKind {
-    let prepared = prepare_locked(tools, planned_input(call, signal)).await;
+    let prepared = prepare_on_host(host, planned_input(call, signal)).await;
     match prepared {
         ScheduledToolPreparation::Dispatch { exec } => {
-            let body = dispatch_locked(tools, &exec);
+            let body = dispatch_locked(host.tools(), &exec);
             StartKind::InFlight { exec, body }
         }
         ScheduledToolPreparation::PostResult { exec, result } => StartKind::Ready(
-            settle_dispatch(tools, &exec, ScheduledToolDispatch::PostResult { result }).await,
+            settle_dispatch(
+                host.tools(),
+                &exec,
+                ScheduledToolDispatch::PostResult { result },
+            )
+            .await,
         ),
         ScheduledToolPreparation::FinalResult { result, .. } => StartKind::Ready(result),
     }
 }
 
-async fn execute_locked(
-    tools: &Arc<Mutex<ToolRuntime>>,
+async fn execute_locked<H: ToolCallHost>(
+    host: &mut H,
     input: ToolExecutionInput,
 ) -> ToolExecutionResult {
-    let prepared = prepare_locked(tools, input).await;
+    let prepared = prepare_on_host(host, input).await;
     match prepared {
         ScheduledToolPreparation::Dispatch { exec } => {
-            let body = dispatch_locked(tools, &exec);
+            let body = dispatch_locked(host.tools(), &exec);
             let dispatched = body.await;
-            settle_dispatch(tools, &exec, dispatched).await
+            settle_dispatch(host.tools(), &exec, dispatched).await
         }
         ScheduledToolPreparation::PostResult { exec, result } => {
-            settle_dispatch(tools, &exec, ScheduledToolDispatch::PostResult { result }).await
+            settle_dispatch(
+                host.tools(),
+                &exec,
+                ScheduledToolDispatch::PostResult { result },
+            )
+            .await
         }
         ScheduledToolPreparation::FinalResult { result, .. } => result,
     }
@@ -343,19 +362,58 @@ async fn settle_dispatch(
     }
 }
 
-/// Drive [`ToolRuntime::prepare`] on the blocking pool with the tools mutex held
-/// there so the Tokio worker stays free. `MutexGuard` is `!Send`.
-async fn prepare_locked(
-    tools: &Arc<Mutex<ToolRuntime>>,
+/// Snapshot freeze/collapse under the tools mutex, then finish on this worker
+/// with `&mut Session` so an [`dsh_tools::Approver`] can append audit events.
+async fn prepare_on_host<H: ToolCallHost>(
+    host: &mut H,
     input: ToolExecutionInput,
 ) -> ScheduledToolPreparation {
-    let tools = Arc::clone(tools);
-    tokio::task::spawn_blocking(move || {
-        let mut guard = tools.lock().expect("tools");
-        tokio::runtime::Handle::current().block_on(guard.prepare(input))
-    })
-    .await
-    .expect("prepare join")
+    let snapshot = {
+        let mut tools = host.tools().lock().expect("tools");
+        tools.begin_prepare(input)
+    };
+    finish_prepare(host, snapshot).await
+}
+
+async fn finish_prepare<H: ToolCallHost>(
+    host: &mut H,
+    snapshot: PrepareSnapshot,
+) -> ScheduledToolPreparation {
+    if let Some(session) = host.session_mut() {
+        return snapshot.finish(Some(session)).await;
+    }
+    let origin_len = host.with_session(|session| session.events().len());
+    let mut session = host.with_session(|live| {
+        let mut cloned = live.clone();
+        cloned.set_append_sink(None);
+        cloned
+    });
+    let prepared = snapshot.finish(Some(&mut session)).await;
+    host.with_session(|live| {
+        merge_new_session_events(live, &session, origin_len);
+    });
+    prepared
+}
+
+fn merge_new_session_events(live: &mut Session, clone: &Session, origin_len: usize) {
+    for event in clone.events().iter().skip(origin_len) {
+        let seq = live.events().len() as u64;
+        let Some(known) = reseq_known(event, seq) else {
+            continue;
+        };
+        live.append(known).expect("approval audit merge");
+    }
+}
+
+fn reseq_known(event: &LogEvent, seq: u64) -> Option<SessionEvent> {
+    let LogEvent::Known(known) = event else {
+        return None;
+    };
+    let mut value = serde_json::to_value(known).ok()?;
+    let obj = value.as_object_mut()?;
+    obj.insert("seq".into(), serde_json::Value::from(seq));
+    obj.insert("time".into(), serde_json::Value::from(seq as i64));
+    serde_json::from_value(value).ok()
 }
 
 fn dispatch_locked(tools: &Arc<Mutex<ToolRuntime>>, exec: &ToolExecution) -> DispatchFuture {

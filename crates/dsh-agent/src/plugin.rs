@@ -6,7 +6,8 @@ use dsh_boot::{PLUGIN_AGENT, PluginRegistry, PluginSetup};
 use dsh_kernel::KernelError;
 use dsh_llm::LlmRuntime;
 use dsh_system_prompt::SystemPrompt;
-use dsh_tools::ToolRuntime;
+use dsh_tools::{Approver, ToolRuntime};
+use dsh_user_approval::ApprovalService;
 
 use crate::AgentRegistry;
 
@@ -25,6 +26,12 @@ pub fn register(registry: &mut PluginRegistry) {
             let llm = ctx.inject::<Mutex<LlmRuntime>>("llm").await?;
             let tools = ctx.inject::<Mutex<ToolRuntime>>("tools").await?;
             let prompt = ctx.inject::<SystemPrompt>("systemPrompt").await?;
+            if let Some(svc) = ctx.get::<ApprovalService>("approval") {
+                tools
+                    .lock()
+                    .expect("tools")
+                    .set_approver(Some(svc as Arc<dyn Approver>));
+            }
             ctx.provide(
                 "agents",
                 AgentRegistry::from_shared(
