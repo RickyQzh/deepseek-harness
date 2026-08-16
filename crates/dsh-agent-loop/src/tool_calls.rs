@@ -382,38 +382,44 @@ async fn finish_prepare<H: ToolCallHost>(
     if let Some(session) = host.session_mut() {
         return snapshot.finish(Some(session)).await;
     }
-    let origin_len = host.with_session(|session| session.events().len());
-    let mut session = host.with_session(|live| {
+    let (mut session, origin_len) = host.with_session(|live| {
         let mut cloned = live.clone();
         cloned.set_append_sink(None);
-        cloned
+        let origin_len = cloned.events().len();
+        (cloned, origin_len)
     });
     let prepared = snapshot.finish(Some(&mut session)).await;
     host.with_session(|live| {
-        merge_new_session_events(live, &session, origin_len);
+        merge_approval_audit(live, &session, origin_len);
     });
     prepared
 }
 
-fn merge_new_session_events(live: &mut Session, clone: &Session, origin_len: usize) {
+fn merge_approval_audit(live: &mut Session, clone: &Session, origin_len: usize) {
     for event in clone.events().iter().skip(origin_len) {
         let seq = live.events().len() as u64;
-        let Some(known) = reseq_known(event, seq) else {
-            continue;
+        let time = seq as i64;
+        let known = match event {
+            LogEvent::Known(SessionEvent::ApprovalAsked {
+                data, ignorable, ..
+            }) => SessionEvent::ApprovalAsked {
+                seq,
+                time,
+                data: data.clone(),
+                ignorable: *ignorable,
+            },
+            LogEvent::Known(SessionEvent::ApprovalDecided {
+                data, ignorable, ..
+            }) => SessionEvent::ApprovalDecided {
+                seq,
+                time,
+                data: data.clone(),
+                ignorable: *ignorable,
+            },
+            _ => continue,
         };
         live.append(known).expect("approval audit merge");
     }
-}
-
-fn reseq_known(event: &LogEvent, seq: u64) -> Option<SessionEvent> {
-    let LogEvent::Known(known) = event else {
-        return None;
-    };
-    let mut value = serde_json::to_value(known).ok()?;
-    let obj = value.as_object_mut()?;
-    obj.insert("seq".into(), serde_json::Value::from(seq));
-    obj.insert("time".into(), serde_json::Value::from(seq as i64));
-    serde_json::from_value(value).ok()
 }
 
 fn dispatch_locked(tools: &Arc<Mutex<ToolRuntime>>, exec: &ToolExecution) -> DispatchFuture {
@@ -618,14 +624,18 @@ fn aborted_before_dispatch() -> ToolExecutionResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{DirectHost, ToolCallsOutcome, execute_tool_calls};
+    use super::{DirectHost, ToolCallHost, ToolCallsOutcome, execute_tool_calls};
     use crate::test_header;
-    use dsh_session::{CallId, ContentBlock, LogEvent, Session, SessionEvent};
+    use dsh_session::{
+        CallId, ContentBlock, InboxSplicedData, InboxTarget, LogEvent, Session, SessionEvent,
+    };
     use dsh_tools::{
-        AbortFlag, PreToolDecision, TOOL_ABORTED_BEFORE_DISPATCH, ToolDefinition,
-        ToolPresentationMode, ToolRuntime,
+        AbortFlag, ApprovalOutcome, Approver, PreToolDecision, TOOL_ABORTED_BEFORE_DISPATCH,
+        ToolDefinition, ToolExecution, ToolPresentationMode, ToolRuntime,
     };
     use serde_json::json;
+    use std::future::Future;
+    use std::pin::Pin;
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -912,5 +922,140 @@ mod tests {
         .unwrap();
         assert!(!outcome.aborted);
         assert_eq!(ran.load(Ordering::SeqCst), 1);
+    }
+
+    /// SharedHost `session_mut` is `None`. A waiter that runs after the first
+    /// length-preserving `with_session` is the two-lock `origin_len` → clone gap.
+    #[tokio::test]
+    async fn followup_during_shared_prepare_does_not_duplicate_inbox() {
+        struct AuditApprover;
+        impl Approver for AuditApprover {
+            fn decide<'a>(
+                &'a self,
+                session: &'a mut Session,
+                exec: &'a ToolExecution,
+                _reason: Option<String>,
+            ) -> Pin<Box<dyn Future<Output = ApprovalOutcome> + Send + 'a>> {
+                Box::pin(async move {
+                    let seq = session.events().len() as u64;
+                    session
+                        .append(SessionEvent::ApprovalAsked {
+                            seq,
+                            time: seq as i64,
+                            data: json!({
+                                "id": "a1",
+                                "toolName": exec.name,
+                                "callId": exec.call_id.as_str(),
+                            }),
+                            ignorable: None,
+                        })
+                        .expect("asked");
+                    let seq = session.events().len() as u64;
+                    session
+                        .append(SessionEvent::ApprovalDecided {
+                            seq,
+                            time: seq as i64,
+                            data: json!({
+                                "id": "a1",
+                                "outcome": "allowed-once",
+                            }),
+                            ignorable: None,
+                        })
+                        .expect("decided");
+                    ApprovalOutcome::AllowedOnce
+                })
+            }
+        }
+
+        struct SharedRaceHost {
+            session: Session,
+            tools: Arc<Mutex<ToolRuntime>>,
+            spliced: bool,
+        }
+
+        impl ToolCallHost for SharedRaceHost {
+            fn with_session<R>(&mut self, f: impl FnOnce(&mut Session) -> R) -> R {
+                let before = self.session.events().len();
+                let result = f(&mut self.session);
+                if before == self.session.events().len() && !self.spliced {
+                    self.spliced = true;
+                    let seq = self.session.events().len() as u64;
+                    self.session
+                        .append(SessionEvent::AgentInboxSpliced {
+                            seq,
+                            time: seq as i64,
+                            data: InboxSplicedData {
+                                target: InboxTarget::NextTurn,
+                                start: 0,
+                                removed_count: None,
+                                inserted: vec![crate::user_text("followup", "followup")],
+                                outcome: None,
+                            },
+                            ignorable: None,
+                        })
+                        .expect("followup splice");
+                }
+                result
+            }
+
+            fn tools(&self) -> &Arc<Mutex<ToolRuntime>> {
+                &self.tools
+            }
+        }
+
+        let mut tools = ToolRuntime::new(ToolPresentationMode::Native);
+        tools.register(ToolDefinition {
+            name: "echo".into(),
+            description: "echo".into(),
+            parameters: json!({"type": "object"}),
+            execute: Box::new(|args, _exec| Box::pin(async move { Ok(args) })),
+            render: Box::new(|_, v| {
+                vec![ContentBlock::Text {
+                    text: v.to_string(),
+                }]
+            }),
+            is_concurrency_safe: None,
+        });
+        tools.set_approver(Some(Arc::new(AuditApprover)));
+        tools.on_pre(|_exec, _next| Box::pin(async { PreToolDecision::Ask { reason: None } }));
+
+        let mut host = SharedRaceHost {
+            session: Session::new(test_header("shared-prep")),
+            tools: Arc::new(Mutex::new(tools)),
+            spliced: false,
+        };
+        let outcome = execute_tool_calls(
+            &mut host,
+            1,
+            1,
+            &[tool_call("c1", "echo", json!({"id": "a"}))],
+            &AbortFlag::new(),
+            10,
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
+        assert!(!outcome.aborted);
+        let types: Vec<_> = host
+            .session
+            .events()
+            .iter()
+            .map(|event| event.event_type().to_string())
+            .collect();
+        let splices = types
+            .iter()
+            .filter(|ty| ty.as_str() == "agent/inbox/spliced")
+            .count();
+        let asked = types
+            .iter()
+            .filter(|ty| ty.as_str() == "approval/asked")
+            .count();
+        let decided = types
+            .iter()
+            .filter(|ty| ty.as_str() == "approval/decided")
+            .count();
+        assert_eq!(splices, 1, "{types:?}");
+        assert_eq!(asked, 1, "{types:?}");
+        assert_eq!(decided, 1, "{types:?}");
     }
 }
