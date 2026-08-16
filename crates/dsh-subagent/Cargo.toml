@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 dsh-agent = { path = "../dsh-agent" }
+dsh-agent-loop = { path = "../dsh-agent-loop" }
 dsh-boot = { path = "../dsh-boot" }
 dsh-brand = { path = "../dsh-brand" }
 dsh-kernel = { path = "../dsh-kernel" }
@@ -20,7 +21,6 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
-dsh-agent-loop = { path = "../dsh-agent-loop" }
 dsh-llm = { path = "../dsh-llm" }
 dsh-system-prompt = { path = "../dsh-system-prompt" }
 tokio = { workspace = true }

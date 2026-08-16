@@ -3,6 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use dsh_agent::{AgentHandle, AgentRegistry, CreateAgentOptions};
+use dsh_agent_loop::AgentStatus;
 use dsh_kernel::Payload;
 use dsh_session::{
     ContentBlock, LogEvent, Message, MessageId, MessageRole, MessageSource, SESSION_FORMAT_VERSION,
@@ -82,13 +83,16 @@ impl SubagentRuntime {
             .collect()
     }
 
-    /// Publish a continuable child, drive it to idle, and queue the settlement notice on `parent`.
+    /// Publish a continuable child, drive it to idle, emit `subagent/end`, and queue the
+    /// settlement notice on `parent`.
     ///
-    /// Joins until that notice is queued. Does not take the parent driver permit.
+    /// Joins until that notice is queued or rejected. `subagent/end` still emits when
+    /// the notice cannot be queued. Does not take the parent driver permit.
     ///
     /// # Errors
     ///
-    /// Unknown provider, depth cap, missing `agents`, session/resume failure, or child loop failure.
+    /// Unknown provider, depth cap, missing `agents`, session/resume failure, child
+    /// loop failure, or settlement notice rejection.
     pub async fn start_continuable(
         &self,
         spec: ContinuableStartSpec,
@@ -118,11 +122,14 @@ impl SubagentRuntime {
         Ok(id)
     }
 
-    /// Queue `message` on a continuable child. Foreign or unknown children fail loud.
+    /// Queue `message` on a continuable child. When the child is idle, drive only
+    /// that child with [`AgentHandle::run_until_idle`]. A running child picks the
+    /// mail up after its current turn. Never takes the parent driver permit.
     ///
     /// # Errors
     ///
-    /// Unknown child, parent mismatch, missing `agents`, or inbox splice failure.
+    /// Unknown child, parent mismatch, missing `agents`, inbox splice failure, or
+    /// child loop failure.
     pub async fn followup_child(
         &self,
         child_id: &SessionId,
@@ -157,6 +164,16 @@ impl SubagentRuntime {
             .followup(message)
             .await
             .map_err(|error| SubagentError::other(error.to_string()))?;
+        let idle = {
+            let agent = child.lock();
+            agent.status() == AgentStatus::Idle
+        };
+        if idle {
+            child
+                .run_until_idle()
+                .await
+                .map_err(|error| SubagentError::other(error.to_string()))?;
+        }
         Ok(())
     }
 
@@ -284,7 +301,7 @@ async fn drive_and_settle(live: LiveChild) -> Result<(), SubagentError> {
     if driven.is_err() {
         stop_reason = SubagentStopReason::Error;
     }
-    notify_settlement(&live.parent, live.child.id(), stop_reason, &output).await?;
+    let notified = notify_settlement(&live.parent, live.child.id(), stop_reason, &output).await;
     live.ctx.emit(
         EVENT_SUBAGENT_END,
         Payload::new(SubagentRunEndInfo {
@@ -295,6 +312,7 @@ async fn drive_and_settle(live: LiveChild) -> Result<(), SubagentError> {
             stop_reason,
         }),
     );
+    notified?;
     driven.map_err(|error| SubagentError::other(error.to_string()))
 }
 
@@ -446,10 +464,12 @@ fn suffix_stop_reason(events: &[LogEvent]) -> SubagentStopReason {
 mod tests {
     use super::ContinuableStartSpec;
     use crate::{
-        ContinuableCreateSpec, SubagentCapabilities, SubagentError, SubagentProvider,
-        SubagentResult, SubagentRuntime, SubagentStartRequest,
+        ContinuableCreateSpec, EVENT_SUBAGENT_END, EVENT_SUBAGENT_START, SubagentCapabilities,
+        SubagentError, SubagentProvider, SubagentResult, SubagentRunEndInfo, SubagentRunInfo,
+        SubagentRuntime, SubagentStartRequest, SubagentStopReason,
     };
     use dsh_agent::{AgentHandle, AgentRegistry, CreateAgentOptions};
+    use dsh_agent_loop::{AgentStatus, CancelCause, CancelOptions};
     use dsh_kernel::Context;
     use dsh_llm::{LlmRuntime, MockAdapter, MockScript, text_response};
     use dsh_session::{ContentBlock, Message, MessageId, MessageRole, MessageSource, SessionId};
@@ -458,6 +478,7 @@ mod tests {
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     struct FakeSpawn;
 
@@ -532,7 +553,11 @@ mod tests {
     }
 
     fn parent_text_contains(parent: &AgentHandle, needle: &str) -> bool {
-        parent
+        handle_text_contains(parent, needle)
+    }
+
+    fn handle_text_contains(handle: &AgentHandle, needle: &str) -> bool {
+        handle
             .lock()
             .session
             .derive_messages()
@@ -541,11 +566,16 @@ mod tests {
     }
 
     async fn boot_continuable() -> Env {
-        let adapter = Arc::new(MockAdapter::new(vec![
+        boot_continuable_with(vec![
             MockScript::Chunks(text_response("parent-idle")),
             MockScript::Chunks(text_response("CHILD_RESULT")),
             MockScript::Chunks(text_response("parent-settled")),
-        ]));
+        ])
+        .await
+    }
+
+    async fn boot_continuable_with(script: Vec<MockScript>) -> Env {
+        let adapter = Arc::new(MockAdapter::new(script));
         let ctx = Context::new();
         let llm = Arc::new(Mutex::new(LlmRuntime::new()));
         llm.lock().expect("llm").register_adapter("mock", adapter);
@@ -605,5 +635,186 @@ mod tests {
         assert!(parent_has_source_kind(&parent, "subagent-settled"));
         assert!(parent_text_contains(&parent, "CHILD_RESULT"));
         let _ = child_id;
+    }
+
+    #[tokio::test]
+    async fn followup_child_drives_idle_child_for_later_turn() {
+        let env = boot_continuable_with(vec![
+            MockScript::Chunks(text_response("parent-idle")),
+            MockScript::Chunks(text_response("CHILD_RESULT")),
+            MockScript::Chunks(text_response("SECOND_TURN")),
+        ])
+        .await;
+        let parent = idle_parent(&env).await;
+        let child_id = env
+            .rt
+            .start_continuable(ContinuableStartSpec {
+                provider: "spawn".into(),
+                label: "Return child result".into(),
+                prompt: text_blocks("Reply with exactly CHILD_RESULT"),
+                parent: parent.clone(),
+                signal: AbortFlag::new(),
+            })
+            .await
+            .unwrap();
+        env.rt
+            .followup_child(
+                &child_id,
+                Message {
+                    id: MessageId::new("coord-1"),
+                    role: MessageRole::User,
+                    content: text_blocks("do a second turn"),
+                    source: MessageSource::Coordinator {
+                        form: "relay".into(),
+                        sender_session_id: parent.id().as_str().to_string(),
+                    },
+                },
+                &parent,
+            )
+            .await
+            .unwrap();
+        let child = env.agents.get(child_id.as_str()).expect("child");
+        assert!(
+            handle_text_contains(&child, "SECOND_TURN"),
+            "idle continuable child must run the followup turn"
+        );
+    }
+
+    #[tokio::test]
+    async fn emits_subagent_end_when_settlement_followup_fails() {
+        let env = boot_continuable_with(vec![
+            MockScript::Chunks(text_response("parent-idle")),
+            MockScript::Hang,
+        ])
+        .await;
+        let starts = Arc::new(Mutex::new(Vec::<SessionId>::new()));
+        let ends = Arc::new(Mutex::new(Vec::<SubagentStopReason>::new()));
+        let start_slot = Arc::clone(&starts);
+        let end_slot = Arc::clone(&ends);
+        env.rt
+            .context()
+            .on(EVENT_SUBAGENT_START, move |payload| {
+                let start_slot = Arc::clone(&start_slot);
+                let id = payload
+                    .downcast_ref::<SubagentRunInfo>()
+                    .map(|info| info.id.clone());
+                async move {
+                    if let Some(id) = id {
+                        start_slot
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(id);
+                    }
+                }
+            })
+            .expect("listen start");
+        env.rt
+            .context()
+            .on(EVENT_SUBAGENT_END, move |payload| {
+                let end_slot = Arc::clone(&end_slot);
+                let reason = payload
+                    .downcast_ref::<SubagentRunEndInfo>()
+                    .map(|info| info.stop_reason);
+                async move {
+                    if let Some(reason) = reason {
+                        end_slot
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(reason);
+                    }
+                }
+            })
+            .expect("listen end");
+        let parent = idle_parent(&env).await;
+        let start_fut = env.rt.start_continuable(ContinuableStartSpec {
+            provider: "spawn".into(),
+            label: "hang then fail notify".into(),
+            prompt: text_blocks("hang"),
+            parent: parent.clone(),
+            signal: AbortFlag::new(),
+        });
+        tokio::pin!(start_fut);
+        let child_id = wait_while_driving(&mut start_fut, || {
+            starts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .first()
+                .cloned()
+        })
+        .await;
+        wait_while_driving(&mut start_fut, || {
+            env.agents
+                .get(child_id.as_str())
+                .map(|child| child.lock().status() == AgentStatus::Running)
+                .unwrap_or(false)
+                .then_some(())
+        })
+        .await;
+        parent
+            .followup(Message {
+                id: MessageId::new(format!("{}-settled", child_id.as_str())),
+                role: MessageRole::User,
+                content: text_blocks("collide"),
+                source: MessageSource::User,
+            })
+            .await
+            .unwrap();
+        {
+            let child = env.agents.get(child_id.as_str()).expect("child");
+            child
+                .lock()
+                .cancel(CancelCause::User, CancelOptions::default())
+                .unwrap();
+        }
+        let outcome = tokio::time::timeout(Duration::from_secs(2), start_fut)
+            .await
+            .expect("start_continuable should finish after child abort");
+        assert!(outcome.is_err(), "{outcome:?}");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let end_reasons = ends
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if !end_reasons.is_empty() {
+                assert_eq!(end_reasons.len(), 1, "subagent/end must pair start");
+                assert_eq!(
+                    starts
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .len(),
+                    1
+                );
+                break;
+            }
+            if tokio::time::Instant::now() > deadline {
+                panic!("timed out waiting for subagent/end after settlement followup failure");
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+
+    async fn wait_while_driving<T>(
+        start_fut: &mut std::pin::Pin<
+            &mut impl std::future::Future<Output = Result<SessionId, SubagentError>>,
+        >,
+        mut ready: impl FnMut() -> Option<T>,
+    ) -> T {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(value) = ready() {
+                return value;
+            }
+            if tokio::time::Instant::now() > deadline {
+                panic!("timed out waiting while driving start_continuable");
+            }
+            tokio::select! {
+                biased;
+                result = start_fut.as_mut() => {
+                    panic!("start_continuable returned before the test fixture was ready: {result:?}");
+                }
+                () = tokio::time::sleep(Duration::from_millis(1)) => {}
+            }
+        }
     }
 }
