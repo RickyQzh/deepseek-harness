@@ -1,7 +1,7 @@
 [package]
 name = "dsh-fs"
 version = "0.1.0"
-description = "Filesystem types, FS_* error codes, and the unfenced local UTF-8 backend for the DeepSeek Harness Rust host"
+description = "Filesystem types, FS_* error codes, local UTF-8 backend, in-process sandbox fence, and per-owner observation policy for the DeepSeek Harness Rust host"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true

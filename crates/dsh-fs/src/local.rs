@@ -1,4 +1,4 @@
-//! Unfenced host-filesystem UTF-8 backend.
+//! Host-filesystem UTF-8 backend, optionally fenced by [`SandboxFence`].
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -13,19 +13,17 @@ use crate::fsio::{
     read_text_for_diff, read_whole_text, resolve_local_target, restore_line_endings,
     throw_if_aborted, write_file_atomic,
 };
+use crate::sandbox::{SandboxFence, checked_target};
 use crate::{
     FsEditOutcome, FsEditRequest, FsError, FsErrorCode, FsInfo, FsInfoType, FsTarget, FsVersion,
     FsWriteIntent, FsWriteOutcome,
 };
 
-/// Placeholder until Task 37 installs the observation fence.
-struct SandboxFence;
-
 /// Host-filesystem UTF-8 backend.
 ///
 /// `cwd` is a resolution default, not a containment root. Relative paths may
-/// leave it; absolute paths ignore it. [`Self::sandbox_mode`] is [`None`] while
-/// no fence is installed.
+/// leave it; absolute paths ignore it. [`Self::sandbox_mode`] is [`None`] for
+/// [`Self::new`] and `Some(default_policy.mode)` for [`Self::sandboxed`].
 pub struct LocalFileSystem {
     /// Base directory for relative paths.
     pub cwd: PathBuf,
@@ -38,6 +36,8 @@ pub struct LocalFileSystem {
 
 impl LocalFileSystem {
     /// Build an unfenced backend that resolves relative paths against `cwd`.
+    ///
+    /// Mutations ignore `sandbox_policy`.
     #[must_use]
     pub fn new(cwd: impl Into<PathBuf>) -> Self {
         Self {
@@ -48,13 +48,40 @@ impl LocalFileSystem {
         }
     }
 
+    /// Build a backend that fences `write_text` and `edit_text` with `default_policy`.
+    ///
+    /// Reads are never fenced. A per-call `sandbox_policy` replaces the default
+    /// for that mutation.
+    #[must_use]
+    pub fn sandboxed(cwd: impl Into<PathBuf>, default_policy: SandboxExecutionPolicy) -> Self {
+        Self {
+            cwd: cwd.into(),
+            diff_basis_max_bytes: DEFAULT_DIFF_BASIS_MAX_BYTES,
+            fence: Some(SandboxFence { default_policy }),
+            locks: Mutex::new(HashMap::new()),
+        }
+    }
+
     /// File-effect mode of the installed fence, or [`None`] when unfenced.
     #[must_use]
     pub fn sandbox_mode(&self) -> Option<SandboxMode> {
-        let Some(_fence) = &self.fence else {
-            return None;
+        self.fence.as_ref().map(|fence| fence.default_policy.mode)
+    }
+
+    /// When a fence is installed, enforce `sandbox_policy` or the fence default.
+    async fn enforce_fence(
+        &self,
+        target: &FsTarget,
+        sandbox_policy: Option<&SandboxExecutionPolicy>,
+    ) -> Result<FsTarget, FsError> {
+        let Some(policy) = self.fence.as_ref().map(|fence| {
+            sandbox_policy
+                .cloned()
+                .unwrap_or_else(|| fence.default_policy.clone())
+        }) else {
+            return Ok(target.clone());
         };
-        None
+        checked_target(self, target, Some(&policy)).await
     }
 
     fn mutation_lock(&self, key: &str) -> Arc<AsyncMutex<()>> {
@@ -149,10 +176,12 @@ impl LocalFileSystem {
     ///
     /// Omitting `expected` is unconditional create-or-overwrite. Publication
     /// writes a `0o600` sibling temp file and `rename`s it into place.
-    /// `_sandbox_policy` is ignored; Task 37 occupies it with the sandbox fence.
+    /// When a fence is installed, `sandbox_policy` (or the fence default) is
+    /// enforced before the mutation; [`Self::new`] ignores it.
     ///
     /// # Errors
     ///
+    /// [`FsErrorCode::SandboxDenied`] when the fence refuses the path.
     /// [`FsErrorCode::StaleVersion`] when `ReplaceIfVersion` misses or
     /// mismatches. [`FsErrorCode::NotObserved`] when `CreateIfAbsent` finds an
     /// existing file. [`FsErrorCode::NotRegularFile`] when the path exists and
@@ -163,8 +192,9 @@ impl LocalFileSystem {
         content: &str,
         expected: Option<FsWriteIntent>,
         signal: Option<&AbortFlag>,
-        _sandbox_policy: Option<&SandboxExecutionPolicy>,
+        sandbox_policy: Option<&SandboxExecutionPolicy>,
     ) -> Result<FsWriteOutcome, FsError> {
+        let target = self.enforce_fence(target, sandbox_policy).await?;
         throw_if_aborted(signal, "write")?;
         let lock = self.mutation_lock(target.target_key.as_str());
         let _guard = lock.lock().await;
@@ -256,11 +286,12 @@ impl LocalFileSystem {
     /// Literal replacement of `edit.old_string` in a regular UTF-8 file.
     ///
     /// Matching runs on LF-normalized text. A CRLF original is restored on
-    /// publish. `_sandbox_policy` is ignored; Task 37 occupies it with the
-    /// sandbox fence.
+    /// publish. When a fence is installed, `sandbox_policy` (or the fence
+    /// default) is enforced before the mutation; [`Self::new`] ignores it.
     ///
     /// # Errors
     ///
+    /// [`FsErrorCode::SandboxDenied`] when the fence refuses the path.
     /// [`FsErrorCode::NotFound`] when missing. [`FsErrorCode::StaleVersion`]
     /// when `expected` does not match. [`FsErrorCode::EditNotFound`] when
     /// `old_string` is absent. [`FsErrorCode::AmbiguousEdit`] when several
@@ -272,8 +303,9 @@ impl LocalFileSystem {
         edit: &FsEditRequest,
         expected: Option<&FsVersion>,
         signal: Option<&AbortFlag>,
-        _sandbox_policy: Option<&SandboxExecutionPolicy>,
+        sandbox_policy: Option<&SandboxExecutionPolicy>,
     ) -> Result<FsEditOutcome, FsError> {
+        let target = self.enforce_fence(target, sandbox_policy).await?;
         throw_if_aborted(signal, "edit")?;
         let lock = self.mutation_lock(target.target_key.as_str());
         let _guard = lock.lock().await;
