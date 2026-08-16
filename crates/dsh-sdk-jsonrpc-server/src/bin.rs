@@ -3,7 +3,10 @@
 use dsh_agent::{register_execution_plugins, register_spine_plugins};
 use dsh_boot::{PluginRegistry, boot_yaml, process_interpolate_env};
 use dsh_kernel::Context;
-use dsh_sdk_jsonrpc_server::{MINIMAL_YAML, register};
+use dsh_sdk_jsonrpc_server::{
+    HarnessSdkJsonRpcServer, MINIMAL_YAML, SDK_JSONRPC_SERVER_SERVICE, register,
+};
+use tokio::io::AsyncWriteExt;
 
 fn load_yaml() -> Result<String, String> {
     match std::env::var("DSH_CORDIS_CONFIG") {
@@ -64,5 +67,11 @@ async fn main() {
         eprintln!("dsh: {error}");
         std::process::exit(1);
     }
-    std::future::pending::<()>().await;
+    let Some(server) = ctx.get::<HarnessSdkJsonRpcServer>(SDK_JSONRPC_SERVER_SERVICE) else {
+        eprintln!("dsh: sdk-jsonrpc-server must be mounted");
+        std::process::exit(1);
+    };
+    let _ = server.serve().await;
+    let mut out = tokio::io::stdout();
+    let _ = out.flush().await;
 }

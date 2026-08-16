@@ -37,6 +37,28 @@ const minimalLiveConfig = join(testsDir, '..', 'minimal.cordis.yml')
 const minimalReplayConfig = join(testsDir, '..', 'minimal.snapshot.cordis.yml')
 const runtimeBin = fileURLToPath(new URL('../../../packages/examples/jsonrpc-demo/src/bin.ts', import.meta.url))
 const repoTsconfig = fileURLToPath(new URL('../../../tsconfig.json', import.meta.url))
+const repoRoot = fileURLToPath(new URL('../../..', import.meta.url))
+const rustBinDefault = join(repoRoot, 'target/debug/dsh-jsonrpc-agent')
+const rustReplayConfig = join(testsDir, '..', 'rust.snapshot.cordis.yml')
+const rustRuntime = process.env.DSH_RUNTIME === 'rust'
+const PHASE5_RUST_SCENARIOS = new Set(['text-turn', 'bash-tool'])
+
+function resolveSnapshotLaunch(): { command: string, args: string[], env: NodeJS.ProcessEnv } {
+  if (!rustRuntime) {
+    return resolveExampleLaunch({
+      srcBin: runtimeBin,
+      configArgs: [],
+      tsconfigPath: repoTsconfig,
+    })
+  }
+  const command = process.env.DSH_RUNTIME_BIN && process.env.DSH_RUNTIME_BIN !== ''
+    ? process.env.DSH_RUNTIME_BIN
+    : rustBinDefault
+  if (!existsSync(command)) {
+    throw new Error(`DSH_RUNTIME=rust but ${command} is missing; run cargo build -p dsh-sdk-jsonrpc-server`)
+  }
+  return { command, args: [], env: {} }
+}
 
 const MINIMAL_SYSTEM_PROMPT = 'You are the environment-selected minimal software engineer.'
 const MINIMAL_BASH_DESCRIPTION = `Run commands in a bash shell
@@ -269,18 +291,16 @@ async function runScenario(scenario: SdkScenario): Promise<{
   const cwd = await mkdtemp(join(tmpdir(), `sdk-snapshot-${scenario.name}-`))
   const sessionsRoot = join(cwd, '.sessions')
   const replayFixtures = recording ? [] : await hydrateReplayFixtures(scenario, cwd)
-  const launch = resolveExampleLaunch({
-    srcBin: runtimeBin,
-    configArgs: [],
-    tsconfigPath: repoTsconfig,
-  })
+  const launch = resolveSnapshotLaunch()
   const [parentFixture, ...childFixtures] = replayFixtures
   const env: Record<string, string> = {
     ...Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined)) as Record<string, string>,
     ...Object.fromEntries(Object.entries(launch.env).filter(([, value]) => value !== undefined)) as Record<string, string>,
-    DSH_CORDIS_CONFIG: recording
-      ? scenario.configs?.live ?? liveConfig
-      : scenario.configs?.replay ?? replayConfig,
+    DSH_CORDIS_CONFIG: rustRuntime
+      ? rustReplayConfig
+      : recording
+        ? scenario.configs?.live ?? liveConfig
+        : scenario.configs?.replay ?? replayConfig,
     DSH_SESSION_ROOT: sessionsRoot,
     DSH_CWD: cwd,
     DSH_SNAPSHOT: mode,
@@ -345,7 +365,8 @@ function fixtureFiles(scenario: SdkScenario): string[] {
 
 describe('TypeScript SDK snapshots over the jsonrpc runtime', () => {
   for (const scenario of SCENARIOS) {
-    it(`replays ${scenario.name} through the SDK`, async () => {
+    const skipRust = rustRuntime && !PHASE5_RUST_SCENARIOS.has(scenario.name)
+    it.skipIf(skipRust)(`replays ${scenario.name} through the SDK`, async () => {
       const scenarioDir = join(snapshotsDir, scenario.name)
       const notificationsExpectedPath = join(scenarioDir, 'notifications.expected.jsonl')
       const resultExpectedPath = join(scenarioDir, 'result.expected.json')
@@ -356,9 +377,6 @@ describe('TypeScript SDK snapshots over the jsonrpc runtime', () => {
       const files = fixtureFiles(scenario)
 
       if (recording) {
-        // Fixtures carry tokenized request headers; llm-replay reads only
-        // assistant output and tool traffic, so scrubbing keeps prompts and
-        // schemas out of the corpus without affecting replay.
         await mkdir(scenarioDir, { recursive: true })
         const existing = await Promise.all(files.map(async file => existsSync(file) ? readFile(file, 'utf8') : ''))
         const fixtures = stabilizeFixtureMessageIds(
@@ -397,12 +415,25 @@ describe('TypeScript SDK snapshots over the jsonrpc runtime', () => {
         }))
       }
 
+      const expectedResult = JSON.parse(await readFile(resultExpectedPath, 'utf8')) as { finalResponse: string }
+
+      if (rustRuntime) {
+        expect(result.finalResponse).toBe(expectedResult.finalResponse)
+        expect(notifications.at(-1)).toMatchObject({
+          method: 'session.status',
+          params: { status: 'idle' },
+        })
+        const persistPath = join(cwd, '.sessions', scenario.sessionId, 'session.jsonl')
+        expect(ordered[0]?.path, persistPath).toBe(persistPath)
+        expect(observedFiles).toEqual(scenario.expectedFiles ?? {})
+        return
+      }
+
       for (const [index, expected] of expectedContents.entries()) {
         expect(scrubRequestHeaders(expected), `${scenario.name} session fixture ${index} carries request-header bulk`)
           .toBe(expected)
       }
 
-      // Persisted transcripts match the committed fixtures.
       const expectedContext = contextOfContents(expectedContents)
       for (const [index, log] of ordered.entries()) {
         const expected = expectedContents[index]
@@ -411,7 +442,6 @@ describe('TypeScript SDK snapshots over the jsonrpc runtime', () => {
           .toBe(scrubRequestHeaders(normalizeSessionLog(expected, expectedContext)))
       }
 
-      // The SDK-visible wire stream and turn result match their expected outputs.
       const normalizedNotifications = normalizeNotifications(notifications, actualContext)
       const normalizedResult = normalizeResult(result, actualContext)
       if (recording || refreshing) {
@@ -421,7 +451,6 @@ describe('TypeScript SDK snapshots over the jsonrpc runtime', () => {
       expect(normalizedNotifications).toBe(await readFile(notificationsExpectedPath, 'utf8'))
       expect(normalizedResult).toBe(await readFile(resultExpectedPath, 'utf8'))
 
-      // Wire-shape invariants that must hold in every mode.
       expect(notifications.at(-1)).toMatchObject({
         method: 'session.status',
         params: { status: 'idle' },

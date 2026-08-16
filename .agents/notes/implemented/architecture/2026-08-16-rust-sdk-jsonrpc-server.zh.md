@@ -10,11 +10,11 @@ Python 与 TypeScript SDK 把 harness 当作 stdio 子进程，通过 NDJSON JSO
 
 ## 决策
 
-`dsh-sdk-jsonrpc-server` 是 SDK 服务器插件与 `dsh-jsonrpc-agent` bin。YAML 名称 `sdk-jsonrpc-server` 是 `dsh-boot` 中的封闭常量 `PLUGIN_SDK_JSONRPC`。该插件按 `agents` 注入 `AgentRegistry`、按 `sessions` 注入 `JsonlSessionStore`（不是 `Arc<_>`），在 stdin/stdout 上提供服务，并在 `shutdown` 之后安装进程退出钩子。测试在进程内构造 `HarnessSdkJsonRpcServer`，不设置退出钩子。
+`dsh-sdk-jsonrpc-server` 是 SDK 服务器插件与 `dsh-jsonrpc-agent` bin。YAML 名称 `sdk-jsonrpc-server` 是 `dsh-boot` 中的封闭常量 `PLUGIN_SDK_JSONRPC`。该插件按 `agents` 注入 `AgentRegistry`、按 `sessions` 注入 `JsonlSessionStore`（不是 `Arc<_>`），绑定 stdin/stdout，提供 `sdkJsonRpcServer`，并在 `shutdown` 之后安装进程退出钩子。bin 在 `boot_yaml` 之后才开始 serve，因此 `initialize` 能看到兄弟插件的 `register_adapter`。测试在进程内构造 `HarnessSdkJsonRpcServer`，不设置退出钩子。
 
-方法为 `initialize`、`session/prompt` 与 `shutdown`。`initialize` 应答 `serverInfo.name = deepseek-harness-sdk-runtime` 以及 `version = 0.0.1`。若存在 `maxTokens`，它必须是正整数。再次 initialize 返回 `Err("re-initialize is unsupported")`。缺失的提供方会大声失败，包括 `deepseek-official`；第 5 阶段不会从 `initialize` 挂载实时 DeepSeek 适配器。`session/prompt` 在 `followup` 之后、`when_idle` 完成之前返回 `{messageId}`；第一个未知会话 id 调用 `AgentRegistry::create`。通知为 `session.event`（完整 `SessionEvent` 信封）与 `session.status`（`idle` 或 `running`）。服务器从不发出 `subagent.started` 或 `subagent.finished`。stdout 只承载帧。
+方法为 `initialize`、`session/prompt` 与 `shutdown`。`initialize` 应答 `serverInfo.name = deepseek-harness-sdk-runtime` 以及 `version = 0.0.1`。若存在 `maxTokens`，它必须是正整数。再次 initialize 返回 `Err("re-initialize is unsupported")`。缺失的提供方会大声失败，包括 `deepseek-official`；第 5 阶段不会从 `initialize` 挂载实时 DeepSeek 适配器。`session/prompt` 在 `followup` 之后、`when_idle` 完成之前返回 `{messageId}`；第一个未知会话 id 调用 `AgentRegistry::create`。通知为 `session.event`（完整 `SessionEvent` 信封）与 `session.status`（`idle` 或 `running`）。单一 FIFO 任务按入队顺序写出它们，因此 idle 不会抢在 inbox splice 或 assistant 文本之前（否则 TypeScript SDK 在等待 splice 时会跳过过早的 idle 然后挂起，或返回空的 `finalResponse`）。服务器从不发出 `subagent.started` 或 `subagent.finished`。stdout 只承载帧。
 
-该 bin 依次调用 `dsh_agent::register_spine_plugins`、`register_execution_plugins` 与本 crate 的 `register`，然后使用一份与 `dsh-cli` 相同规则的本地 `ensure_persist_env`（非空的 `DSH_SESSION_ROOT` 或 `DSH_HOME` 为无操作；否则 `DSH_HOME=$HOME/.dsh`；缺少 `HOME` 时向 stderr 打印并以退出码 1 退出）。当 `$DSH_CORDIS_CONFIG` 已设置且非空时使用该路径的配置 YAML，否则使用附带的 `minimal.cordis.yml`。该文件不得包含子串 `!!js`。其 mock 适配器占用 `deepseek-official`，因此无密钥 initialize 可用。`boot_yaml` 不等待 serve；bin 随后 `pending()`。
+该 bin 依次调用 `dsh_agent::register_spine_plugins`、`register_execution_plugins` 与本 crate 的 `register`，然后使用一份与 `dsh-cli` 相同规则的本地 `ensure_persist_env`（非空的 `DSH_SESSION_ROOT` 或 `DSH_HOME` 为无操作；否则 `DSH_HOME=$HOME/.dsh`；缺少 `HOME` 时向 stderr 打印并以退出码 1 退出）。当 `$DSH_CORDIS_CONFIG` 已设置且非空时使用该路径的配置 YAML，否则使用附带的 `minimal.cordis.yml`。该文件不得包含子串 `!!js`。其 mock 适配器占用 `deepseek-official`，因此无密钥 initialize 可用。插件在 setup 中绑定并提供 `sdkJsonRpcServer`，不在 setup 内 serve；bin 在 `boot_yaml` 返回之后调用 `serve`。
 
 ## 备选方案
 
@@ -28,7 +28,7 @@ Python 与 TypeScript SDK 把 harness 当作 stdio 子进程，通过 NDJSON JSO
 
 ## 影响
 
-`cargo test -p dsh-sdk-jsonrpc-server --offline` 覆盖稳定的 `serverInfo.name`、在 Hang 结束前就返回 `messageId` 的惰性 `session/prompt`、文本 mock 之后的 `session.status` idle，以及不支持的再次 initialize。`cargo build -p dsh-sdk-jsonrpc-server --offline` 生成 `target/debug/dsh-jsonrpc-agent`。用 Vitest 与 Python 拉起该 bin 是后续任务。
+`cargo test -p dsh-sdk-jsonrpc-server --offline` 覆盖稳定的 `serverInfo.name`、在 Hang 结束前就返回 `messageId` 的惰性 `session/prompt`、文本 mock 之后的 `session.status` idle，以及不支持的再次 initialize。`cargo build -p dsh-sdk-jsonrpc-server --offline` 生成 `target/debug/dsh-jsonrpc-agent`。Vitest 在 `DSH_RUNTIME=rust` 下为 `text-turn` 与 `bash-tool` 拉起该 bin。
 
 ## 相关
 

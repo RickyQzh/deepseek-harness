@@ -4,9 +4,9 @@ use std::sync::{Arc, Mutex};
 
 use dsh_agent::{AgentRegistry, CreateAgentOptions};
 use dsh_sdk_protocol::{
-    InitializeParams, InitializeResult, JsonRpcLineTransport, SessionEventNotification,
-    SessionPromptParams, SessionPromptResult, SessionStatus, SessionStatusNotification,
-    ShutdownResult,
+    InitializeParams, InitializeResult, JsonRpcLineTransport, JsonRpcResponseError,
+    SessionEventNotification, SessionPromptParams, SessionPromptResult, SessionStatus,
+    SessionStatusNotification, ShutdownResult,
 };
 use dsh_session::{
     AppendSink, LogEvent, Message, MessageId, MessageRole, MessageSource, SessionId,
@@ -22,6 +22,7 @@ struct Inner {
     initialized: bool,
     shutting_down: bool,
     exit: Option<Arc<dyn Fn(i32) + Send + Sync>>,
+    notify_tx: Option<tokio::sync::mpsc::UnboundedSender<(String, Option<Value>)>>,
 }
 
 /// SDK server over one transport and one agent registry.
@@ -57,6 +58,7 @@ impl HarnessSdkJsonRpcServer {
                 initialized: false,
                 shutting_down: false,
                 exit: None,
+                notify_tx: None,
             })),
             agents,
             sessions,
@@ -64,23 +66,27 @@ impl HarnessSdkJsonRpcServer {
         }
     }
 
-    /// Install the append sink factory and the JSON-RPC request handler.
+    /// Install the append sink factory, a FIFO notify task, and the JSON-RPC request handler.
     pub fn bind(&self) {
-        let transport = self.transport.clone();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, Option<Value>)>();
+        self.inner.lock().expect("inner").notify_tx = Some(tx.clone());
+        let fifo_transport = self.transport.clone();
+        tokio::spawn(async move {
+            while let Some((method, params)) = rx.recv().await {
+                let _ = fifo_transport.notify(&method, params).await;
+            }
+        });
         let factory: Arc<dyn Fn(&str) -> AppendSink + Send + Sync> =
             Arc::new(move |session_id: &str| {
                 let sid = session_id.to_string();
-                let transport = transport.clone();
+                let tx = tx.clone();
                 Arc::new(move |event: &LogEvent| {
                     let LogEvent::Known(session_event) = event else {
                         return;
                     };
                     let payload = SessionEventNotification::new(sid.clone(), session_event.clone());
-                    let transport = transport.clone();
-                    tokio::spawn(async move {
-                        let params = serde_json::to_value(payload).expect("session.event");
-                        let _ = transport.notify("session.event", Some(params)).await;
-                    });
+                    let params = serde_json::to_value(payload).expect("session.event");
+                    let _ = tx.send(("session.event".to_string(), Some(params)));
                 })
             });
         self.agents.set_sink_factory(Some(factory));
@@ -89,6 +95,13 @@ impl HarnessSdkJsonRpcServer {
             let server = server.clone_handles();
             Box::pin(async move { server.handle_request(method, params).await })
         }));
+    }
+
+    fn enqueue_notify(&self, method: &str, params: Option<Value>) {
+        let Some(tx) = self.inner.lock().expect("inner").notify_tx.clone() else {
+            return;
+        };
+        let _ = tx.send((method.to_string(), params));
     }
 
     fn clone_handles(&self) -> Self {
@@ -194,28 +207,24 @@ impl HarnessSdkJsonRpcServer {
         let session_id = params.session_id().to_string();
         let agents = Arc::clone(&self.agents);
         let sessions = Arc::clone(&self.sessions);
-        let transport = self.transport.clone();
+        let server = self.clone_handles();
         tokio::spawn(async move {
             let running =
                 SessionStatusNotification::new(session_id.clone(), SessionStatus::Running);
-            let _ = transport
-                .notify(
-                    "session.status",
-                    Some(serde_json::to_value(running).expect("status")),
-                )
-                .await;
+            server.enqueue_notify(
+                "session.status",
+                Some(serde_json::to_value(running).expect("status")),
+            );
             let _ = agents.when_idle(&session_id).await;
             if let Some(handle) = agents.get(&session_id) {
                 let guard = handle.lock().await;
                 let _ = sessions.flush(&guard.session);
             }
             let idle = SessionStatusNotification::new(session_id, SessionStatus::Idle);
-            let _ = transport
-                .notify(
-                    "session.status",
-                    Some(serde_json::to_value(idle).expect("status")),
-                )
-                .await;
+            server.enqueue_notify(
+                "session.status",
+                Some(serde_json::to_value(idle).expect("status")),
+            );
         });
         serde_json::to_value(SessionPromptResult::new(message_id))
             .map_err(|error| error.to_string())
@@ -239,6 +248,15 @@ impl HarnessSdkJsonRpcServer {
     /// Process-exit hook used by the stdio plugin after a `shutdown` result is returned. Tests leave this unset.
     pub fn set_exit_hook(&self, hook: Arc<dyn Fn(i32) + Send + Sync>) {
         self.inner.lock().expect("inner").exit = Some(hook);
+    }
+
+    /// Read NDJSON until EOF. The bin calls this after `boot_yaml` so `initialize` sees sibling adapters.
+    ///
+    /// # Errors
+    ///
+    /// Transport read/write failure.
+    pub async fn serve(&self) -> Result<(), JsonRpcResponseError> {
+        self.transport.serve().await
     }
 }
 
@@ -477,6 +495,33 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         assert!(agents.get("sess-text").is_some());
+        let notes = notes.lock().expect("notes").clone();
+        let event_type = |params: &Value| -> Option<String> {
+            params
+                .get("event")
+                .and_then(|event| event.get("type"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        };
+        let splice = notes.iter().position(|(method, params)| {
+            method == "session.event"
+                && event_type(params).as_deref() == Some("agent/inbox/spliced")
+        });
+        let assistant = notes.iter().position(|(method, params)| {
+            method == "session.event" && event_type(params).as_deref() == Some("assistant/message")
+        });
+        let idle = notes.iter().position(|(method, params)| {
+            method == "session.status"
+                && params.get("status").and_then(Value::as_str) == Some("idle")
+        });
+        assert!(
+            splice.is_some() && idle.is_some() && splice < idle,
+            "inbox splice must precede idle: {notes:?}"
+        );
+        assert!(
+            assistant.is_some() && idle.is_some() && assistant < idle,
+            "assistant/message must precede idle: {notes:?}"
+        );
         let _ = client.request("shutdown", json!({})).await;
         client.close().await;
         transport.close().await;
