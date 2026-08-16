@@ -498,12 +498,15 @@ fn estimate_provider_assistant(
 
 #[cfg(test)]
 mod tests {
-    use super::TokenMeter;
-    use crate::estimate_message;
+    use super::{TokenMeasurementBaseline, TokenMeter};
+    use crate::{estimate_header, estimate_message};
     use dsh_session::{
-        ContentBlock, Message, MessageId, MessageRole, MessageSource, SESSION_FORMAT_VERSION,
-        Session, SessionEvent, SessionHeader, SessionId, SurfaceOp,
+        AssistantChunkData, AssistantMessageData, ContentBlock, EpochHeader, FinishReason,
+        LlmCallConfig, Message, MessageId, MessageRole, MessageSource, RequestHeaderData,
+        RequestHeaderReason, SESSION_FORMAT_VERSION, Session, SessionEvent, SessionHeader,
+        SessionId, StepBoundaryData, StreamChunk, SurfaceOp, TokenUsage, canonical_header,
     };
+    use serde_json::json;
 
     fn user_text(text: &str) -> Message {
         Message {
@@ -570,6 +573,197 @@ mod tests {
             .unwrap();
     }
 
+    #[derive(Clone, Copy)]
+    enum CallProvenance {
+        Exact,
+        Empty,
+        Absent,
+    }
+
+    fn call_config(provider: &str, model: &str) -> LlmCallConfig {
+        LlmCallConfig {
+            provider: provider.into(),
+            model: model.into(),
+            reasoning_effort: None,
+            temperature: None,
+            max_tokens: None,
+            stop: None,
+        }
+    }
+
+    fn epoch_header(model: &str, system: Option<&str>) -> EpochHeader {
+        EpochHeader {
+            config: call_config("mock", model),
+            adapter_defaults: None,
+            system: system.map(str::to_owned),
+            tools: None,
+        }
+    }
+
+    fn disjoint_usage() -> TokenUsage {
+        TokenUsage {
+            input_tokens: 20,
+            output_tokens: 7,
+            cache_read_tokens: Some(3),
+            cache_write_tokens: Some(4),
+            reasoning_tokens: Some(6),
+        }
+    }
+
+    fn assistant_text(text: &str) -> Message {
+        Message {
+            id: MessageId::new("a"),
+            role: MessageRole::Assistant,
+            content: if text.is_empty() {
+                vec![]
+            } else {
+                vec![ContentBlock::Text { text: text.into() }]
+            },
+            source: MessageSource::Model {
+                provider: "mock".into(),
+                model: "m".into(),
+                replay_state: None,
+            },
+        }
+    }
+
+    fn next_seq(session: &Session) -> u64 {
+        session.events().len() as u64
+    }
+
+    fn append(session: &mut Session, event: SessionEvent) {
+        session.append(event).expect("session append");
+    }
+
+    fn append_successful_call(
+        session: &mut Session,
+        header: EpochHeader,
+        provider_text: &str,
+        durable_text: &str,
+        usage: Option<TokenUsage>,
+        provenance: CallProvenance,
+    ) {
+        let turn = 1;
+        let step = 1;
+        let seq = next_seq(session);
+        append(
+            session,
+            SessionEvent::StepStart {
+                seq,
+                time: seq as i64,
+                data: StepBoundaryData { turn, step },
+                ignorable: None,
+            },
+        );
+        let seq = next_seq(session);
+        append(
+            session,
+            SessionEvent::RequestHeader {
+                seq,
+                time: seq as i64,
+                data: RequestHeaderData {
+                    header,
+                    reason: RequestHeaderReason::Initial,
+                },
+                ignorable: None,
+            },
+        );
+
+        let mut sources = Vec::new();
+        if matches!(provenance, CallProvenance::Exact) {
+            let chunks = [
+                StreamChunk::BlockStart {
+                    index: 0,
+                    block_type: "text".into(),
+                },
+                StreamChunk::TextDelta {
+                    index: 0,
+                    text: provider_text.into(),
+                },
+                StreamChunk::BlockEnd {
+                    index: 0,
+                    block: ContentBlock::Text {
+                        text: provider_text.into(),
+                    },
+                },
+                StreamChunk::Finish {
+                    reason: FinishReason::Stop,
+                    replay_state: None,
+                },
+            ];
+            for chunk in chunks {
+                let seq = next_seq(session);
+                sources.push(seq);
+                append(
+                    session,
+                    SessionEvent::AssistantChunk {
+                        seq,
+                        time: seq as i64,
+                        data: AssistantChunkData { turn, step, chunk },
+                        ignorable: None,
+                    },
+                );
+            }
+        }
+
+        let source_event_seqs = match provenance {
+            CallProvenance::Exact => Some(sources),
+            CallProvenance::Empty => Some(Vec::new()),
+            CallProvenance::Absent => None,
+        };
+        let seq = next_seq(session);
+        append(
+            session,
+            SessionEvent::AssistantMessage {
+                seq,
+                time: seq as i64,
+                data: AssistantMessageData {
+                    turn,
+                    step,
+                    message: assistant_text(durable_text),
+                    usage,
+                },
+                surface_op: Some(SurfaceOp::Append),
+                source_event_seqs,
+                ignorable: None,
+            },
+        );
+        let seq = next_seq(session);
+        append(
+            session,
+            SessionEvent::StepEnd {
+                seq,
+                time: seq as i64,
+                data: StepBoundaryData { turn, step },
+                ignorable: None,
+            },
+        );
+    }
+
+    fn session_with_user_and_call(
+        id: &str,
+        user: &str,
+        header: EpochHeader,
+        provider_text: &str,
+        durable_text: &str,
+        usage: Option<TokenUsage>,
+        provenance: CallProvenance,
+    ) -> Session {
+        let mut session = Session::new(session_header(id));
+        if !user.is_empty() {
+            append(&mut session, user_message(0, user));
+        }
+        append_successful_call(
+            &mut session,
+            header,
+            provider_text,
+            durable_text,
+            usage,
+            provenance,
+        );
+        session
+    }
+
     #[test]
     fn measure_surface_tokens_drop_after_replace() {
         let meter = TokenMeter::new();
@@ -616,5 +810,169 @@ mod tests {
             measured.baseline(),
             super::TokenMeasurementBaseline::Estimated { .. }
         ));
+    }
+
+    #[test]
+    fn measure_usage_baseline_when_disjoint_buckets_meet_estimate() {
+        let header = epoch_header("deepseek-v4-flash", None);
+        let user = "before";
+        let provider_text = "short";
+        let durable_text = "a much longer rewritten durable assistant answer";
+        let estimated_anchor = estimate_header(Some(&header))
+            + estimate_message(&user_text(user))
+            + estimate_message(&assistant_text(provider_text));
+        let usage = TokenUsage {
+            input_tokens: estimated_anchor,
+            output_tokens: 0,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+            reasoning_tokens: Some(99),
+        };
+        let session = session_with_user_and_call(
+            "usage-eq",
+            user,
+            header.clone(),
+            provider_text,
+            durable_text,
+            Some(usage.clone()),
+            CallProvenance::Exact,
+        );
+        let meter = TokenMeter::new();
+        let measured = meter.measure(&session, None);
+        match measured.baseline() {
+            TokenMeasurementBaseline::Usage { tokens, usage: got } => {
+                assert_eq!(*tokens, estimated_anchor);
+                assert_eq!(got, &usage);
+            }
+            other => panic!("expected usage baseline, got {other:?}"),
+        }
+        assert!(measured.surface_delta_tokens() > 0);
+        assert_eq!(
+            measured.total_tokens(),
+            estimated_anchor.saturating_add_signed(measured.surface_delta_tokens())
+        );
+
+        let matching = meter.measure(&session, Some(&canonical_header(&header)));
+        assert_eq!(matching.baseline(), measured.baseline());
+        assert_eq!(
+            matching.surface_delta_tokens(),
+            measured.surface_delta_tokens()
+        );
+    }
+
+    #[test]
+    fn measure_usage_tokens_do_not_count_reasoning_twice() {
+        let usage = disjoint_usage();
+        let session = session_with_user_and_call(
+            "usage-reasoning",
+            "before",
+            epoch_header("deepseek-v4-flash", None),
+            "short",
+            "a much longer rewritten durable assistant answer",
+            Some(usage.clone()),
+            CallProvenance::Exact,
+        );
+        let measured = TokenMeter::new().measure(&session, None);
+        match measured.baseline() {
+            TokenMeasurementBaseline::Usage { tokens, usage: got } => {
+                assert_eq!(*tokens, 20 + 3 + 4 + 7);
+                assert_eq!(got.reasoning_tokens, Some(6));
+                assert_eq!(got, &usage);
+            }
+            other => panic!("expected usage baseline, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn measure_empty_source_event_seqs_zero_provider_absent_uses_durable() {
+        let usage = disjoint_usage();
+        let header = epoch_header("deepseek-v4-flash", None);
+        let durable = "listener injected text";
+        let empty = session_with_user_and_call(
+            "explicit-empty",
+            "",
+            header.clone(),
+            "",
+            durable,
+            Some(usage.clone()),
+            CallProvenance::Empty,
+        );
+        let absent = session_with_user_and_call(
+            "legacy-absent",
+            "",
+            header,
+            "",
+            durable,
+            Some(usage),
+            CallProvenance::Absent,
+        );
+        let meter = TokenMeter::new();
+        let empty_measured = meter.measure(&empty, None);
+        let absent_measured = meter.measure(&absent, None);
+        assert!(matches!(
+            empty_measured.baseline(),
+            TokenMeasurementBaseline::Usage { tokens: 34, .. }
+        ));
+        assert!(matches!(
+            absent_measured.baseline(),
+            TokenMeasurementBaseline::Usage { tokens: 34, .. }
+        ));
+        // Explicit [] prices a known-empty provider stream; omitted seqs use durable output.
+        assert!(empty_measured.surface_delta_tokens() > 0);
+        assert_eq!(absent_measured.surface_delta_tokens(), 0);
+    }
+
+    #[test]
+    fn measure_mismatched_request_header_reprices_instead_of_usage_anchor() {
+        let header = epoch_header("deepseek-v4-flash", Some("one"));
+        let session = session_with_user_and_call(
+            "envelope",
+            "before",
+            header.clone(),
+            "short",
+            "short",
+            Some(disjoint_usage()),
+            CallProvenance::Exact,
+        );
+        let meter = TokenMeter::new();
+        let anchored = meter.measure(&session, None);
+        assert!(matches!(
+            anchored.baseline(),
+            TokenMeasurementBaseline::Usage { tokens: 34, .. }
+        ));
+        let surface_tokens = anchored.surface_tokens();
+
+        let mut empty_tools = header.clone();
+        empty_tools.tools = Some(json!([]));
+        let with_empty_tools = meter.measure(&session, Some(&empty_tools));
+        assert_eq!(with_empty_tools.baseline(), anchored.baseline());
+        assert_eq!(
+            with_empty_tools.surface_delta_tokens(),
+            anchored.surface_delta_tokens()
+        );
+
+        let mut provider = header.clone();
+        provider.config.provider = "other".into();
+        let mut model = header.clone();
+        model.config.model = "deepseek-v4-pro".into();
+        let mut system = header.clone();
+        system.system = Some("two".into());
+        let mut tools = header.clone();
+        tools.tools = Some(json!([{ "name": "read", "description": "read" }]));
+
+        for override_header in [provider, model, system, tools] {
+            let repriced = meter.measure(&session, Some(&override_header));
+            match repriced.baseline() {
+                TokenMeasurementBaseline::Estimated { tokens } => {
+                    assert_eq!(
+                        *tokens,
+                        estimate_header(Some(&canonical_header(&override_header))) + surface_tokens
+                    );
+                }
+                other => panic!("expected estimated reprice, got {other:?}"),
+            }
+            assert_eq!(repriced.surface_delta_tokens(), 0);
+            assert_eq!(repriced.surface_tokens(), surface_tokens);
+        }
     }
 }
