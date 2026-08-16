@@ -1,0 +1,17 @@
+[package]
+name = "dsh-jobs"
+version = "0.1.0"
+description = "Background-job Service Definition: branded ids, snapshots, and JobRegistry for the DeepSeek Harness Rust host"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+dsh-brand = { path = "../dsh-brand" }
+dsh-session = { path = "../dsh-session" }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

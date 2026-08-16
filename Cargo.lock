@@ -311,6 +311,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-jobs"
+version = "0.1.0"
+dependencies = [
+ "dsh-brand",
+ "dsh-session",
+ "thiserror",
+]
+
+[[package]]
+name = "dsh-jobs-local"
+version = "0.1.0"
+dependencies = [
+ "dsh-boot",
+ "dsh-jobs",
+ "dsh-kernel",
+ "dsh-session",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "dsh-kernel"
 version = "0.1.0"
 dependencies = [
@@ -557,6 +578,22 @@ dependencies = [
  "dsh-tools",
  "serde_json",
  "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "dsh-tool-jobs"
+version = "0.1.0"
+dependencies = [
+ "dsh-agent",
+ "dsh-agent-loop",
+ "dsh-boot",
+ "dsh-jobs",
+ "dsh-jobs-local",
+ "dsh-kernel",
+ "dsh-session",
+ "dsh-tools",
+ "serde_json",
  "tokio",
 ]
 

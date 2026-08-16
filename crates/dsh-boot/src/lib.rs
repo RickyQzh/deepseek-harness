@@ -45,6 +45,10 @@ pub const PLUGIN_WEB: &str = "@deepseek-ai/dsh-web";
 pub const PLUGIN_WEB_SEARCH_DEEPSEEK: &str = "@deepseek-ai/dsh-web-search-deepseek";
 /// YAML `name` for `@deepseek-ai/dsh-tool-web`.
 pub const PLUGIN_TOOL_WEB: &str = "@deepseek-ai/dsh-tool-web";
+/// YAML `name` for `@deepseek-ai/dsh-jobs-local`.
+pub const PLUGIN_JOBS_LOCAL: &str = "@deepseek-ai/dsh-jobs-local";
+/// YAML `name` for `@deepseek-ai/dsh-tool-jobs`.
+pub const PLUGIN_TOOL_JOBS: &str = "@deepseek-ai/dsh-tool-jobs";
 /// YAML `name` for `@deepseek-ai/dsh-compaction-tool-result-pruner`.
 pub const PLUGIN_TOOL_RESULT_PRUNER: &str = "@deepseek-ai/dsh-compaction-tool-result-pruner";
 /// YAML `name` for `@deepseek-ai/dsh-tools`.

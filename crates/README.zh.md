@@ -32,6 +32,9 @@ DeepSeek Harness 宿主进程的 Rust workspace 成员。布局、保留/放弃�
 | [`dsh-web`](dsh-web/README.md) | Web 搜索 Service Definition：提供方注册表、选择与 `search`。本阶段省略 fetch（SSRF）。 |
 | [`dsh-web-search-deepseek`](dsh-web-search-deepseek/README.md) | DeepSeek Anthropic 兼容 `web_search_20250305` 搜索提供方。 |
 | [`dsh-tool-web`](dsh-tool-web/README.md) | 面向模型的 `web_search` 工具。`web_fetch` 保持关闭。 |
+| [`dsh-jobs`](dsh-jobs/README.md) | 后台任务 Service Definition：品牌 id、快照与 `JobRegistry`。 |
+| [`dsh-jobs-local`](dsh-jobs-local/README.md) | 进程内 `jobs` 提供方（`LocalJobRegistry`）。 |
+| [`dsh-tool-jobs`](dsh-tool-jobs/README.md) | 面向模型的 `job_output` / `job_list` / `job_kill` 工具。 |
 | [`dsh-agent`](dsh-agent/README.md) | 按会话 id 持有的实时 LoopAgent 注册表；Session append-sink 工厂。 |
 | [`dsh-agent-loop`](dsh-agent-loop/README.md) | 脚本化循环：持久化 inbox、idle / maintenance / running、运行时上下文快照、请求重建、工具调用调度。 |
 | [`dsh-subprocess`](dsh-subprocess/README.md) | 完全指定的 argv 派发与凭据擦除后的子进程环境。 |
