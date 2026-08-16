@@ -10,6 +10,9 @@ pub mod plugin;
 mod runtime;
 mod types;
 
+#[cfg(test)]
+mod phase6_exit;
+
 pub use child::{DEFAULT_SUBAGENT_MAX_DEPTH, assert_subagent_max_depth, delegation_depth_of};
 pub use continuation::{ContinuableChildInfo, ContinuableSetup, ContinuableStartSpec};
 pub use descriptor::{

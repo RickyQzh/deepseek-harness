@@ -11,6 +11,9 @@ pub mod retry;
 pub mod retry_snapshot;
 mod types;
 
+#[cfg(test)]
+mod phase6_exit;
+
 pub use adapter::{LlmAdapter, LlmRuntime, PreparedLlmCall};
 pub use assembler::BlockAssembler;
 pub use attribution::{attribution_headers, user_agent};

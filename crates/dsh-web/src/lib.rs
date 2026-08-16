@@ -3,6 +3,9 @@
 pub mod plugin;
 mod runtime;
 
+#[cfg(test)]
+mod phase6_exit;
+
 pub use plugin::register;
 pub use runtime::{WebRuntime, WebSearchProvider};
 

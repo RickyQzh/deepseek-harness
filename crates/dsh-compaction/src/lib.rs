@@ -5,6 +5,9 @@ mod engine;
 mod error;
 mod pairing;
 
+#[cfg(test)]
+mod phase6_exit;
+
 pub use checkpoint::{compact_checkpoint_source, is_compact_checkpoint_source};
 pub use engine::{
     CompactionEngine, CompactionId, CompactionIdTag, CompactionResult, CompactionTrigger,

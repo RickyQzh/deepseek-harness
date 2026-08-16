@@ -5,6 +5,9 @@ pub mod plugin;
 mod registry;
 mod tool;
 
+#[cfg(test)]
+mod phase6_exit;
+
 pub use filesystem::{FilesystemSkillConfig, FilesystemSkillProvider};
 pub use plugin::{register_skill, register_skill_filesystem, register_tool_skill};
 pub use registry::{

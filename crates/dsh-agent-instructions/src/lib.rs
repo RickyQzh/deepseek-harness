@@ -5,6 +5,9 @@ mod files;
 mod plugin;
 mod render;
 
+#[cfg(test)]
+mod phase6_exit;
+
 pub use config::{AgentInstructionsConfig, ConfigError, resolve_config};
 pub use files::{LoadedInstructionFile, load_baseline_files};
 pub use plugin::register;

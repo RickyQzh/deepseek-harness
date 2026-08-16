@@ -6,6 +6,9 @@ mod plugin;
 mod pruner;
 mod summarize;
 
+#[cfg(test)]
+mod phase6_exit;
+
 pub use config::{
     BasicCompactionConfig, ConfigError, ModelCompactPolicy, ResolvedCompactSpec,
     resolve_compact_spec, resolve_config, resolve_target_policy,

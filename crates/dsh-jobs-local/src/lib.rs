@@ -516,6 +516,9 @@ pub mod plugin;
 pub use plugin::register;
 
 #[cfg(test)]
+mod phase6_exit;
+
+#[cfg(test)]
 mod tests {
     use super::LocalJobRegistry;
     use dsh_jobs::{JobHooks, JobKind, JobOutcome, JobStart, JobStatus, KillResult};

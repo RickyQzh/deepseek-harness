@@ -10,6 +10,9 @@ mod tool_calls;
 #[cfg(test)]
 mod phase3_exit;
 
+#[cfg(test)]
+mod phase6_exit;
+
 pub use agent::{
     AgentStatus, CancelCause, CancelOptions, DEFAULT_MAX_PARALLEL_TOOL_CALLS, EVENT_AGENT_PRE_STEP,
     EVENT_AGENT_REQUEST_ERROR, LoopAgent, LoopOptions, Phase, PreStepDecision, PreStepPayload,
