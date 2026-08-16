@@ -4,6 +4,7 @@
  */
 
 import { createHash } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -28,9 +29,18 @@ const replayOverride = join(fixtureDir, 'replay.override.json')
 const sessionExpected = join(fixtureDir, 'session.expected.jsonl')
 const precedenceExpected = join(dirname(fixtureDir), 'precedence-change/session.expected.jsonl')
 const configPath = fileURLToPath(new URL('../workspace-context-resume.cordis.snapshot.yml', import.meta.url))
+const rustConfigPath = fileURLToPath(new URL('../rust.workspace-context-resume.cordis.yml', import.meta.url))
 const binScript = fileURLToPath(new URL('./fixtures/headless-driver.ts', import.meta.url))
 const tsconfigPath = fileURLToPath(new URL('../../../tsconfig.json', import.meta.url))
+const rustBinDefault = fileURLToPath(new URL('../../../target/debug/dsh', import.meta.url))
+const rustRuntime = process.env.DSH_RUNTIME === 'rust'
+const rustBin = process.env.DSH_RUNTIME_BIN && process.env.DSH_RUNTIME_BIN !== ''
+  ? process.env.DSH_RUNTIME_BIN
+  : rustBinDefault
+const rustSmokeTimeoutMs = 120_000
+const prompt = 'Acknowledge the current workspace instruction.'
 const sessionId = SessionId('workspace-context-resume')
+const rustPersistRelative = join('.sessions', 'workspace-context-resume', 'session.jsonl')
 const refreshing = process.env.DSH_SNAPSHOT === 'refresh'
 const oldInstruction = 'Old workspace instruction.'
 const newInstruction = 'New workspace instruction after offline edit.'
@@ -106,34 +116,125 @@ async function seedVisibleBaseline(
     const location = ctx.sessionPersistence.locate(meta)
     if (location === undefined) throw new Error('JSONL backend did not locate the seeded session')
     return location.path
-  } finally {
+  }   finally {
     await ctx.fiber.dispose()
   }
+}
+
+function requireRustBin(): string {
+  if (!existsSync(rustBin)) {
+    throw new Error(`DSH_RUNTIME=rust but ${rustBin} is missing; run cargo build -p dsh-cli`)
+  }
+  return rustBin
+}
+
+function rustNamedTimeout(): number {
+  return rustRuntime ? rustSmokeTimeoutMs : LOADER_SMOKE_TEST_TIMEOUT_MS
+}
+
+function resolveResumeLaunch(): {
+  launch?: { command: string; args: string[] }
+  env: NodeJS.ProcessEnv
+} {
+  if (!rustRuntime) return { env: {} }
+  return {
+    launch: { command: requireRustBin(), args: ['--profile', 'headless', prompt] },
+    env: { DSH_CORDIS_CONFIG: rustConfigPath },
+  }
+}
+
+function rustResumeReplayFifo(): string {
+  const text = 'RESUME_DONE'
+  const header = JSON.stringify({
+    type: 'session',
+    version: 0,
+    id: 'rust-replay',
+    createdAt: 0,
+    delegationDepth: 0,
+  })
+  const chunks = [
+    { type: 'block-start', index: 0, blockType: 'text' },
+    { type: 'text-delta', index: 0, text },
+    { type: 'block-end', index: 0, block: { type: 'text', text } },
+    { type: 'finish', reason: { kind: 'stop' } },
+  ]
+  const events = chunks.map((chunk, seq) => JSON.stringify({
+    type: 'assistant/chunk',
+    seq,
+    time: 0,
+    data: { turn: 1, step: 1, chunk },
+  }))
+  return `${[header, ...events].join('\n')}\n`
+}
+
+async function seedRustResumeSession(cwd: string): Promise<void> {
+  const dir = join(cwd, '.sessions', 'workspace-context-resume')
+  await mkdir(dir, { recursive: true })
+  await writeFile(join(dir, 'session.jsonl'), `${JSON.stringify({
+    type: 'session',
+    version: SESSION_FORMAT_VERSION,
+    id: sessionId,
+    createdAt: 1,
+    cwd,
+    delegationDepth: 0,
+  })}\n`)
+}
+
+function persistHasAgentInstructions(content: string): boolean {
+  return content.trimEnd().split('\n').some((line) => {
+    const record = JSON.parse(line) as {
+      type?: string
+      data?: { source?: { kind?: string } }
+    }
+    return record.type === 'user/message' && record.data?.source?.kind === 'agent-instructions'
+  })
+}
+
+function expectResumeStderr(stderr: string): void {
+  if (!rustRuntime) {
+    expect(stderr).toBe('')
+    return
+  }
+  expect(stderr.replace(/^skill-filesystem: skipping missing skill root .+\n/gm, '')).toBe('')
 }
 
 describe('agent-instructions resume snapshot', () => {
   it('appends an offline replacement without duplicating the visible baseline', async () => {
     let cwd = ''
     let sessionPath = ''
+    const rustLaunch = resolveResumeLaunch()
     const result = await runLoaderSmoke({
       label: 'agent-instructions resume headless stream-json snapshot',
       tempDirPrefix: 'dsh-workspace-context-resume-',
       binScript,
       libBinScript: binScript,
       configPath,
-      binArgs: [configPath, 'Acknowledge the current workspace instruction.'],
+      binArgs: [configPath, prompt],
       tsconfigPath,
+      processTimeoutMs: rustRuntime ? rustSmokeTimeoutMs : undefined,
+      ...rustLaunch.launch === undefined ? {} : { launch: rustLaunch.launch },
       env: {
-        DSH_SNAPSHOT_FILE: replayFixture,
+        DSH_SNAPSHOT_FILE: rustRuntime ? 'replay.jsonl' : replayFixture,
         DSH_SNAPSHOT_OVERRIDE: replayOverride,
+        ...rustLaunch.env,
       },
       prepare: async (runCwd) => {
         cwd = runCwd
         await mkdir(join(runCwd, '.git'), { recursive: true })
         await writeFile(join(runCwd, 'AGENTS.md'), `${newInstruction}\n`)
+        if (rustRuntime) {
+          await seedRustResumeSession(runCwd)
+          await writeFile(join(runCwd, 'replay.jsonl'), rustResumeReplayFifo())
+          return
+        }
         sessionPath = await seedVisibleBaseline(join(runCwd, '.sessions'), runCwd)
       },
       inspect: async () => {
+        if (rustRuntime) {
+          const persist = await readFile(join(cwd, rustPersistRelative), 'utf8')
+          expect(persistHasAgentInstructions(persist)).toBe(true)
+          return
+        }
         const normalization: NormalizeContext = { sessionIds: [sessionId], cwd }
         const session = scrubRequestHeaders(normalizeSessionLog(await readFile(sessionPath, 'utf8'), normalization))
         if (refreshing) await writeFile(sessionExpected, session)
@@ -160,35 +261,48 @@ describe('agent-instructions resume snapshot', () => {
       },
     })
 
-    expect(result.stderr).toBe('')
+    expectResumeStderr(result.stderr)
+    if (rustRuntime) {
+      expect(result.stdout).toBe('RESUME_DONE\n')
+      return
+    }
     const records = result.stdout.trimEnd().split('\n').map(line => JSON.parse(line) as Record<string, unknown>)
     expect(records.at(-1)).toMatchObject({
       type: 'result',
       sessionId,
       output: 'RESUME_DONE',
     })
-  }, LOADER_SMOKE_TEST_TIMEOUT_MS)
+  }, rustNamedTimeout())
 
   it('supersedes an incompatible baseline when precedence changed offline', async () => {
     let cwd = ''
     let sessionPath = ''
+    const rustLaunch = resolveResumeLaunch()
     const result = await runLoaderSmoke({
       label: 'agent-instructions precedence-change resume snapshot',
       tempDirPrefix: 'dsh-workspace-context-precedence-',
       binScript,
       libBinScript: binScript,
       configPath,
-      binArgs: [configPath, 'Acknowledge the current workspace instruction.'],
+      binArgs: [configPath, prompt],
       tsconfigPath,
+      processTimeoutMs: rustRuntime ? rustSmokeTimeoutMs : undefined,
+      ...rustLaunch.launch === undefined ? {} : { launch: rustLaunch.launch },
       env: {
-        DSH_SNAPSHOT_FILE: replayFixture,
+        DSH_SNAPSHOT_FILE: rustRuntime ? 'replay.jsonl' : replayFixture,
         DSH_SNAPSHOT_OVERRIDE: replayOverride,
+        ...rustLaunch.env,
       },
       prepare: async (runCwd) => {
         cwd = runCwd
         await mkdir(join(runCwd, '.git'), { recursive: true })
         await writeFile(join(runCwd, 'AGENTS.md'), 'Current AGENTS rule.\n')
         await writeFile(join(runCwd, 'CLAUDE.md'), 'Current CLAUDE rule.\n')
+        if (rustRuntime) {
+          await seedRustResumeSession(runCwd)
+          await writeFile(join(runCwd, 'replay.jsonl'), rustResumeReplayFifo())
+          return
+        }
         sessionPath = await seedVisibleBaseline(join(runCwd, '.sessions'), runCwd, {
           files: [
             { name: 'CLAUDE.md', content: 'Old CLAUDE rule.' },
@@ -198,6 +312,11 @@ describe('agent-instructions resume snapshot', () => {
         })
       },
       inspect: async () => {
+        if (rustRuntime) {
+          const persist = await readFile(join(cwd, rustPersistRelative), 'utf8')
+          expect(persistHasAgentInstructions(persist)).toBe(true)
+          return
+        }
         const normalization: NormalizeContext = { sessionIds: [sessionId], cwd }
         const session = scrubRequestHeaders(normalizeSessionLog(await readFile(sessionPath, 'utf8'), normalization))
         if (refreshing) {
@@ -224,12 +343,16 @@ describe('agent-instructions resume snapshot', () => {
       },
     })
 
-    expect(result.stderr).toBe('')
+    expectResumeStderr(result.stderr)
+    if (rustRuntime) {
+      expect(result.stdout).toBe('RESUME_DONE\n')
+      return
+    }
     expect(result.stdout.trimEnd().split('\n').map(line => JSON.parse(line) as Record<string, unknown>).at(-1))
       .toMatchObject({
         type: 'result',
         sessionId,
         output: 'RESUME_DONE',
       })
-  }, LOADER_SMOKE_TEST_TIMEOUT_MS)
+  }, rustNamedTimeout())
 })

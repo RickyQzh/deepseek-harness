@@ -268,8 +268,9 @@ impl HarnessSdkJsonRpcServer {
                 Some(serde_json::to_value(running).expect("status")),
             );
             let _ = agents.when_idle(&session_id).await;
-            if let Some(handle) = agents.get(&session_id) {
-                let guard = handle.lock();
+            // Continuable children stay registered; persist every live session so child dirs exist.
+            for live in agents.list() {
+                let guard = live.lock();
                 let _ = sessions.flush(&guard.session);
             }
             let idle = SessionStatusNotification::new(session_id, SessionStatus::Idle);

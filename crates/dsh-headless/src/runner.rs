@@ -106,9 +106,13 @@ async fn run_inner(
     };
     agents.followup(&key, message).await?;
     agents.when_idle(&key).await?;
+    // Continuable children stay registered; persist every live session so child dirs exist.
+    for live in agents.list() {
+        let guard = live.lock();
+        sessions.flush(&guard.session)?;
+    }
     {
         let guard = handle.lock();
-        sessions.flush(&guard.session)?;
         let outcome = summarize(guard.session.events(), first_seq);
         io.write_stdout(&format!("{}\n", outcome.text));
         if let Some(TurnEndReason::Error { error }) = &outcome.reason {

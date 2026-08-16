@@ -359,6 +359,12 @@ impl AgentRegistry {
         self.agents.lock().expect("agents").get(session_id).cloned()
     }
 
+    /// Live handles in unspecified order.
+    #[must_use]
+    pub fn list(&self) -> Vec<AgentHandle> {
+        self.agents.lock().expect("agents").values().cloned().collect()
+    }
+
     /// Queue `message` on next-turn. Does not start a driver.
     ///
     /// # Errors
@@ -453,6 +459,7 @@ mod tests {
             .unwrap();
         assert_eq!(handle.id().as_str(), "sess-1");
         assert!(registry.get("sess-1").is_some());
+        assert_eq!(registry.list().len(), 1);
         let message_id = registry
             .followup(
                 "sess-1",

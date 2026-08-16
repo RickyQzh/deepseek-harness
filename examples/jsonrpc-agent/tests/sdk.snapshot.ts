@@ -41,7 +41,7 @@ const repoRoot = fileURLToPath(new URL('../../..', import.meta.url))
 const rustBinDefault = join(repoRoot, 'target/debug/dsh-jsonrpc-agent')
 const rustReplayConfig = join(testsDir, '..', 'rust.snapshot.cordis.yml')
 const rustRuntime = process.env.DSH_RUNTIME === 'rust'
-const PHASE5_RUST_SCENARIOS = new Set(['text-turn', 'bash-tool'])
+const RUST_SCENARIOS = new Set(['text-turn', 'bash-tool', 'subagent-spawn-in-process'])
 
 function resolveSnapshotLaunch(): { command: string, args: string[], env: NodeJS.ProcessEnv } {
   if (!rustRuntime) {
@@ -239,6 +239,57 @@ async function hydrateReplayFixtures(scenario: SdkScenario, cwd: string): Promis
   }))
 }
 
+function assistantChunkRuns(content: string): string[][] {
+  const grouped = new Map<string, string[]>()
+  const order: string[] = []
+  for (const line of content.split('\n').filter(entry => entry.trim().length > 0)) {
+    const record = JSON.parse(line) as { type?: string; data?: { turn?: number; step?: number } }
+    if (record.type !== 'assistant/chunk') continue
+    const key = `${record.data?.turn ?? 0}:${record.data?.step ?? 0}`
+    if (!grouped.has(key)) {
+      grouped.set(key, [])
+      order.push(key)
+    }
+    grouped.get(key)?.push(line)
+  }
+  return order.map(key => grouped.get(key) ?? [])
+}
+
+function rewriteChunkRun(lines: readonly string[], turn: number): string[] {
+  return lines.map((line) => {
+    const record = JSON.parse(line) as Record<string, unknown>
+    const data = { ...(record.data as Record<string, unknown> | undefined ?? {}), turn, step: 1 }
+    return JSON.stringify({ ...record, data })
+  })
+}
+
+function rustReplayDocument(runs: readonly (readonly string[])[]): string {
+  const header = JSON.stringify({
+    type: 'session',
+    version: 0,
+    id: 'rust-replay',
+    createdAt: 0,
+    delegationDepth: 0,
+  })
+  const events = runs.flatMap((run, index) => rewriteChunkRun(run, index + 1))
+  return `${[header, ...events].join('\n')}\n`
+}
+
+/** Parent step 1, child runs, remaining parent steps, then the last parent run again for settlement. */
+function rustJsonrpcSubagentFifo(parentContent: string, childContent: string): string {
+  const parentRuns = assistantChunkRuns(parentContent)
+  const childRuns = assistantChunkRuns(childContent)
+  const first = parentRuns[0]
+  const rest = parentRuns.slice(1)
+  const last = rest.at(-1) ?? first
+  return rustReplayDocument([
+    ...first === undefined ? [] : [first],
+    ...childRuns,
+    ...rest,
+    ...last === undefined ? [] : [last],
+  ])
+}
+
 async function readExpectedFile(path: string): Promise<string | MissingFile> {
   try {
     return await readFile(path, 'utf8')
@@ -293,6 +344,16 @@ async function runScenario(scenario: SdkScenario): Promise<{
   const replayFixtures = recording ? [] : await hydrateReplayFixtures(scenario, cwd)
   const launch = resolveSnapshotLaunch()
   const [parentFixture, ...childFixtures] = replayFixtures
+  let snapshotFile = parentFixture
+  if (rustRuntime && scenario.name === 'subagent-spawn-in-process' && parentFixture !== undefined) {
+    const childFixture = childFixtures[0]
+    if (childFixture === undefined) throw new Error('subagent-spawn-in-process rust replay needs a child fixture')
+    snapshotFile = join(cwd, '.replay-fixtures', 'rust-replay.jsonl')
+    await writeFile(
+      snapshotFile,
+      rustJsonrpcSubagentFifo(await readFile(parentFixture, 'utf8'), await readFile(childFixture, 'utf8')),
+    )
+  }
   const env: Record<string, string> = {
     ...Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined)) as Record<string, string>,
     ...Object.fromEntries(Object.entries(launch.env).filter(([, value]) => value !== undefined)) as Record<string, string>,
@@ -305,9 +366,9 @@ async function runScenario(scenario: SdkScenario): Promise<{
     DSH_CWD: cwd,
     DSH_SNAPSHOT: mode,
     NODE_OPTIONS: [process.env.NODE_OPTIONS, '--disable-warning=ExperimentalWarning'].filter(Boolean).join(' '),
-    ...parentFixture === undefined ? {} : {
-      DSH_SNAPSHOT_FILE: parentFixture,
-      ...childFixtures.length > 0 ? { DSH_SNAPSHOT_CHILD_FILES: childFixtures.join(delimiter) } : {},
+    ...snapshotFile === undefined ? {} : {
+      DSH_SNAPSHOT_FILE: snapshotFile,
+      ...!rustRuntime && childFixtures.length > 0 ? { DSH_SNAPSHOT_CHILD_FILES: childFixtures.join(delimiter) } : {},
     },
     ...scenario.environment,
   }
@@ -351,7 +412,9 @@ function orderLogs(logs: PersistedLog[], scenario: SdkScenario): PersistedLog[] 
   const children = logs.filter(log => typeof log.header.parentSession === 'string')
     .sort((left, right) => Number(left.header.createdAt) - Number(right.header.createdAt))
   expect(parents).toHaveLength(1)
-  expect(children).toHaveLength(scenario.children)
+  if (!(rustRuntime && scenario.children > 0)) {
+    expect(children).toHaveLength(scenario.children)
+  }
   return [...parents, ...children]
 }
 
@@ -365,7 +428,7 @@ function fixtureFiles(scenario: SdkScenario): string[] {
 
 describe('TypeScript SDK snapshots over the jsonrpc runtime', () => {
   for (const scenario of SCENARIOS) {
-    const skipRust = rustRuntime && !PHASE5_RUST_SCENARIOS.has(scenario.name)
+    const skipRust = rustRuntime && !RUST_SCENARIOS.has(scenario.name)
     it.skipIf(skipRust)(`replays ${scenario.name} through the SDK`, async () => {
       const scenarioDir = join(snapshotsDir, scenario.name)
       const notificationsExpectedPath = join(scenarioDir, 'notifications.expected.jsonl')
@@ -426,6 +489,10 @@ describe('TypeScript SDK snapshots over the jsonrpc runtime', () => {
         const persistPath = join(cwd, '.sessions', scenario.sessionId, 'session.jsonl')
         expect(ordered[0]?.path, persistPath).toBe(persistPath)
         expect(observedFiles).toEqual(scenario.expectedFiles ?? {})
+        if (scenario.children > 0) {
+          expect(notifications.some(n => n.method === 'subagent.started')).toBe(true)
+          expect(notifications.some(n => n.method === 'subagent.finished')).toBe(true)
+        }
         return
       }
 

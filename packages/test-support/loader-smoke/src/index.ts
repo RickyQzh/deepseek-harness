@@ -154,6 +154,13 @@ export interface LoaderSmokeOptions {
    * way — including succeeding — still fails the smoke.
    */
   readonly expectedExitCode?: number
+  /**
+   * When set, spawn this command instead of resolving the example bin via
+   * {@link resolveExampleLaunch}. Isolated `DSH_HOME` / `DSH_AGENTS_HOME`,
+   * stdin close, timeout, prepare/inspect, and cleanup still apply. Rust
+   * headless also receives `DSH_CWD` and `DSH_SESSION_ROOT` under the temp cwd.
+   */
+  readonly launch?: { readonly command: string; readonly args: readonly string[] }
 }
 
 /** Captured output from a Loader smoke that exited successfully. */
@@ -167,7 +174,8 @@ export interface LoaderSmokeResult {
 /**
  * Boot one real Loader tree from an isolated cwd, close stdin immediately, and
  * await a clean exit. The helper owns process kill and temp-directory cleanup on
- * every outcome, and picks src/lib via {@link resolveExampleLaunch}.
+ * every outcome, and picks src/lib via {@link resolveExampleLaunch} unless
+ * {@link LoaderSmokeOptions.launch} is set.
  * @param options - example paths, mode, environment, and diagnostic identity.
  * @returns captured stdout and stderr after a zero exit.
  */
@@ -176,14 +184,25 @@ export async function runLoaderSmoke(options: LoaderSmokeOptions): Promise<Loade
   const processTimeoutMs = options.processTimeoutMs ?? DEFAULT_PROCESS_TIMEOUT_MS
   try {
     await options.prepare?.(cwd)
-    const launch = resolveExampleLaunch({
-      srcBin: options.binScript,
-      libBin: options.libBinScript,
-      configArgs: options.binArgs ?? [options.configPath],
-      ...options.mode !== undefined ? { mode: options.mode } : {},
-      tsconfigPath: options.tsconfigPath,
-      env: { DSH_HOME: join(cwd, '.dsh'), DSH_AGENTS_HOME: join(cwd, '.agents'), ...options.env },
-    })
+    const isolatedEnv: NodeJS.ProcessEnv = {
+      DSH_HOME: join(cwd, '.dsh'),
+      DSH_AGENTS_HOME: join(cwd, '.agents'),
+      ...options.env,
+      ...options.launch === undefined ? {} : {
+        DSH_CWD: cwd,
+        DSH_SESSION_ROOT: join(cwd, '.sessions'),
+      },
+    }
+    const launch = options.launch === undefined
+      ? resolveExampleLaunch({
+        srcBin: options.binScript,
+        libBin: options.libBinScript,
+        configArgs: options.binArgs ?? [options.configPath],
+        ...options.mode !== undefined ? { mode: options.mode } : {},
+        tsconfigPath: options.tsconfigPath,
+        env: isolatedEnv,
+      })
+      : { command: options.launch.command, args: [...options.launch.args], env: isolatedEnv }
     // `input: ''` writes nothing and closes stdin — the fixture-visible
     // stdin-close contract. `reject: false` folds spawn errors, the SIGKILL
     // deadline, and nonzero exits into independent result fields, so the
