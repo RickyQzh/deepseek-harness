@@ -201,6 +201,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-subprocess"
+version = "0.1.0"
+dependencies = [
+ "dsh-tools",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "dsh-system-prompt"
 version = "0.1.0"
 dependencies = [
