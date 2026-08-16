@@ -23,3 +23,4 @@ DeepSeek Harness 宿主进程的 Rust workspace 成员。布局、保留/放弃�
 | [`dsh-agent-loop`](dsh-agent-loop/README.md) | 脚本化循环：持久化 inbox、idle / maintenance / running、运行时上下文快照、请求重建、工具调用调度。 |
 | [`dsh-subprocess`](dsh-subprocess/README.md) | 完全指定的 argv 派发与凭据擦除后的子进程环境。 |
 | [`dsh-sandbox`](dsh-sandbox/README.md) | 失败即关闭的沙箱模式、可写根与提权。 |
+| [`dsh-fs`](dsh-fs/README.md) | 文件系统类型与 `FS_*` 错误码。 |

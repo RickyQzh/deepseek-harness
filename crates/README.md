@@ -23,3 +23,4 @@ Rust workspace members for the DeepSeek Harness host process. Layout, keep-or-dr
 | [`dsh-agent-loop`](dsh-agent-loop/README.md) | Scripted loop: durable inbox, idle / maintenance / running, runtime-context snapshots, request reconstruction, tool-call scheduler. |
 | [`dsh-subprocess`](dsh-subprocess/README.md) | Fully specified argv spawn and credential-scrubbed child env. |
 | [`dsh-sandbox`](dsh-sandbox/README.md) | Fail-closed sandbox modes, writable roots, and escalation. |
+| [`dsh-fs`](dsh-fs/README.md) | Filesystem types and `FS_*` error codes. |

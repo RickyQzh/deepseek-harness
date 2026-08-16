@@ -134,6 +134,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-fs"
+version = "0.1.0"
+dependencies = [
+ "dsh-brand",
+ "dsh-sandbox",
+ "thiserror",
+]
+
+[[package]]
 name = "dsh-kernel"
 version = "0.1.0"
 dependencies = [
