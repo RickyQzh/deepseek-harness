@@ -3,6 +3,7 @@
 mod collect;
 mod env;
 mod error;
+pub mod plugin;
 mod runtime;
 mod spawn;
 mod types;

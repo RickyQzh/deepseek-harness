@@ -8,7 +8,7 @@
 
 `freeze_args` 克隆一份 `serde_json::Value`，使策略监听器拿到独立副本。`freeze_args_from_raw` 将空的模型字符串映射为 `{}`，并将非法 JSON 保留为字符串，与 TypeScript 循环中的 `parseArguments` 一致。产品 call id 使用 `dsh_session::CallId`。`ToolRuntime` 的 `Clone` 复制已注册工具、pre/post 监听器、mode 与 `next_token`，并丢弃 Box 形式的 guards 与 approval hook。
 
-`plugin::register` 提供空的 native `ToolRuntime` 作为 `tools` 服务。
+`plugin::register` 提供空的 native `ToolRuntime` 作为 `tools` 服务。`registered_names` 返回当前已注册的模型侧名称（已排序）。
 
 ## 已知限制与暂缓事项
 

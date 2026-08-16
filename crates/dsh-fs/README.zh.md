@@ -14,6 +14,8 @@
 
 `ObservationGate` 按 `(所有者 id, target_key)` 记录每个所有者的存在或缺失，并据此派生写入/编辑意图。不同所有者不共享观察。缺失所有者从不查找。该映射未接入 `LocalFileSystem` 方法。
 
+`plugin::register` 挂载 YAML `@deepseek-ai/dsh-fs-local`，并提供 `fs` 服务（`LocalFileSystem`）。cwd 取自配置 `cwd`，否则 `DSH_CWD`，否则进程 cwd。
+
 ## 已知限制与暂缓事项
 
 - 沙箱围栏是进程内容纳检查，不是内核隔离；重新解析与写入系统调用之间仍有残余 TOCTOU。

@@ -3,6 +3,7 @@
 mod args;
 mod edit;
 mod error;
+pub mod plugin;
 mod read;
 mod search;
 mod write;

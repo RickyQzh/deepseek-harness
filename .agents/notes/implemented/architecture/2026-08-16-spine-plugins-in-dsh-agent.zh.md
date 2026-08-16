@@ -10,7 +10,7 @@ Status: implemented
 
 ## 决策
 
-产品 crate 依赖 `dsh-boot` 与 `dsh-kernel`，并导出 `plugin::register`（llm 另外导出 `plugin::register_llm`、`plugin::register_mock` 与 `replay::register`）。`dsh_agent::register_spine_plugins` 是唯一的组合函数，负责注册 credentials、llm（mock、replay、DeepSeek）、tools、system-prompt、agent 以及 JSONL 会话存储。`dsh-boot` 不依赖产品 crate；其测试只保留 probe 插件。
+产品 crate 依赖 `dsh-boot` 与 `dsh-kernel`，并导出 `plugin::register`（llm 另外导出 `plugin::register_llm`、`plugin::register_mock` 与 `replay::register`）。`dsh_agent::register_spine_plugins` 是 spine 组合函数，负责注册 credentials、llm（mock、replay、DeepSeek）、tools、system-prompt、agent 以及 JSONL 会话存储。`dsh-boot` 不依赖产品 crate；其测试只保留 probe 插件。
 
 YAML 名称仍是 `dsh-boot` 中的封闭常量（`@deepseek-ai/dsh-credentials`、`@deepseek-ai/dsh-llm`、`@deepseek-ai/dsh-llm-deepseek`、`@deepseek-ai/dsh-llm-mock`、`@deepseek-ai/dsh-llm-replay`、`@deepseek-ai/dsh-tools`、`@deepseek-ai/dsh-system-prompt`、`@deepseek-ai/dsh-agent`、`@deepseek-ai/dsh-session-persistence-jsonl`）。setup 在插件 fiber 内用 `ctx.inject` 等待；`ctx.plugin` 不接收 inject 名称。对已经提供的服务调用 `inject` 会在 slot 存在时立即返回；它不会等待仍在该互斥锁上执行 `register_adapter` 或 `register` 的兄弟插件。因此 `@deepseek-ai/dsh-agent` 把注入的 `llm` 与 `tools` 互斥锁 Arc 存进 `AgentRegistry`，而不是在 setup 时克隆内部 map。
 
@@ -28,7 +28,7 @@ DeepSeek 插件把 `CredentialRef` 存在 `DeepSeekConnectionOptions` 上，并�
 
 ## 影响
 
-Headless 与 JSON-RPC bin 调用 `dsh_agent::register_spine_plugins`，而不是导入每一个 spine crate。新增 spine 插件意味着在其 crate 中写 `register`，并在 `dsh-agent` 中增加一次调用。该函数不注册执行插件（subprocess、fs、shell、tool-fs、tool-bash）。
+Headless 与 JSON-RPC bin 调用 `dsh_agent::register_spine_plugins`，而不是导入每一个 spine crate。新增 spine 插件意味着在其 crate 中写 `register`，并在 `dsh-agent` 中增加一次调用。该函数不注册执行插件（subprocess、fs、shell、tool-fs、tool-bash）；这些名称由兄弟函数 `register_execution_plugins` 注册（[Execution YAML plugins](2026-08-16-execution-plugins-in-dsh-agent.md)）。
 
 `cargo test -p dsh-agent --offline spine` 会启动一份 mock YAML 列表，并断言 `credentials`、`llm`、`tools`、`systemPrompt`、`agents` 与 `sessions`，以及 `AgentRegistry::list_providers` 包含 `mock`。未知 YAML 名称仍然会作为加载错误失败。该 YAML 列表不挂载 `@deepseek-ai/dsh-llm-replay` 或 `@deepseek-ai/dsh-llm-deepseek`。
 

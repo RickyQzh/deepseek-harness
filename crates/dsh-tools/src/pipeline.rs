@@ -209,6 +209,14 @@ impl ToolRuntime {
         );
     }
 
+    /// Model-facing names currently registered.
+    #[must_use]
+    pub fn registered_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.tools.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
     /// Append a pre-execute waterfall listener.
     ///
     /// The listener must call `next()` to delegate. Returning

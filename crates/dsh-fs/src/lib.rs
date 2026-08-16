@@ -5,6 +5,7 @@ mod error;
 mod fsio;
 mod local;
 mod observation;
+pub mod plugin;
 mod sandbox;
 mod types;
 

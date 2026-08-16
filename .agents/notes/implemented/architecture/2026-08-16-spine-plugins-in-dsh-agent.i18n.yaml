@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-08-16-spine-plugins-in-dsh-agent.md
-2026-08-16-spine-plugins-in-dsh-agent.md: 59b41ba04d683e225e1687fe2c7360f2cb8746e5
-2026-08-16-spine-plugins-in-dsh-agent.zh.md: 4a0346746b0556196daa43b519020cc1942c0bce
+2026-08-16-spine-plugins-in-dsh-agent.md: 527174e75107aab1c2a97faf333ef104e8ed440f
+2026-08-16-spine-plugins-in-dsh-agent.zh.md: c8c3dffa457260f27358b29349cd61f60b81aa3f

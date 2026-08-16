@@ -1,5 +1,6 @@
 //! Model-facing `bash` tool for the DeepSeek Harness Rust host.
 
+pub mod plugin;
 mod render;
 
 #[cfg(test)]

@@ -9,9 +9,12 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
+dsh-boot = { path = "../dsh-boot" }
 dsh-brand = { path = "../dsh-brand" }
+dsh-kernel = { path = "../dsh-kernel" }
 dsh-sandbox = { path = "../dsh-sandbox" }
 dsh-tools = { path = "../dsh-tools" }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs"] }
 

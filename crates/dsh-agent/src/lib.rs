@@ -7,4 +7,4 @@ mod spine;
 
 pub use error::AgentError;
 pub use registry::{AgentHandle, AgentRegistry, CreateAgentOptions};
-pub use spine::register_spine_plugins;
+pub use spine::{register_execution_plugins, register_spine_plugins};

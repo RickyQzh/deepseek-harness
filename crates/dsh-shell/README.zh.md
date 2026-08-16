@@ -14,6 +14,8 @@
 
 `resolve` 拒绝不以 `DSH_` 开头的 `dsh_env` 键。
 
+`plugin::register` 挂载 YAML `@deepseek-ai/dsh-shell-bash-local`，注入 `subprocess`，并提供无围栏的 `shell` 服务（`LocalBashExecutor`）。
+
 ## 已知限制与暂缓事项
 
 - `LocalBashExecutor` 仍无约束：`sandbox_mode()` 为 `None`，且忽略 `sandbox_policy`。

@@ -8,6 +8,8 @@ Child env is scrubbed then overlay-merged: `child_env` starts from `scrubbed_par
 
 `spawn_subprocess` starts a POSIX process-group leader (`process_group(0)`), collects bounded tails with optional spill files, and terminates with SIGTERM to `-pid` then SIGKILL after `grace_ms`. After the direct child exits, collect-mode `done()` waits at most `grace_ms` for pipe EOF, then drops the collect readers so an inherited descriptor cannot hang the outcome. `LocalSubprocessRuntime` resolves bare names on the scrubbed `PATH` and disposes live trees by terminating each group and awaiting `wait_for_exit`.
 
+`plugin::register` mounts YAML `@deepseek-ai/dsh-subprocess-local` and provides `subprocess` as `LocalSubprocessRuntime`.
+
 ## Known Limitations and Deferred Work
 
 - PTY allocation is out of this crate.

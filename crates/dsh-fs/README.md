@@ -14,6 +14,8 @@ Filesystem types, `FS_*` error codes, the local UTF-8 backend, an in-process san
 
 `ObservationGate` records per-owner presence or absence keyed by `(owner id, target_key)` and derives write/edit intents from that map. Distinct owners do not share observations. A missing owner never looks up. The gate is not wired into `LocalFileSystem` methods.
 
+`plugin::register` mounts YAML `@deepseek-ai/dsh-fs-local` and provides `fs` as `LocalFileSystem`. Cwd is config `cwd`, else `DSH_CWD`, else the process cwd.
+
 ## Known Limitations and Deferred Work
 
 - The sandbox fence is in-process containment, not kernel isolation; a residual TOCTOU remains between re-resolve and the write syscall.

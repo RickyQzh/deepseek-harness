@@ -6,6 +6,8 @@
 
 `register_bash_tool` 在 `ToolRuntime` 上注册名称 `bash`。当 `sandbox_shell` 为 `Some` 时，execute 使用 `SandboxBashExecutor`；否则使用 `LocalBashExecutor`。该工具是互斥的（`is_concurrency_safe` 为 `None`）。
 
+`plugin::register` 挂载 YAML `@deepseek-ai/dsh-tool-bash`，注入 `tools` 与 `shell`，并注册无围栏的 `bash`（`sandbox_shell` 为 `None`）。
+
 调用仅前台运行：先 `resolve` 再 `run`。`run_in_background: true` 为 `ToolError::Other`，消息为 `Background execution is not available; long-running commands must finish within the timeout.` 工具描述包含该句。不实现后台任务、`start`、系统提示词段落，以及提权批准。
 
 `command` 与 `description` 必须是 trim 后非空的字符串。若存在 `timeout_ms`，必须是正有限数。`workdir` 与 `timeout_ms` 是可选的请求覆盖；其余 `ShellExecRequest` 字段保持 `None`，但 `signal` 除外，它是此次工具调用的中止标志。

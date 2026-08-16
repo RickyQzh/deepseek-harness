@@ -4,6 +4,7 @@ mod bash;
 mod bash_sandbox;
 mod classify;
 mod error;
+pub mod plugin;
 mod render;
 mod types;
 

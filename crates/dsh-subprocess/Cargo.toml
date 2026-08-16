@@ -9,6 +9,8 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
+dsh-boot = { path = "../dsh-boot" }
+dsh-kernel = { path = "../dsh-kernel" }
 dsh-tools = { path = "../dsh-tools" }
 libc = { workspace = true }
 thiserror = { workspace = true }

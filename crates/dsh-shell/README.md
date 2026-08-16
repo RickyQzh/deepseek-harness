@@ -14,6 +14,8 @@ Shell request/spec types, POSIX bash executors, and exit-status parse for the De
 
 `resolve` rejects `dsh_env` keys that do not start with `DSH_`.
 
+`plugin::register` mounts YAML `@deepseek-ai/dsh-shell-bash-local`, injects `subprocess`, and provides unfenced `shell` as `LocalBashExecutor`.
+
 ## Known Limitations and Deferred Work
 
 - `LocalBashExecutor` stays unconfined: `sandbox_mode()` is `None` and `sandbox_policy` is ignored.

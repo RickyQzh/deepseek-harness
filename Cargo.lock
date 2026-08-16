@@ -94,12 +94,17 @@ dependencies = [
  "dsh-agent-loop",
  "dsh-boot",
  "dsh-credentials",
+ "dsh-fs",
  "dsh-kernel",
  "dsh-llm",
  "dsh-llm-deepseek",
  "dsh-session",
  "dsh-session-persist",
+ "dsh-shell",
+ "dsh-subprocess",
  "dsh-system-prompt",
+ "dsh-tool-bash",
+ "dsh-tool-fs",
  "dsh-tools",
  "thiserror",
  "tokio",
@@ -169,9 +174,12 @@ dependencies = [
 name = "dsh-fs"
 version = "0.1.0"
 dependencies = [
+ "dsh-boot",
  "dsh-brand",
+ "dsh-kernel",
  "dsh-sandbox",
  "dsh-tools",
+ "serde_json",
  "thiserror",
  "tokio",
 ]
@@ -274,6 +282,8 @@ dependencies = [
 name = "dsh-shell"
 version = "0.1.0"
 dependencies = [
+ "dsh-boot",
+ "dsh-kernel",
  "dsh-sandbox",
  "dsh-subprocess",
  "dsh-tools",
@@ -285,6 +295,8 @@ dependencies = [
 name = "dsh-subprocess"
 version = "0.1.0"
 dependencies = [
+ "dsh-boot",
+ "dsh-kernel",
  "dsh-tools",
  "libc",
  "thiserror",
@@ -308,7 +320,9 @@ name = "dsh-tool-bash"
 version = "0.1.0"
 dependencies = [
  "dsh-agent-loop",
+ "dsh-boot",
  "dsh-fs",
+ "dsh-kernel",
  "dsh-llm",
  "dsh-sandbox",
  "dsh-session",
@@ -326,7 +340,9 @@ dependencies = [
 name = "dsh-tool-fs"
 version = "0.1.0"
 dependencies = [
+ "dsh-boot",
  "dsh-fs",
+ "dsh-kernel",
  "dsh-sandbox",
  "dsh-session",
  "dsh-subprocess",
