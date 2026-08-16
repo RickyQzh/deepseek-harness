@@ -3,6 +3,9 @@
 mod plugin;
 mod server;
 
+#[cfg(test)]
+mod phase5_exit;
+
 /// Bundled Phase 5 composition: mock adapter claims `deepseek-official` so initialize needs no API key.
 pub const MINIMAL_YAML: &str = include_str!("../minimal.cordis.yml");
 

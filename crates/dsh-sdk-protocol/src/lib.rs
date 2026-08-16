@@ -3,6 +3,9 @@
 mod transport;
 mod types;
 
+#[cfg(test)]
+mod phase5_exit;
+
 pub use transport::{
     DecodedFrame, ERR_INTERNAL, ERR_METHOD_NOT_FOUND, JSONRPC_VERSION, JsonRpcId,
     JsonRpcLineTransport, JsonRpcResponseError, NotificationHandler, RequestHandler, decode_line,

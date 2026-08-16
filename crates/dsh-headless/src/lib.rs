@@ -7,6 +7,9 @@ mod runner;
 mod startup;
 mod summarize;
 
+#[cfg(test)]
+mod phase5_exit;
+
 /// Bundled Phase 5 composition (mock LLM, no `!!js`).
 pub const MINIMAL_YAML: &str = include_str!("../minimal.cordis.yml");
 

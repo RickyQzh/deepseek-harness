@@ -7,6 +7,9 @@ pub mod plugin;
 mod store;
 mod zstd;
 
+#[cfg(test)]
+mod phase5_exit;
+
 pub use error::PersistError;
 pub use header_line::{
     HeaderLine, HeaderLineType, from_header_line, parse_header_record, to_header_line,
