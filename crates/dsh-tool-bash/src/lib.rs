@@ -4,7 +4,7 @@ mod render;
 
 use std::sync::Arc;
 
-use dsh_sandbox::{ESCALATION_TARGETS, SANDBOX_UNAVAILABLE, SandboxMode};
+use dsh_sandbox::SANDBOX_UNAVAILABLE;
 use dsh_session::ContentBlock;
 use dsh_shell::{
     LocalBashExecutor, SandboxBashExecutor, ShellError, ShellExecRequest, ShellRunResult,
@@ -33,8 +33,9 @@ enum BashBackend {
 /// uses `shell`. Calls are foreground only: `run_in_background: true` is
 /// refused and `start` is never called. Nonzero command exits are successful
 /// results whose rendered text includes `[exit code: N]`. `sandbox_permissions`
-/// and `justification` are refused even when a sandbox executor is mounted;
-/// this phase has no approval channel.
+/// and `justification` are refused even when a sandbox executor is mounted.
+/// `escalation_modes` is empty in every composition: a denial does not
+/// advertise same-turn retry until an approval channel exists.
 ///
 /// # Parameters
 ///
@@ -46,11 +47,6 @@ pub fn register_bash_tool(
     shell: Arc<LocalBashExecutor>,
     sandbox_shell: Option<Arc<SandboxBashExecutor>>,
 ) {
-    let escalation_modes: Vec<SandboxMode> = if sandbox_shell.is_some() {
-        ESCALATION_TARGETS.to_vec()
-    } else {
-        Vec::new()
-    };
     let backend = match sandbox_shell {
         Some(sandbox) => BashBackend::Sandbox(sandbox),
         None => BashBackend::Local(shell),
@@ -82,8 +78,7 @@ pub fn register_bash_tool(
         }),
         execute: Box::new(move |args, exec| {
             let backend = backend.clone();
-            let escalation_modes = escalation_modes.clone();
-            Box::pin(async move { execute(&backend, &escalation_modes, args, exec).await })
+            Box::pin(async move { execute(&backend, args, exec).await })
         }),
         render: Box::new(|_args, value| {
             let text = value
@@ -99,7 +94,6 @@ pub fn register_bash_tool(
 
 async fn execute(
     backend: &BashBackend,
-    escalation_modes: &[SandboxMode],
     args: Value,
     exec: ToolExecution,
 ) -> Result<Value, ToolError> {
@@ -132,7 +126,7 @@ async fn execute(
             code: TOOL_ABORTED.into(),
         });
     }
-    Ok(json!({ "text": render_result(&result, escalation_modes) }))
+    Ok(json!({ "text": render_result(&result, &[]) }))
 }
 
 async fn run_foreground(
@@ -213,12 +207,18 @@ mod tests {
     use dsh_agent_loop::{LoopAgent, LoopOptions};
     use dsh_fs::{LocalFileSystem, ObservationGate, ObservationOwner};
     use dsh_llm::{LlmRuntime, MockAdapter, MockScript, text_response, tool_call_response};
-    use dsh_session::{SESSION_FORMAT_VERSION, Session, SessionHeader, SessionId};
-    use dsh_shell::{BashConfig, LocalBashExecutor};
+    use dsh_sandbox::{
+        ConfinedArgv, SandboxEnforcement, SandboxError, SandboxExecutionPolicy, SandboxMode,
+        SandboxPolicy,
+    };
+    use dsh_session::{CallId, SESSION_FORMAT_VERSION, Session, SessionHeader, SessionId};
+    use dsh_shell::{BashConfig, Confine, LocalBashExecutor, SandboxBashExecutor};
     use dsh_subprocess::LocalSubprocessRuntime;
     use dsh_system_prompt::{SystemPrompt, SystemPromptConfig};
     use dsh_tool_fs::{FsToolContext, register_fs_tools};
-    use dsh_tools::{ToolPresentationMode, ToolRuntime};
+    use dsh_tools::{
+        AbortFlag, ToolExecutionInput, ToolExecutionResult, ToolPresentationMode, ToolRuntime,
+    };
     use serde_json::json;
     use std::sync::Arc;
 
@@ -336,5 +336,62 @@ mod tests {
         let serialized = format!("{:?}", agent.session.events());
         assert!(serialized.contains("FS_NOT_OBSERVED"), "{serialized}");
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "hello");
+    }
+
+    struct DenialConfine;
+
+    impl Confine for DenialConfine {
+        fn confine(&self, _: &[String], _: &SandboxPolicy) -> Result<ConfinedArgv, SandboxError> {
+            Ok(ConfinedArgv {
+                argv: vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "printf '%s\\n' 'permission denied' >&2; exit 1".into(),
+                ],
+                enforcement: SandboxEnforcement::Full,
+                denial_signatures: vec!["permission denied".into()],
+                runner_failure_rules: vec![],
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn sandboxed_denial_does_not_advertise_escalation() {
+        let subprocess = Arc::new(LocalSubprocessRuntime::new());
+        let local =
+            Arc::new(LocalBashExecutor::new(subprocess.clone(), BashConfig::default()).unwrap());
+        let sandbox = Arc::new(SandboxBashExecutor::new(
+            LocalBashExecutor::new(subprocess, BashConfig::default()).unwrap(),
+            Arc::new(DenialConfine),
+            SandboxExecutionPolicy {
+                mode: SandboxMode::ReadOnly,
+                workspace_root: "/ws".into(),
+                session_id: None,
+            },
+        ));
+        let mut tools = ToolRuntime::new(ToolPresentationMode::Native);
+        register_bash_tool(&mut tools, local, Some(sandbox));
+        let result = tools
+            .execute(ToolExecutionInput {
+                call_id: CallId::new("c1"),
+                root_call_id: None,
+                name: "bash".into(),
+                arguments: json!({"command":"touch /etc/nologin","description":"probe denial"}),
+                parent: None,
+                signal: AbortFlag::new(),
+            })
+            .await;
+        let ToolExecutionResult::Success { value, .. } = result else {
+            panic!("{result:?}");
+        };
+        let text = value
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .unwrap();
+        assert!(
+            text.contains("[sandbox: file access denied under read-only mode]"),
+            "{text}"
+        );
+        assert!(!text.contains("escalation available"), "{text}");
     }
 }
