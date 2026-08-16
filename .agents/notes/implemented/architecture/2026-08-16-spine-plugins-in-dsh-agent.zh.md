@@ -20,7 +20,7 @@ DeepSeek 插件把 `CredentialRef` 存在 `DeepSeekConnectionOptions` 上，并�
 
 **在 `dsh-boot` 中放置 `register_spine_plugins` 并依赖产品 crate。** 否决：这正是本笔记要防止的环。
 
-**在 `dsh-cli` 与 `dsh-sdk-jsonrpc-server` 中各写一份 `register_spine_plugins`。** 否决：两份副本会漂移，且这些 bin 尚未作为组合所有者存在。
+**在 `dsh-cli` 与 `dsh-sdk-jsonrpc-server` 中各写一份 `register_spine_plugins`。** 否决：两份副本会漂移；两个 bin 都调用 `dsh_agent::register_spine_plugins`。
 
 **抽出新的 `dsh-product` crate。** 本阶段否决：任务禁止额外 crate，且 `dsh-agent` 已经依赖 llm、tools 与 system-prompt。
 

@@ -20,7 +20,7 @@ The DeepSeek plugin stores a `CredentialRef` on `DeepSeekConnectionOptions` and 
 
 **Put `register_spine_plugins` in `dsh-boot` with product crate dependencies.** Rejected: that is the cycle this note exists to prevent.
 
-**Duplicate `register_spine_plugins` in `dsh-cli` and `dsh-sdk-jsonrpc-server`.** Rejected: two copies would drift, and those bins do not exist yet as composition owners.
+**Duplicate `register_spine_plugins` in `dsh-cli` and `dsh-sdk-jsonrpc-server`.** Rejected: two copies would drift; both bins call `dsh_agent::register_spine_plugins`.
 
 **Extract a new `dsh-product` crate.** Rejected for this phase: the task forbids extra crates, and `dsh-agent` already depends on llm, tools, and system-prompt.
 

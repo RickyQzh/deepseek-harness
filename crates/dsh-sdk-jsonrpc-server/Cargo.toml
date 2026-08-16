@@ -1,0 +1,30 @@
+[package]
+name = "dsh-sdk-jsonrpc-server"
+version = "0.1.0"
+description = "NDJSON JSON-RPC SDK server for the DeepSeek Harness Rust host"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+dsh-agent = { path = "../dsh-agent" }
+dsh-agent-loop = { path = "../dsh-agent-loop" }
+dsh-boot = { path = "../dsh-boot" }
+dsh-kernel = { path = "../dsh-kernel" }
+dsh-llm = { path = "../dsh-llm" }
+dsh-sdk-protocol = { path = "../dsh-sdk-protocol" }
+dsh-session = { path = "../dsh-session" }
+dsh-session-persist = { path = "../dsh-session-persist" }
+dsh-system-prompt = { path = "../dsh-system-prompt" }
+dsh-tools = { path = "../dsh-tools" }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[[bin]]
+name = "dsh-jsonrpc-agent"
+path = "src/bin.rs"
+
+[lints]
+workspace = true

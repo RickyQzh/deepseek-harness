@@ -315,6 +315,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-sdk-jsonrpc-server"
+version = "0.1.0"
+dependencies = [
+ "dsh-agent",
+ "dsh-agent-loop",
+ "dsh-boot",
+ "dsh-kernel",
+ "dsh-llm",
+ "dsh-sdk-protocol",
+ "dsh-session",
+ "dsh-session-persist",
+ "dsh-system-prompt",
+ "dsh-tools",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "dsh-sdk-protocol"
 version = "0.1.0"
 dependencies = [

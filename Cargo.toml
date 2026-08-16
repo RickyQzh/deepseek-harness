@@ -13,7 +13,7 @@ repository = "https://github.com/deepseek-ai/deepseek-harness"
 missing_docs = "warn"
 
 [workspace.dependencies]
-tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time", "net", "io-util", "process"] }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time", "net", "io-util", "io-std", "process"] }
 thiserror = "2"
 clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 libc = "0.2"
