@@ -1,0 +1,27 @@
+[package]
+name = "dsh-subagent-in-process"
+version = "0.1.0"
+description = "In-process spawn and fork one-shot subagent providers and shared driver for the DeepSeek Harness Rust host"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+dsh-agent = { path = "../dsh-agent" }
+dsh-agent-loop = { path = "../dsh-agent-loop" }
+dsh-boot = { path = "../dsh-boot" }
+dsh-kernel = { path = "../dsh-kernel" }
+dsh-session = { path = "../dsh-session" }
+dsh-subagent = { path = "../dsh-subagent" }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+dsh-llm = { path = "../dsh-llm" }
+dsh-system-prompt = { path = "../dsh-system-prompt" }
+dsh-tools = { path = "../dsh-tools" }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

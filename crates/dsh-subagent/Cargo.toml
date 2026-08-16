@@ -1,0 +1,28 @@
+[package]
+name = "dsh-subagent"
+version = "0.1.0"
+description = "Subagent Service Definition: named providers and one-shot start for the DeepSeek Harness Rust host"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+dsh-agent = { path = "../dsh-agent" }
+dsh-boot = { path = "../dsh-boot" }
+dsh-brand = { path = "../dsh-brand" }
+dsh-kernel = { path = "../dsh-kernel" }
+dsh-session = { path = "../dsh-session" }
+dsh-tools = { path = "../dsh-tools" }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+dsh-agent-loop = { path = "../dsh-agent-loop" }
+dsh-llm = { path = "../dsh-llm" }
+dsh-system-prompt = { path = "../dsh-system-prompt" }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

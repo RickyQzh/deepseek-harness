@@ -61,6 +61,12 @@ pub const PLUGIN_PERMISSION_PRESETS: &str = "@deepseek-ai/dsh-permission-presets
 pub const PLUGIN_SYSTEM_PROMPT: &str = "@deepseek-ai/dsh-system-prompt";
 /// YAML `name` for `@deepseek-ai/dsh-agent`.
 pub const PLUGIN_AGENT: &str = "@deepseek-ai/dsh-agent";
+/// YAML `name` for `@deepseek-ai/dsh-subagent`.
+pub const PLUGIN_SUBAGENT: &str = "@deepseek-ai/dsh-subagent";
+/// YAML `name` for `@deepseek-ai/dsh-subagent-spawn-in-process`.
+pub const PLUGIN_SUBAGENT_SPAWN: &str = "@deepseek-ai/dsh-subagent-spawn-in-process";
+/// YAML `name` for `@deepseek-ai/dsh-subagent-fork-in-process`.
+pub const PLUGIN_SUBAGENT_FORK: &str = "@deepseek-ai/dsh-subagent-fork-in-process";
 /// YAML `name` for `@deepseek-ai/dsh-session-persistence-jsonl`.
 pub const PLUGIN_SESSION_JSONL: &str = "@deepseek-ai/dsh-session-persistence-jsonl";
 /// YAML `name` for `@deepseek-ai/dsh-subprocess-local`.

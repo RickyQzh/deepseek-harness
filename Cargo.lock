@@ -493,6 +493,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-subagent"
+version = "0.1.0"
+dependencies = [
+ "dsh-agent",
+ "dsh-agent-loop",
+ "dsh-boot",
+ "dsh-brand",
+ "dsh-kernel",
+ "dsh-llm",
+ "dsh-session",
+ "dsh-system-prompt",
+ "dsh-tools",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "dsh-subagent-in-process"
+version = "0.1.0"
+dependencies = [
+ "dsh-agent",
+ "dsh-agent-loop",
+ "dsh-boot",
+ "dsh-kernel",
+ "dsh-llm",
+ "dsh-session",
+ "dsh-subagent",
+ "dsh-system-prompt",
+ "dsh-tools",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "dsh-subprocess"
 version = "0.1.0"
 dependencies = [

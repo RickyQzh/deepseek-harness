@@ -35,6 +35,8 @@ Rust workspace members for the DeepSeek Harness host process. Layout, keep-or-dr
 | [`dsh-jobs`](dsh-jobs/README.md) | Background-job Service Definition: branded ids, snapshots, and `JobRegistry`. |
 | [`dsh-jobs-local`](dsh-jobs-local/README.md) | Process-local `jobs` provider (`LocalJobRegistry`). |
 | [`dsh-tool-jobs`](dsh-tool-jobs/README.md) | Model-facing `job_output` / `job_list` / `job_kill` tools. |
+| [`dsh-subagent`](dsh-subagent/README.md) | Subagent Service Definition: named providers and one-shot `start`. |
+| [`dsh-subagent-in-process`](dsh-subagent-in-process/README.md) | In-process spawn/fork one-shot providers and shared child driver. |
 | [`dsh-agent`](dsh-agent/README.md) | Live LoopAgent registry keyed by session id; Session append-sink factory. |
 | [`dsh-agent-loop`](dsh-agent-loop/README.md) | Scripted loop: durable inbox, idle / maintenance / running, runtime-context snapshots, request reconstruction, tool-call scheduler. |
 | [`dsh-subprocess`](dsh-subprocess/README.md) | Fully specified argv spawn and credential-scrubbed child env. |

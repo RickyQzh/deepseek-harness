@@ -35,6 +35,8 @@ DeepSeek Harness 宿主进程的 Rust workspace 成员。布局、保留/放弃�
 | [`dsh-jobs`](dsh-jobs/README.md) | 后台任务 Service Definition：品牌 id、快照与 `JobRegistry`。 |
 | [`dsh-jobs-local`](dsh-jobs-local/README.md) | 进程内 `jobs` 提供方（`LocalJobRegistry`）。 |
 | [`dsh-tool-jobs`](dsh-tool-jobs/README.md) | 面向模型的 `job_output` / `job_list` / `job_kill` 工具。 |
+| [`dsh-subagent`](dsh-subagent/README.md) | Subagent Service Definition：具名提供方与一次性 `start`。 |
+| [`dsh-subagent-in-process`](dsh-subagent-in-process/README.md) | 同进程 spawn/fork 一次性提供方与共享子 agent 驱动器。 |
 | [`dsh-agent`](dsh-agent/README.md) | 按会话 id 持有的实时 LoopAgent 注册表；Session append-sink 工厂。 |
 | [`dsh-agent-loop`](dsh-agent-loop/README.md) | 脚本化循环：持久化 inbox、idle / maintenance / running、运行时上下文快照、请求重建、工具调用调度。 |
 | [`dsh-subprocess`](dsh-subprocess/README.md) | 完全指定的 argv 派发与凭据擦除后的子进程环境。 |
