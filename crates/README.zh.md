@@ -31,3 +31,4 @@ DeepSeek Harness 宿主进程的 Rust workspace 成员。布局、保留/放弃�
 | [`dsh-tool-bash`](dsh-tool-bash/README.md) | 面向模型的 bash 工具。 |
 | [`dsh-sdk-protocol`](dsh-sdk-protocol/README.md) | SDK JSON-RPC 2.0 协议类型（`initialize`、`session/prompt`、`shutdown`、四类通知）。 |
 | [`dsh-headless`](dsh-headless/README.md) | 一次性 headless 运行器：打印最后一段 assistant 文本加换行；仅当 `turn/end` 为 `completed` 时退出码 0。 |
+| [`dsh-cli`](dsh-cli/README.md) | `dsh` clap 启动器：`--profile headless`、`--patch`、一个位置参数任务。 |
