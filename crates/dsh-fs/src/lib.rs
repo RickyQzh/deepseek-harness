@@ -1,9 +1,12 @@
-//! Filesystem types and `FS_*` error codes for the Rust host.
+//! Filesystem types, `FS_*` error codes, and the unfenced local backend for the Rust host.
 
 mod error;
+mod fsio;
+mod local;
 mod types;
 
 pub use error::{FsError, FsErrorCode};
+pub use local::LocalFileSystem;
 pub use types::{
     FsEditOutcome, FsEditRequest, FsInfo, FsInfoType, FsObservation, FsTarget, FsTargetKey,
     FsTargetKeyTag, FsVersion, FsVersionTag, FsWriteIntent, FsWriteOutcome,
