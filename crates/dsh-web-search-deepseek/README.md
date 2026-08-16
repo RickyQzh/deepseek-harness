@@ -6,7 +6,7 @@ DeepSeek-backed `WebSearchProvider` for the Rust host. It `POST`s `{baseURL}/mes
 
 The provider reuses credential reference `DEEPSEEK_API_KEY` (optional YAML `apiKey` wins when non-empty) through `LayeredCredentials`. It does **not** read `$DEEPSEEK_BASE_URL`. The Messages base is config `baseURL`, else `$DEEPSEEK_SEARCH_BASE_URL`, else `https://api.deepseek.com/anthropic/v1`. HTTP uses `reqwest` with `rustls-tls` and `redirect::Policy::none()`; a 3xx response is `WEB_PROVIDER_ERROR` and the `Location` target is not contacted. Headers are `x-api-key`, `Authorization: Bearer`, `anthropic-version: 2023-06-01`, JSON `content-type`/`accept`, and `user-agent: deepseek-harness/0.0.1`.
 
-`available()` is local: a non-empty literal or resolved key, a parseable base URL, and positive `maxTokens`/`maxUses`. No result blocks fail as `WEB_PROVIDER_ERROR`. Provider `truncated` is always `false` (the search runtime enforces `max_results`). Caller abort is `WEB_ABORTED`. This phase does not append `web/deepseek-search-llm-request` and does not install a Settings section.
+`available()` is local: a non-empty literal or resolved key, a parseable base URL, and positive `maxTokens`/`maxUses`. No result blocks, or a present non-array `web_search_tool_result.content`, fail as `WEB_PROVIDER_ERROR`. Missing or JSON-null `content` is an empty item list. Provider `truncated` is always `false` (the search runtime enforces `max_results`). Caller abort is `WEB_ABORTED`. This phase does not append `web/deepseek-search-llm-request` and does not install a Settings section.
 
 ## Config
 

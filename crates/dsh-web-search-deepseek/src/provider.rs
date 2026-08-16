@@ -7,11 +7,11 @@ use std::sync::Arc;
 
 use dsh_tools::AbortFlag;
 use dsh_web::{
-    WEB_ABORTED, WEB_PROVIDER_CREDENTIAL_MISSING, WEB_PROVIDER_ERROR, WebError, WebSearchProvider,
-    WebSearchRequest, WebSearchResult, WebSearchSource,
+    WebError, WebSearchProvider, WebSearchRequest, WebSearchResult, WebSearchSource, WEB_ABORTED,
+    WEB_PROVIDER_CREDENTIAL_MISSING, WEB_PROVIDER_ERROR,
 };
-use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
-use serde_json::{Value, json};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
+use serde_json::{json, Value};
 
 /// Stable id this provider registers under.
 pub const DEEPSEEK_PROVIDER_ID: &str = "deepseek-official";
@@ -122,9 +122,13 @@ pub fn citation_snippets(blocks: &[Value]) -> HashMap<String, String> {
 
 /// Map a DeepSeek Anthropic Messages JSON body to a search result. `truncated` is always false.
 ///
+/// Missing or JSON-null `web_search_tool_result.content` is an empty item list. A present
+/// non-array `content` (Anthropic `web_search_tool_result_error` envelope) is unprocessable.
+///
 /// # Errors
 ///
-/// [`WEB_PROVIDER_ERROR`] when the payload has no `web_search_tool_result` block.
+/// [`WEB_PROVIDER_ERROR`] when the payload has no `web_search_tool_result` block, or when a
+/// result block's `content` is present and not a JSON array.
 pub fn map_anthropic_response(response: &Value) -> Result<WebSearchResult, WebError> {
     let blocks = response.get("content").and_then(Value::as_array);
     let Some(blocks) = blocks else {
@@ -141,8 +145,10 @@ pub fn map_anthropic_response(response: &Value) -> Result<WebSearchResult, WebEr
     let mut seen = HashSet::new();
     let mut sources = Vec::new();
     for block in result_blocks {
-        let Some(items) = block.get("content").and_then(Value::as_array) else {
-            continue;
+        let items = match block.get("content") {
+            None | Some(Value::Null) => continue,
+            Some(Value::Array(items)) => items,
+            Some(_) => return Err(unprocessable_tool_result_content()),
         };
         for item in items {
             if item.get("type").and_then(Value::as_str) != Some("web_search_result") {
@@ -178,6 +184,13 @@ fn nonempty_opt(value: Option<&str>) -> Option<String> {
 fn no_result_blocks() -> WebError {
     WebError::new(
         "DeepSeek returned no web_search_tool_result blocks; the request may not have triggered native web search",
+        WEB_PROVIDER_ERROR,
+    )
+}
+
+fn unprocessable_tool_result_content() -> WebError {
+    WebError::new(
+        "DeepSeek returned an unprocessable response body: web_search_tool_result.content is not an array",
         WEB_PROVIDER_ERROR,
     )
 }
@@ -414,13 +427,13 @@ pub fn search_base_url_from_env() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEEPSEEK_DEFAULT_API_VERSION, DEEPSEEK_DEFAULT_BASE_URL, DEEPSEEK_DEFAULT_MAX_TOKENS,
-        DEEPSEEK_DEFAULT_MAX_USES, DEEPSEEK_DEFAULT_MODEL, DEEPSEEK_PROVIDER_ID,
-        DeepSeekSearchProvider, DeepSeekSearchProviderOptions, citation_snippets,
-        deepseek_search_body, map_anthropic_response, resolve_base_url,
+        citation_snippets, deepseek_search_body, map_anthropic_response, resolve_base_url,
+        DeepSeekSearchProvider, DeepSeekSearchProviderOptions, DEEPSEEK_DEFAULT_API_VERSION,
+        DEEPSEEK_DEFAULT_BASE_URL, DEEPSEEK_DEFAULT_MAX_TOKENS, DEEPSEEK_DEFAULT_MAX_USES,
+        DEEPSEEK_DEFAULT_MODEL, DEEPSEEK_PROVIDER_ID,
     };
     use dsh_tools::AbortFlag;
-    use dsh_web::{WEB_PROVIDER_ERROR, WebSearchProvider, WebSearchRequest};
+    use dsh_web::{WebSearchProvider, WebSearchRequest, WEB_PROVIDER_ERROR};
     use serde_json::json;
 
     fn options_with_key() -> DeepSeekSearchProviderOptions {
@@ -506,6 +519,48 @@ mod tests {
         }))
         .unwrap_err();
         assert_eq!(err.code, WEB_PROVIDER_ERROR);
+    }
+
+    #[test]
+    fn map_anthropic_response_rejects_tool_result_error_envelope() {
+        let err = map_anthropic_response(&json!({
+            "content": [{
+                "type": "web_search_tool_result",
+                "content": {
+                    "type": "web_search_tool_result_error",
+                    "error_code": "max_uses_exceeded"
+                }
+            }]
+        }))
+        .unwrap_err();
+        assert_eq!(err.code, WEB_PROVIDER_ERROR);
+        assert!(
+            err.message.contains("unprocessable response body"),
+            "expected unprocessable-body diagnostic, got {:?}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn map_anthropic_response_treats_missing_or_null_content_as_empty_items() {
+        let missing = map_anthropic_response(&json!({
+            "content": [
+                { "type": "web_search_tool_result" },
+                {
+                    "type": "web_search_tool_result",
+                    "content": [{ "type": "web_search_result", "url": "https://a.test" }]
+                }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(missing.sources.len(), 1);
+        assert_eq!(missing.sources[0].url, "https://a.test");
+
+        let null_only = map_anthropic_response(&json!({
+            "content": [{ "type": "web_search_tool_result", "content": null }]
+        }))
+        .unwrap();
+        assert!(null_only.sources.is_empty());
     }
 
     #[test]

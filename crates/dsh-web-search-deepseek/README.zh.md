@@ -6,7 +6,7 @@
 
 提供方复用凭据引用 `DEEPSEEK_API_KEY`（非空的 YAML `apiKey` 优先），通过 `LayeredCredentials` 解析。它**不**读取 `$DEEPSEEK_BASE_URL`。Messages 基址依次为配置 `baseURL`、`$DEEPSEEK_SEARCH_BASE_URL`，否则 `https://api.deepseek.com/anthropic/v1`。HTTP 使用带 `rustls-tls` 与 `redirect::Policy::none()` 的 `reqwest`；3xx 响应是 `WEB_PROVIDER_ERROR`，不会访问 `Location` 目标。请求头为 `x-api-key`、`Authorization: Bearer`、`anthropic-version: 2023-06-01`、JSON 的 `content-type`／`accept`，以及 `user-agent: deepseek-harness/0.0.1`。
 
-`available()` 是本地检查：非空的字面量或已解析密钥、可解析的基址 URL，以及正数 `maxTokens`／`maxUses`。没有结果块时失败为 `WEB_PROVIDER_ERROR`。提供方的 `truncated` 恒为 `false`（由搜索运行时强制 `max_results`）。调用方中止为 `WEB_ABORTED`。本阶段不追加 `web/deepseek-search-llm-request`，也不安装 Settings 段。
+`available()` 是本地检查：非空的字面量或已解析密钥、可解析的基址 URL，以及正数 `maxTokens`／`maxUses`。没有结果块，或 `web_search_tool_result.content` 存在且不是数组时，失败为 `WEB_PROVIDER_ERROR`。缺失或 JSON null 的 `content` 视为空条目列表。提供方的 `truncated` 恒为 `false`（由搜索运行时强制 `max_results`）。调用方中止为 `WEB_ABORTED`。本阶段不追加 `web/deepseek-search-llm-request`，也不安装 Settings 段。
 
 ## 配置
 
