@@ -169,6 +169,20 @@ pub enum MessageSource {
         /// Notice summary when `form` is `notice`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         summary: Option<String>,
+        /// Compaction transaction id when this plugin message is a checkpoint.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "compactionId"
+        )]
+        compaction_id: Option<String>,
+        /// Initiating command id when this checkpoint was manual.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "sourceCommandId"
+        )]
+        source_command_id: Option<String>,
     },
     /// Model output.
     Model {
@@ -658,4 +672,76 @@ pub struct ApprovalPolicyData {
     /// Optional source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MessageSource;
+    use serde_json::json;
+
+    #[test]
+    fn plugin_source_omits_absent_compaction_fields() {
+        let source = MessageSource::Plugin {
+            plugin: "runtime-context".into(),
+            form: None,
+            sections: Vec::new(),
+            summary: None,
+            compaction_id: None,
+            source_command_id: None,
+        };
+        let value = serde_json::to_value(&source).expect("serialize");
+        assert_eq!(value["kind"], "plugin");
+        assert_eq!(value["plugin"], "runtime-context");
+        assert!(value.get("compactionId").is_none());
+        assert!(value.get("sourceCommandId").is_none());
+    }
+
+    #[test]
+    fn plugin_source_decodes_without_compaction_fields() {
+        let source: MessageSource = serde_json::from_value(json!({
+            "kind": "plugin",
+            "plugin": "runtime-context",
+        }))
+        .expect("deserialize");
+        match source {
+            MessageSource::Plugin {
+                plugin,
+                compaction_id,
+                source_command_id,
+                ..
+            } => {
+                assert_eq!(plugin, "runtime-context");
+                assert!(compaction_id.is_none());
+                assert!(source_command_id.is_none());
+            }
+            other => panic!("expected plugin source, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plugin_source_round_trips_compaction_fields() {
+        let source = MessageSource::Plugin {
+            plugin: "compact".into(),
+            form: None,
+            sections: Vec::new(),
+            summary: None,
+            compaction_id: Some("cmp-1".into()),
+            source_command_id: Some("cmd-9".into()),
+        };
+        let value = serde_json::to_value(&source).expect("serialize");
+        assert_eq!(value["compactionId"], "cmp-1");
+        assert_eq!(value["sourceCommandId"], "cmd-9");
+        let back: MessageSource = serde_json::from_value(value).expect("deserialize");
+        match back {
+            MessageSource::Plugin {
+                compaction_id,
+                source_command_id,
+                ..
+            } => {
+                assert_eq!(compaction_id.as_deref(), Some("cmp-1"));
+                assert_eq!(source_command_id.as_deref(), Some("cmd-9"));
+            }
+            other => panic!("expected plugin source, got {other:?}"),
+        }
+    }
 }

@@ -906,6 +906,8 @@ mod tests {
                         form: None,
                         sections: Vec::new(),
                         summary: None,
+                        compaction_id: None,
+                        source_command_id: None,
                     },
                 },
                 surface_op: Some(SurfaceOp::Replace {

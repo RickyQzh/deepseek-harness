@@ -134,6 +134,8 @@ fn plugin_source(sections: &[ContextSnapshotSection]) -> MessageSource {
             form: None,
             sections: Vec::new(),
             summary: None,
+            compaction_id: None,
+            source_command_id: None,
         };
     }
     let value = serde_json::json!({
@@ -152,6 +154,8 @@ fn plugin_source(sections: &[ContextSnapshotSection]) -> MessageSource {
         form: Some("snapshot".into()),
         sections: Vec::new(),
         summary: None,
+        compaction_id: None,
+        source_command_id: None,
     })
 }
 
@@ -184,6 +188,8 @@ mod tests {
                     form: Some("snapshot".into()),
                     sections: vec![],
                     summary: None,
+                    compaction_id: None,
+                    source_command_id: None,
                 },
             },
             surface_op: Some(SurfaceOp::Append),

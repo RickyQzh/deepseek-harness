@@ -199,6 +199,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-compaction"
+version = "0.1.0"
+dependencies = [
+ "dsh-agent-loop",
+ "dsh-brand",
+ "dsh-session",
+ "dsh-tools",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "dsh-compose"
 version = "0.1.0"
 dependencies = [
