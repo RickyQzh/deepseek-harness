@@ -228,6 +228,7 @@ dependencies = [
  "dsh-subprocess",
  "dsh-tools",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

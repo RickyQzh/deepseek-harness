@@ -1,6 +1,4 @@
-//! Request, resolved spec, run result, and process-handle types for the shell executor.
-//!
-//! [`ShellProcess`] has no fields or methods; the executor owns those.
+//! Request, resolved spec, run result, and process-status types for the shell executor.
 
 use dsh_sandbox::{SandboxEnforcement, SandboxExecutionPolicy, SandboxMode};
 use dsh_subprocess::{CollectedOutput, EnvEntry};
@@ -25,7 +23,7 @@ pub struct ShellExecRequest {
     pub stdin: Option<String>,
     /// Ordinary environment overlay merged after the credential scrub. `None` means no extra env.
     pub env: Option<Vec<EnvEntry>>,
-    /// Harness-owned `DSH_*` pairs merged after [`env`](Self::env). Keys must start with `DSH_`; this crate does not validate that prefix.
+    /// Harness-owned `DSH_*` pairs merged after [`env`](Self::env). Keys must start with `DSH_`. [`crate::LocalBashExecutor::resolve`] rejects any other prefix.
     pub dsh_env: Option<Vec<(String, String)>>,
     /// Fully resolved per-call sandbox policy. Sandboxing executors default it when `None`.
     pub sandbox_policy: Option<SandboxExecutionPolicy>,
@@ -48,7 +46,7 @@ pub struct ShellExecSpec {
     pub stdin: Option<String>,
     /// Ordinary environment overlay carried through from [`ShellExecRequest::env`].
     pub env: Option<Vec<EnvEntry>>,
-    /// Harness-owned `DSH_*` pairs. Keys must start with `DSH_`; this crate does not validate that prefix.
+    /// Harness-owned `DSH_*` pairs. Keys must start with `DSH_`. [`crate::LocalBashExecutor::resolve`] rejects any other prefix.
     pub dsh_env: Option<Vec<(String, String)>>,
     /// Resolved sandbox policy; ignored by executors that do not confine. `None` means no policy.
     pub sandbox_policy: Option<SandboxExecutionPolicy>,
@@ -101,14 +99,9 @@ pub enum ShellProcessStatus {
     Killed,
 }
 
-/// Background process handle returned by executor `start`.
-///
-/// This type has no fields or methods.
-pub struct ShellProcess;
-
 #[cfg(test)]
 mod tests {
-    use super::{ShellExecRequest, ShellExecSpec, ShellProcess, ShellProcessStatus};
+    use super::{ShellExecRequest, ShellExecSpec, ShellProcessStatus};
 
     #[test]
     fn request_omits_resolved_fields_and_spec_requires_them() {
@@ -140,7 +133,6 @@ mod tests {
         assert_eq!(spec.timeout_ms, 30_000);
         assert_eq!(spec.stdout_max_bytes, 1024);
         assert_eq!(spec.dsh_env.as_ref().unwrap()[0].0, "NOT_DSH");
-        let _ = ShellProcess;
         assert_ne!(ShellProcessStatus::Running, ShellProcessStatus::Completed);
     }
 }
