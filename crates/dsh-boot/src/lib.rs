@@ -33,6 +33,12 @@ pub const PLUGIN_COMPACTION_BASIC: &str = "@deepseek-ai/dsh-compaction-basic";
 pub const PLUGIN_AGENT_INSTRUCTIONS: &str = "@deepseek-ai/dsh-agent-instructions";
 /// YAML `name` for `@deepseek-ai/dsh-time-context`.
 pub const PLUGIN_TIME_CONTEXT: &str = "@deepseek-ai/dsh-time-context";
+/// YAML `name` for `@deepseek-ai/dsh-skill`.
+pub const PLUGIN_SKILL: &str = "@deepseek-ai/dsh-skill";
+/// YAML `name` for `@deepseek-ai/dsh-skill-filesystem`.
+pub const PLUGIN_SKILL_FILESYSTEM: &str = "@deepseek-ai/dsh-skill-filesystem";
+/// YAML `name` for `@deepseek-ai/dsh-tool-skill`.
+pub const PLUGIN_TOOL_SKILL: &str = "@deepseek-ai/dsh-tool-skill";
 /// YAML `name` for `@deepseek-ai/dsh-compaction-tool-result-pruner`.
 pub const PLUGIN_TOOL_RESULT_PRUNER: &str = "@deepseek-ai/dsh-compaction-tool-result-pruner";
 /// YAML `name` for `@deepseek-ai/dsh-tools`.

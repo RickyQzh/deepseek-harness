@@ -30,9 +30,9 @@ pub use message::{
     ApprovalPolicyData, AssistantChunkData, AssistantMessageData, ContentBlock, EpochHeader,
     FinishReason, InboxSplicedData, InboxTarget, LlmCallConfig, LlmCallConfigAdapterDefaults,
     LlmFailure, Message, MessageRole, MessageSource, PermissionPresetData, RequestContext,
-    RequestHeaderData, RequestHeaderReason, SandboxModeData, SessionTitleData, StepBoundaryData,
-    StreamChunk, TokenUsage, ToolCallData, ToolResultData, ToolResultError, TurnEndData,
-    TurnEndReason, TurnStartData,
+    RequestHeaderData, RequestHeaderReason, SandboxModeData, SessionTitleData, SkillCatalogEntry,
+    StepBoundaryData, StreamChunk, TokenUsage, ToolCallData, ToolResultData, ToolResultError,
+    TurnEndData, TurnEndReason, TurnStartData,
 };
 pub use repair::{TOOL_NOT_STARTED, TOOL_OUTCOME_UNKNOWN, interrupted_turn_closers};
 pub use request_header::{canonical_header, fold_request_header, header_equals};

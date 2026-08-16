@@ -222,6 +222,32 @@ pub enum MessageSource {
         #[serde(default)]
         changes: Vec<Value>,
     },
+    /// Durable model-facing skill catalog published for a session.
+    SkillCatalog {
+        /// Context form; always `catalog`.
+        form: String,
+        /// Marks a replacement catalog rather than this session's first publication.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        update: Option<bool>,
+        /// Exactly the entries this message published, in catalog order.
+        entries: Vec<SkillCatalogEntry>,
+    },
+    /// A user-explicit skill invocation injected by the host.
+    SkillInvocation {
+        /// Invoked skill name, validated user-invocable at the injecting boundary.
+        name: String,
+        /// Injected skill bodies are instructions for the model to follow.
+        form: String,
+    },
+}
+
+/// One name/description pair published in a [`MessageSource::SkillCatalog`] message.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillCatalogEntry {
+    /// Kebab-case skill name.
+    pub name: String,
+    /// Normalized, length-capped description as published (unescaped).
+    pub description: String,
 }
 
 /// One named contribution to a snapshot-form context.
@@ -791,5 +817,54 @@ mod tests {
             }
             other => panic!("expected agent-instructions source, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn skill_catalog_source_uses_kebab_kind_and_optional_update() {
+        let source = MessageSource::SkillCatalog {
+            form: "catalog".into(),
+            update: None,
+            entries: vec![super::SkillCatalogEntry {
+                name: "demo-skill".into(),
+                description: "Demo.".into(),
+            }],
+        };
+        let value = serde_json::to_value(&source).expect("serialize");
+        assert_eq!(value["kind"], "skill-catalog");
+        assert_eq!(value["form"], "catalog");
+        assert!(value.get("update").is_none());
+        assert_eq!(value["entries"][0]["name"], "demo-skill");
+        let update = MessageSource::SkillCatalog {
+            form: "catalog".into(),
+            update: Some(true),
+            entries: vec![],
+        };
+        let update_value = serde_json::to_value(&update).expect("serialize");
+        assert_eq!(update_value["update"], true);
+        let back: MessageSource = serde_json::from_value(value).expect("deserialize");
+        match back {
+            MessageSource::SkillCatalog {
+                form,
+                update,
+                entries,
+            } => {
+                assert_eq!(form, "catalog");
+                assert!(update.is_none());
+                assert_eq!(entries.len(), 1);
+            }
+            other => panic!("expected skill-catalog source, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn skill_invocation_source_uses_kebab_kind() {
+        let source = MessageSource::SkillInvocation {
+            name: "demo-skill".into(),
+            form: "instructions".into(),
+        };
+        let value = serde_json::to_value(&source).expect("serialize");
+        assert_eq!(value["kind"], "skill-invocation");
+        assert_eq!(value["name"], "demo-skill");
+        assert_eq!(value["form"], "instructions");
     }
 }

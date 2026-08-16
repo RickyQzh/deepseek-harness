@@ -456,6 +456,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-skill"
+version = "0.1.0"
+dependencies = [
+ "dsh-agent-loop",
+ "dsh-boot",
+ "dsh-fs",
+ "dsh-kernel",
+ "dsh-session",
+ "dsh-tools",
+ "serde_json",
+ "serde_yaml",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "dsh-subprocess"
 version = "0.1.0"
 dependencies = [
