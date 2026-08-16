@@ -27,7 +27,7 @@ pub fn register(registry: &mut PluginRegistry) {
             let stdin = BufReader::new(tokio::io::stdin());
             let stdout = tokio::io::stdout();
             let transport = JsonRpcLineTransport::new(stdin, stdout);
-            let server = HarnessSdkJsonRpcServer::new(agents, sessions, transport);
+            let server = HarnessSdkJsonRpcServer::new(agents, sessions, transport, ctx.clone());
             server.set_exit_hook(Arc::new(|code| std::process::exit(code)));
             server.bind();
             ctx.provide(SDK_JSONRPC_SERVER_SERVICE, server)

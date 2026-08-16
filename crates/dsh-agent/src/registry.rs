@@ -202,6 +202,12 @@ impl AgentRegistry {
         self.tools.lock().expect("tools")
     }
 
+    /// Clone the shared tools mutex. Continuable children pass a distinct mutex into [`resume_with_tools`].
+    #[must_use]
+    pub fn tools_arc(&self) -> Arc<Mutex<ToolRuntime>> {
+        Arc::clone(&self.tools)
+    }
+
     /// Install a per-session append sink factory. `None` clears it.
     pub fn set_sink_factory(&self, factory: Option<SinkFactory>) {
         *self.sink_factory.lock().expect("sink") = factory;
@@ -279,8 +285,26 @@ impl AgentRegistry {
     /// [`AgentError::Loop`] when inbox replay of the loaded session fails.
     pub fn resume(
         &self,
+        session: Session,
+        options: CreateAgentOptions,
+    ) -> Result<AgentHandle, AgentError> {
+        self.resume_with_tools(session, options, None)
+    }
+
+    /// Resume `session` with an optional child-local tool runtime.
+    ///
+    /// `None` uses the registry's shared tools mutex. Continuable children pass a
+    /// clone so `report` can register without appearing on the parent runtime.
+    ///
+    /// # Errors
+    ///
+    /// [`AgentError::ResumeIdMismatch`] when the ids differ.
+    /// [`AgentError::Loop`] when inbox replay of the loaded session fails.
+    pub fn resume_with_tools(
+        &self,
         mut session: Session,
         options: CreateAgentOptions,
+        tools: Option<Arc<Mutex<ToolRuntime>>>,
     ) -> Result<AgentHandle, AgentError> {
         if session.id().as_str() != options.session_id.as_str() {
             return Err(AgentError::ResumeIdMismatch(
@@ -301,6 +325,7 @@ impl AgentRegistry {
         for hook in self.session_create.lock().expect("session create").iter() {
             hook(&mut session);
         }
+        let tools = tools.unwrap_or_else(|| Arc::clone(&self.tools));
         let loop_agent = LoopAgent::new(
             self.ctx.clone(),
             session,
@@ -310,7 +335,7 @@ impl AgentRegistry {
                 max_tokens: options.max_tokens,
                 max_parallel_tool_calls: dsh_agent_loop::DEFAULT_MAX_PARALLEL_TOOL_CALLS,
             },
-            Arc::clone(&self.tools),
+            tools,
             self.prompt.clone(),
             Arc::clone(&self.llm),
         )?;

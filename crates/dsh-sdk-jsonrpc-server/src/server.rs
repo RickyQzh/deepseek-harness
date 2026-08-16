@@ -3,15 +3,21 @@
 use std::sync::{Arc, Mutex};
 
 use dsh_agent::{AgentRegistry, CreateAgentOptions};
+use dsh_kernel::Context;
 use dsh_sdk_protocol::{
-    InitializeParams, InitializeResult, JsonRpcLineTransport, JsonRpcResponseError,
+    InitializeParams, InitializeResult, JsonRpcLineTransport, JsonRpcResponseError, SdkRunStatus,
     SessionEventNotification, SessionPromptParams, SessionPromptResult, SessionStatus,
-    SessionStatusNotification, ShutdownResult,
+    SessionStatusNotification, ShutdownResult, SubagentFinishedNotification,
+    SubagentStartedNotification, SubagentStopReason as SdkSubagentStopReason,
 };
 use dsh_session::{
     AppendSink, LogEvent, Message, MessageId, MessageRole, MessageSource, SessionId,
 };
 use dsh_session_persist::JsonlSessionStore;
+use dsh_subagent::{
+    EVENT_SUBAGENT_END, EVENT_SUBAGENT_START, SubagentRunEndInfo, SubagentRunInfo,
+    SubagentStopReason,
+};
 use serde_json::Value;
 
 struct Inner {
@@ -31,6 +37,7 @@ pub struct HarnessSdkJsonRpcServer {
     agents: Arc<AgentRegistry>,
     sessions: Arc<JsonlSessionStore>,
     transport: JsonRpcLineTransport,
+    ctx: Context,
 }
 
 fn mint_message_id() -> String {
@@ -43,11 +50,15 @@ fn mint_message_id() -> String {
 
 impl HarnessSdkJsonRpcServer {
     /// Construct a server. Call [`bind`](Self::bind) before [`JsonRpcLineTransport::serve`].
+    ///
+    /// `ctx` must share the kernel runtime with `agents` and `subagents` so `bind`
+    /// can forward `subagent/start` and `subagent/end` as SDK notifications.
     #[must_use]
     pub fn new(
         agents: Arc<AgentRegistry>,
         sessions: Arc<JsonlSessionStore>,
         transport: JsonRpcLineTransport,
+        ctx: Context,
     ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(Inner {
@@ -63,6 +74,7 @@ impl HarnessSdkJsonRpcServer {
             agents,
             sessions,
             transport,
+            ctx,
         }
     }
 
@@ -95,6 +107,45 @@ impl HarnessSdkJsonRpcServer {
             let server = server.clone_handles();
             Box::pin(async move { server.handle_request(method, params).await })
         }));
+        self.listen_subagent_events();
+    }
+
+    fn listen_subagent_events(&self) {
+        let started = self.clone_handles();
+        self.ctx
+            .on(EVENT_SUBAGENT_START, move |payload| {
+                let started = started.clone_handles();
+                let info = payload.downcast_ref::<SubagentRunInfo>().cloned();
+                async move {
+                    if let Some(info) = info {
+                        let note = SubagentStartedNotification::new(
+                            info.parent.as_str(),
+                            info.id.as_str(),
+                        );
+                        started.enqueue_notify(
+                            "subagent.started",
+                            Some(serde_json::to_value(note).expect("subagent.started")),
+                        );
+                    }
+                }
+            })
+            .expect("listen subagent/start");
+        let finished = self.clone_handles();
+        self.ctx
+            .on(EVENT_SUBAGENT_END, move |payload| {
+                let finished = finished.clone_handles();
+                let info = payload.downcast_ref::<SubagentRunEndInfo>().cloned();
+                async move {
+                    if let Some(info) = info {
+                        let note = finished_notification(&info);
+                        finished.enqueue_notify(
+                            "subagent.finished",
+                            Some(serde_json::to_value(note).expect("subagent.finished")),
+                        );
+                    }
+                }
+            })
+            .expect("listen subagent/end");
     }
 
     fn enqueue_notify(&self, method: &str, params: Option<Value>) {
@@ -110,6 +161,7 @@ impl HarnessSdkJsonRpcServer {
             agents: Arc::clone(&self.agents),
             sessions: Arc::clone(&self.sessions),
             transport: self.transport.clone(),
+            ctx: self.ctx.clone(),
         }
     }
 
@@ -260,21 +312,47 @@ impl HarnessSdkJsonRpcServer {
     }
 }
 
+fn finished_notification(info: &SubagentRunEndInfo) -> SubagentFinishedNotification {
+    let stop_reason = match info.stop_reason {
+        SubagentStopReason::Completed => SdkSubagentStopReason::Completed,
+        SubagentStopReason::Aborted => SdkSubagentStopReason::Aborted,
+        SubagentStopReason::Error => SdkSubagentStopReason::Error,
+        SubagentStopReason::MaxTokens => SdkSubagentStopReason::MaxTokens,
+        SubagentStopReason::Refusal => SdkSubagentStopReason::Refusal,
+    };
+    let status = match info.stop_reason {
+        SubagentStopReason::Completed => SdkRunStatus::Ok,
+        _ => SdkRunStatus::Error,
+    };
+    SubagentFinishedNotification::new(
+        info.provider.clone(),
+        info.id.as_str(),
+        info.parent.as_str(),
+        info.id.as_str(),
+        status,
+        stop_reason,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::HarnessSdkJsonRpcServer;
-    use dsh_agent::AgentRegistry;
+    use dsh_agent::{AgentRegistry, CreateAgentOptions};
     use dsh_agent_loop::{CancelCause, CancelOptions};
+    use dsh_boot::{PluginRegistry, boot_yaml, process_interpolate_env};
+    use dsh_kernel::Context;
     use dsh_llm::{LlmAdapter, LlmRuntime, MockAdapter, MockScript, text_response};
     use dsh_sdk_protocol::{
         JsonRpcId, JsonRpcLineTransport, SDK_SERVER_NAME, SessionPromptParams, encode_request,
     };
-    use dsh_session::ContentBlock;
+    use dsh_session::{ContentBlock, Message, MessageId, MessageRole, MessageSource, SessionId};
     use dsh_session_persist::JsonlSessionStore;
+    use dsh_subagent::{SubagentRuntime, SubagentStartRequest};
+    use dsh_subagent_in_process::register_spawn;
     use dsh_system_prompt::{SystemPrompt, SystemPromptConfig};
-    use dsh_tools::{ToolPresentationMode, ToolRuntime};
+    use dsh_tools::{AbortFlag, ToolPresentationMode, ToolRuntime};
     use serde_json::{Value, json};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncBufReadExt, BufReader, duplex};
 
     fn test_temp_dir(prefix: &str) -> std::path::PathBuf {
@@ -310,7 +388,12 @@ mod tests {
         let transport = JsonRpcLineTransport::new(BufReader::new(b_read), b_write);
         let agents = Arc::new(registry_with(vec![MockScript::Chunks(text_response("hi"))]));
         let sessions = Arc::new(JsonlSessionStore::with_root(&root));
-        let server = HarnessSdkJsonRpcServer::new(agents, sessions, transport.clone());
+        let server = HarnessSdkJsonRpcServer::new(
+            agents,
+            sessions,
+            transport.clone(),
+            dsh_kernel::Context::new(),
+        );
         server.bind();
         let serve = tokio::spawn({
             let transport = transport.clone();
@@ -354,7 +437,12 @@ mod tests {
             SystemPrompt::new(SystemPromptConfig::default()).unwrap(),
         ));
         let sessions = Arc::new(JsonlSessionStore::with_root(&root));
-        let server = HarnessSdkJsonRpcServer::new(Arc::clone(&agents), sessions, transport.clone());
+        let server = HarnessSdkJsonRpcServer::new(
+            Arc::clone(&agents),
+            sessions,
+            transport.clone(),
+            dsh_kernel::Context::new(),
+        );
         server.bind();
         let serve = tokio::spawn(async move { transport.serve().await });
         let mut writer = client_write;
@@ -445,7 +533,12 @@ mod tests {
             "sdk-text",
         ))]));
         let sessions = Arc::new(JsonlSessionStore::with_root(&root));
-        let server = HarnessSdkJsonRpcServer::new(Arc::clone(&agents), sessions, transport.clone());
+        let server = HarnessSdkJsonRpcServer::new(
+            Arc::clone(&agents),
+            sessions,
+            transport.clone(),
+            dsh_kernel::Context::new(),
+        );
         server.bind();
         let serve = tokio::spawn({
             let transport = transport.clone();
@@ -538,7 +631,12 @@ mod tests {
         let transport = JsonRpcLineTransport::new(BufReader::new(b_read), b_write);
         let agents = Arc::new(registry_with(vec![MockScript::Chunks(text_response("x"))]));
         let sessions = Arc::new(JsonlSessionStore::with_root(&root));
-        let server = HarnessSdkJsonRpcServer::new(agents, sessions, transport.clone());
+        let server = HarnessSdkJsonRpcServer::new(
+            agents,
+            sessions,
+            transport.clone(),
+            dsh_kernel::Context::new(),
+        );
         server.bind();
         let serve = tokio::spawn({
             let transport = transport.clone();
@@ -558,5 +656,136 @@ mod tests {
         transport.close().await;
         let _ = serve.await;
         let _ = serve_client.await;
+    }
+
+    async fn run_one_shot_under_server() -> Vec<String> {
+        let ctx = Context::new();
+        let adapter = Arc::new(MockAdapter::new(vec![
+            MockScript::Chunks(text_response("parent-ack")),
+            MockScript::Chunks(text_response("CHILD_RESULT")),
+        ]));
+        let llm = Arc::new(Mutex::new(LlmRuntime::new()));
+        llm.lock().expect("llm").register_adapter("mock", adapter);
+        let tools = Arc::new(Mutex::new(ToolRuntime::new(ToolPresentationMode::Native)));
+        let prompt = SystemPrompt::new(SystemPromptConfig::default()).unwrap();
+        ctx.provide(
+            "agents",
+            AgentRegistry::from_shared(ctx.clone(), Arc::clone(&llm), Arc::clone(&tools), prompt),
+        )
+        .expect("provide agents");
+        let agents = ctx.inject::<AgentRegistry>("agents").await.expect("agents");
+        let mut registry = PluginRegistry::new();
+        dsh_subagent::register(&mut registry);
+        register_spawn(&mut registry);
+        boot_yaml(
+            &ctx,
+            "- name: '@deepseek-ai/dsh-subagent'\n- name: '@deepseek-ai/dsh-subagent-spawn-in-process'\n",
+            &[],
+            &registry,
+            &process_interpolate_env(),
+        )
+        .await
+        .expect("boot subagents");
+        let root = test_temp_dir("dsh-jsonrpc-subagent");
+        let (a, b) = duplex(64 * 1024);
+        let (a_read, a_write) = tokio::io::split(a);
+        let (b_read, b_write) = tokio::io::split(b);
+        let transport = JsonRpcLineTransport::new(BufReader::new(b_read), b_write);
+        let sessions = Arc::new(JsonlSessionStore::with_root(&root));
+        let server = HarnessSdkJsonRpcServer::new(
+            Arc::clone(&agents),
+            sessions,
+            transport.clone(),
+            ctx.clone(),
+        );
+        server.bind();
+        let serve = tokio::spawn({
+            let transport = transport.clone();
+            async move { transport.serve().await }
+        });
+        let client = JsonRpcLineTransport::new(BufReader::new(a_read), a_write);
+        let notes = Arc::new(Mutex::new(Vec::new()));
+        let notes_clone = Arc::clone(&notes);
+        client.on_notification(Arc::new(move |method, _params| {
+            notes_clone.lock().expect("notes").push(method);
+        }));
+        let serve_client = tokio::spawn({
+            let client = client.clone();
+            async move { client.serve().await }
+        });
+        let parent = agents
+            .create(CreateAgentOptions {
+                session_id: SessionId::new(format!(
+                    "parent-{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|duration| duration.as_nanos())
+                        .unwrap_or(0)
+                )),
+                cwd: Some("/work".into()),
+                provider: "mock".into(),
+                model: "mock".into(),
+                max_tokens: None,
+            })
+            .unwrap();
+        parent
+            .followup(Message {
+                id: MessageId::new("idle"),
+                role: MessageRole::User,
+                content: vec![ContentBlock::Text {
+                    text: "ready".into(),
+                }],
+                source: MessageSource::User,
+            })
+            .await
+            .unwrap();
+        parent.run_until_idle().await.unwrap();
+        let rt = ctx
+            .inject::<SubagentRuntime>("subagents")
+            .await
+            .expect("subagents");
+        rt.start(
+            "spawn",
+            SubagentStartRequest {
+                label: Some("jsonrpc child".into()),
+                prompt: vec![ContentBlock::Text {
+                    text: "Reply with exactly CHILD_RESULT".into(),
+                }],
+                parent_id: parent.id().clone(),
+                signal: AbortFlag::new(),
+                max_depth: None,
+            },
+            parent,
+        )
+        .await
+        .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let have = notes.lock().expect("notes").clone();
+            if have.iter().any(|n| n == "subagent.started")
+                && have.iter().any(|n| n == "subagent.finished")
+            {
+                client.close().await;
+                transport.close().await;
+                let _ = serve.await;
+                let _ = serve_client.await;
+                return have;
+            }
+            if std::time::Instant::now() > deadline {
+                client.close().await;
+                transport.close().await;
+                let _ = serve.await;
+                let _ = serve_client.await;
+                panic!("missing subagent notifications: {have:?}");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn jsonrpc_emits_subagent_started_and_finished() {
+        let notes = run_one_shot_under_server().await;
+        assert!(notes.iter().any(|n| n == "subagent.started"));
+        assert!(notes.iter().any(|n| n == "subagent.finished"));
     }
 }

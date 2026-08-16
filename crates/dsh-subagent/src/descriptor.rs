@@ -22,6 +22,17 @@ pub fn snapshot_one_shot_descriptor(provider: &str, label: Option<&str>) -> Valu
     Value::Object(fields)
 }
 
+/// Build a continuable version-2 descriptor object. `label` is required.
+#[must_use]
+pub fn snapshot_continuable_descriptor(provider: &str, label: &str) -> Value {
+    json!({
+        "version": SUBAGENT_DESCRIPTOR_VERSION,
+        "mode": "continuable",
+        "provider": provider,
+        "label": label,
+    })
+}
+
 /// Return the first `subagent/descriptor` payload in `events`, if any.
 #[must_use]
 pub fn fold_subagent_descriptor(events: &[LogEvent]) -> Option<Value> {
@@ -36,7 +47,8 @@ pub fn fold_subagent_descriptor(events: &[LogEvent]) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::{
-        SUBAGENT_DESCRIPTOR_VERSION, fold_subagent_descriptor, snapshot_one_shot_descriptor,
+        SUBAGENT_DESCRIPTOR_VERSION, fold_subagent_descriptor, snapshot_continuable_descriptor,
+        snapshot_one_shot_descriptor,
     };
     use dsh_session::{LogEvent, SessionEvent};
     use serde_json::json;
@@ -66,5 +78,19 @@ mod tests {
         })];
         assert_eq!(fold_subagent_descriptor(&events), Some(first));
         assert_eq!(fold_subagent_descriptor(&[]), None);
+    }
+
+    #[test]
+    fn continuable_snapshot_requires_label() {
+        let value = snapshot_continuable_descriptor("spawn", "research the bug");
+        assert_eq!(
+            value,
+            json!({
+                "version": SUBAGENT_DESCRIPTOR_VERSION,
+                "mode": "continuable",
+                "provider": "spawn",
+                "label": "research the bug",
+            })
+        );
     }
 }

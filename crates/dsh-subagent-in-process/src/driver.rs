@@ -3,13 +3,13 @@
 use dsh_agent::{AgentHandle, AgentRegistry, CreateAgentOptions};
 use dsh_kernel::{Context, Payload};
 use dsh_session::{
-    ContentBlock, LogEvent, Message, MessageId, MessageRole, MessageSource, Session, SessionEvent,
-    SessionHeader, SessionId, SessionOrigin, TurnEndReason, SESSION_FORMAT_VERSION,
+    ContentBlock, LogEvent, Message, MessageId, MessageRole, MessageSource, SESSION_FORMAT_VERSION,
+    Session, SessionEvent, SessionHeader, SessionId, SessionOrigin, TurnEndReason,
 };
 use dsh_subagent::{
-    assert_subagent_max_depth, delegation_depth_of, snapshot_one_shot_descriptor, SubagentError,
-    SubagentResult, SubagentRunEndInfo, SubagentRunId, SubagentRunInfo, SubagentStartRequest,
-    SubagentStopReason, EVENT_SUBAGENT_END, EVENT_SUBAGENT_START,
+    EVENT_SUBAGENT_END, EVENT_SUBAGENT_START, SubagentError, SubagentResult, SubagentRunEndInfo,
+    SubagentRunId, SubagentRunInfo, SubagentStartRequest, SubagentStopReason,
+    assert_subagent_max_depth, delegation_depth_of, snapshot_one_shot_descriptor,
 };
 
 /// Events through the last `turn/end` inclusive. Empty when no turn has completed.
@@ -81,7 +81,7 @@ pub async fn start_in_process_run(
         Session::from_events(
             child_header(
                 child_id.clone(),
-                parent_id,
+                parent_id.clone(),
                 snapshot.cwd.clone(),
                 child_depth,
                 seed_len,
@@ -108,6 +108,7 @@ pub async fn start_in_process_run(
         run_id: run_id.clone(),
         provider: provider_name.to_string(),
         id: child_id.clone(),
+        parent: parent_id.clone(),
     };
     ctx.emit(EVENT_SUBAGENT_START, Payload::new(info));
     let driven = async {
@@ -142,6 +143,7 @@ pub async fn start_in_process_run(
             run_id,
             provider: provider_name.to_string(),
             id: child_id,
+            parent: parent_id,
             stop_reason,
         }),
     );
@@ -255,16 +257,16 @@ mod tests {
     use super::completed_turn_prefix;
     use crate::{register_fork, register_spawn};
     use dsh_agent::{AgentHandle, AgentRegistry, CreateAgentOptions};
-    use dsh_boot::{boot_yaml, process_interpolate_env, PluginRegistry};
+    use dsh_boot::{PluginRegistry, boot_yaml, process_interpolate_env};
     use dsh_kernel::Context;
-    use dsh_llm::{text_response, tool_call_response, LlmRuntime, MockAdapter, MockScript};
+    use dsh_llm::{LlmRuntime, MockAdapter, MockScript, text_response, tool_call_response};
     use dsh_session::{
-        ContentBlock, Message, MessageId, MessageRole, MessageSource, Session, SessionHeader,
-        SessionId, SessionOrigin, SESSION_FORMAT_VERSION,
+        ContentBlock, Message, MessageId, MessageRole, MessageSource, SESSION_FORMAT_VERSION,
+        Session, SessionHeader, SessionId, SessionOrigin,
     };
     use dsh_subagent::{
-        SubagentRunEndInfo, SubagentRunInfo, SubagentRuntime, SubagentStartRequest,
-        SubagentStopReason, EVENT_SUBAGENT_END, EVENT_SUBAGENT_START,
+        EVENT_SUBAGENT_END, EVENT_SUBAGENT_START, SubagentRunEndInfo, SubagentRunInfo,
+        SubagentRuntime, SubagentStartRequest, SubagentStopReason,
     };
     use dsh_system_prompt::{SystemPrompt, SystemPromptConfig};
     use dsh_tools::{AbortFlag, ToolDefinition, ToolError, ToolPresentationMode, ToolRuntime};
@@ -491,20 +493,24 @@ mod tests {
             .unwrap();
         assert!(matches!(result.stop_reason, SubagentStopReason::Completed));
         let child = env.child_session(&parent).await;
-        assert!(!child
-            .derive_messages()
-            .iter()
-            .any(|message| message_text(message).contains("secret parent fact")));
+        assert!(
+            !child
+                .derive_messages()
+                .iter()
+                .any(|message| message_text(message).contains("secret parent fact"))
+        );
         assert_eq!(
             child.header().origin.as_ref(),
             Some(&SessionOrigin::Subagent)
         );
         assert_eq!(child.header().delegation_depth, Some(1));
         assert_eq!(child.header().seed_length, None);
-        assert!(child
-            .events()
-            .iter()
-            .any(|event| event.event_type() == "subagent/descriptor"));
+        assert!(
+            child
+                .events()
+                .iter()
+                .any(|event| event.event_type() == "subagent/descriptor")
+        );
     }
 
     #[tokio::test]
@@ -519,10 +525,12 @@ mod tests {
             .await
             .unwrap();
         let child = env.child_session(&parent).await;
-        assert!(child
-            .derive_messages()
-            .iter()
-            .any(|message| message_text(message).contains("inherited")));
+        assert!(
+            child
+                .derive_messages()
+                .iter()
+                .any(|message| message_text(message).contains("inherited"))
+        );
         assert_eq!(child.header().seed_length, Some(parent_prefix.len() as u64));
     }
 

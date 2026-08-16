@@ -109,6 +109,8 @@ pub struct SubagentRunInfo {
     pub provider: String,
     /// The child agent's session id.
     pub id: SessionId,
+    /// Delegating parent session id.
+    pub parent: SessionId,
 }
 
 /// Observe-only outcome detail for `subagent/end`.
@@ -120,6 +122,8 @@ pub struct SubagentRunEndInfo {
     pub provider: String,
     /// The child agent's session id.
     pub id: SessionId,
+    /// Delegating parent session id.
+    pub parent: SessionId,
     /// The terminal stop reason.
     pub stop_reason: SubagentStopReason,
 }

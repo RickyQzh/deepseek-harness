@@ -239,6 +239,32 @@ pub enum MessageSource {
         /// Injected skill bodies are instructions for the model to follow.
         form: String,
     },
+    /// Runtime account of a continuable child settling.
+    SubagentSettled {
+        /// Context form; always `notice`.
+        form: String,
+        /// One-line account of how the child ended.
+        summary: String,
+        /// Session id of the child that settled.
+        #[serde(rename = "senderSessionId")]
+        sender_session_id: String,
+    },
+    /// Explicit report from a continuable child to its direct parent.
+    SubagentReport {
+        /// Context form; always `relay`.
+        form: String,
+        /// Session id of the reporting child.
+        #[serde(rename = "senderSessionId")]
+        sender_session_id: String,
+    },
+    /// Parent coordinator follow-up to a continuable child.
+    Coordinator {
+        /// Context form; always `relay`.
+        form: String,
+        /// Session id of the agent whose tool call produced the follow-up.
+        #[serde(rename = "senderSessionId")]
+        sender_session_id: String,
+    },
 }
 
 /// One name/description pair published in a [`MessageSource::SkillCatalog`] message.
@@ -866,5 +892,50 @@ mod tests {
         assert_eq!(value["kind"], "skill-invocation");
         assert_eq!(value["name"], "demo-skill");
         assert_eq!(value["form"], "instructions");
+    }
+
+    #[test]
+    fn subagent_settled_source_uses_kebab_kind_and_camel_sender() {
+        let source = MessageSource::SubagentSettled {
+            form: "notice".into(),
+            summary: "Background subagent child-1 finished.".into(),
+            sender_session_id: "child-1".into(),
+        };
+        let value = serde_json::to_value(&source).expect("serialize");
+        assert_eq!(value["kind"], "subagent-settled");
+        assert_eq!(value["form"], "notice");
+        assert_eq!(value["senderSessionId"], "child-1");
+        let back: MessageSource = serde_json::from_value(value).expect("deserialize");
+        match back {
+            MessageSource::SubagentSettled {
+                form,
+                summary,
+                sender_session_id,
+            } => {
+                assert_eq!(form, "notice");
+                assert!(summary.contains("child-1"));
+                assert_eq!(sender_session_id, "child-1");
+            }
+            other => panic!("expected subagent-settled source, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn subagent_report_and_coordinator_sources_use_relay_form() {
+        let report = MessageSource::SubagentReport {
+            form: "relay".into(),
+            sender_session_id: "child-1".into(),
+        };
+        let report_value = serde_json::to_value(&report).expect("serialize");
+        assert_eq!(report_value["kind"], "subagent-report");
+        assert_eq!(report_value["form"], "relay");
+        assert_eq!(report_value["senderSessionId"], "child-1");
+        let coordinator = MessageSource::Coordinator {
+            form: "relay".into(),
+            sender_session_id: "parent-1".into(),
+        };
+        let coordinator_value = serde_json::to_value(&coordinator).expect("serialize");
+        assert_eq!(coordinator_value["kind"], "coordinator");
+        assert_eq!(coordinator_value["senderSessionId"], "parent-1");
     }
 }

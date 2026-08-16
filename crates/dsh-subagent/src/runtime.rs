@@ -15,6 +15,8 @@ use crate::{SubagentError, SubagentProvider, SubagentResult, SubagentStartReques
 pub struct SubagentRuntime {
     providers: Mutex<HashMap<String, Arc<dyn SubagentProvider>>>,
     ctx: Context,
+    continuable: Mutex<HashMap<String, crate::continuation::ContinuableRecord>>,
+    setups: Mutex<Vec<crate::continuation::ContinuableSetup>>,
 }
 
 impl SubagentRuntime {
@@ -24,6 +26,8 @@ impl SubagentRuntime {
         Self {
             providers: Mutex::new(HashMap::new()),
             ctx,
+            continuable: Mutex::new(HashMap::new()),
+            setups: Mutex::new(Vec::new()),
         }
     }
 
@@ -84,10 +88,28 @@ impl SubagentRuntime {
         selected.start(request, parent).await
     }
 
+    /// Registered provider, if any.
+    #[must_use]
+    pub fn get_provider(&self, name: &str) -> Option<Arc<dyn SubagentProvider>> {
+        self.lock().get(name).cloned()
+    }
+
     fn lock(&self) -> MutexGuard<'_, HashMap<String, Arc<dyn SubagentProvider>>> {
         self.providers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(crate) fn lock_continuable(
+        &self,
+    ) -> MutexGuard<'_, HashMap<String, crate::continuation::ContinuableRecord>> {
+        self.continuable
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(crate) fn lock_setups(&self) -> MutexGuard<'_, Vec<crate::continuation::ContinuableSetup>> {
+        self.setups.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
