@@ -1,0 +1,30 @@
+[package]
+name = "dsh-permission-presets"
+version = "0.1.0"
+description = "Pin permission presets at session creation for the DeepSeek Harness Rust host"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+dsh-agent = { path = "../dsh-agent" }
+dsh-boot = { path = "../dsh-boot" }
+dsh-kernel = { path = "../dsh-kernel" }
+dsh-sandbox = { path = "../dsh-sandbox" }
+dsh-session = { path = "../dsh-session" }
+dsh-shell = { path = "../dsh-shell" }
+dsh-user-approval = { path = "../dsh-user-approval" }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+dsh-llm = { path = "../dsh-llm" }
+dsh-subprocess = { path = "../dsh-subprocess" }
+dsh-system-prompt = { path = "../dsh-system-prompt" }
+dsh-tools = { path = "../dsh-tools" }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

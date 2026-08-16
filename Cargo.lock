@@ -301,6 +301,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-permission-presets"
+version = "0.1.0"
+dependencies = [
+ "dsh-agent",
+ "dsh-boot",
+ "dsh-kernel",
+ "dsh-llm",
+ "dsh-sandbox",
+ "dsh-session",
+ "dsh-shell",
+ "dsh-subprocess",
+ "dsh-system-prompt",
+ "dsh-tools",
+ "dsh-user-approval",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "dsh-sandbox"
 version = "0.1.0"
 dependencies = [

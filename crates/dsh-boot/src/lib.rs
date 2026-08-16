@@ -25,6 +25,8 @@ pub const PLUGIN_LLM_REPLAY: &str = "@deepseek-ai/dsh-llm-replay";
 pub const PLUGIN_TOOLS: &str = "@deepseek-ai/dsh-tools";
 /// YAML `name` for `@deepseek-ai/dsh-user-approval`.
 pub const PLUGIN_USER_APPROVAL: &str = "@deepseek-ai/dsh-user-approval";
+/// YAML `name` for `@deepseek-ai/dsh-permission-presets`.
+pub const PLUGIN_PERMISSION_PRESETS: &str = "@deepseek-ai/dsh-permission-presets";
 /// YAML `name` for `@deepseek-ai/dsh-system-prompt`.
 pub const PLUGIN_SYSTEM_PROMPT: &str = "@deepseek-ai/dsh-system-prompt";
 /// YAML `name` for `@deepseek-ai/dsh-agent`.
