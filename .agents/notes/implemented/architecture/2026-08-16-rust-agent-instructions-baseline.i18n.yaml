@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-08-16-rust-agent-instructions-baseline.md
-2026-08-16-rust-agent-instructions-baseline.md: 973d9ebd49352874c8646da77250dc926031ad2c
-2026-08-16-rust-agent-instructions-baseline.zh.md: 6e56aa527a909451378004e4a33ff4c23fef7e3b
+2026-08-16-rust-agent-instructions-baseline.md: 1be35188506d233527a3822279db79c996e318c2
+2026-08-16-rust-agent-instructions-baseline.zh.md: ab68dbd268ccf098e142a2d2ad820fe76286a892

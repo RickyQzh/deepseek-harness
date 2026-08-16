@@ -192,6 +192,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-base"
+version = "0.1.0"
+dependencies = [
+ "dsh-agent",
+ "dsh-agent-instructions",
+ "dsh-boot",
+ "dsh-compaction-basic",
+ "dsh-jobs-local",
+ "dsh-kernel",
+ "dsh-llm",
+ "dsh-permission-presets",
+ "dsh-skill",
+ "dsh-subagent",
+ "dsh-subagent-in-process",
+ "dsh-time-context",
+ "dsh-token-meter",
+ "dsh-tool-jobs",
+ "dsh-tool-subagent",
+ "dsh-tool-web",
+ "dsh-tools",
+ "dsh-user-approval",
+ "dsh-web",
+ "dsh-web-search-deepseek",
+ "tokio",
+]
+
+[[package]]
 name = "dsh-boot"
 version = "0.1.0"
 dependencies = [
@@ -212,6 +239,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "dsh-agent",
+ "dsh-base",
  "dsh-boot",
  "dsh-headless",
  "dsh-kernel",
@@ -301,6 +329,7 @@ version = "0.1.0"
 dependencies = [
  "dsh-agent",
  "dsh-agent-loop",
+ "dsh-base",
  "dsh-boot",
  "dsh-kernel",
  "dsh-session",
@@ -417,6 +446,7 @@ version = "0.1.0"
 dependencies = [
  "dsh-agent",
  "dsh-agent-loop",
+ "dsh-base",
  "dsh-boot",
  "dsh-kernel",
  "dsh-llm",

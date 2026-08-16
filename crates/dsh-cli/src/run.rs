@@ -1,6 +1,7 @@
 //! Boot the headless composition and wait for `appExit`.
 
 use dsh_agent::{register_execution_plugins, register_spine_plugins};
+use dsh_base::register_base_plugins;
 use dsh_boot::{PluginRegistry, boot_yaml, process_interpolate_env};
 use dsh_headless::{AppExit, CmdlineArgs, HeadlessIo, MINIMAL_YAML, register_headless_plugins};
 use dsh_kernel::Context;
@@ -88,6 +89,7 @@ async fn run_headless(task: String, patch_paths: Vec<std::path::PathBuf>) -> Res
     let mut registry = PluginRegistry::new();
     register_spine_plugins(&mut registry);
     register_execution_plugins(&mut registry);
+    register_base_plugins(&mut registry);
     register_headless_plugins(&mut registry);
     ensure_persist_env()?;
     boot_yaml(&ctx, &yaml, &patches, &registry, &process_interpolate_env())

@@ -11,6 +11,7 @@ repository.workspace = true
 [dependencies]
 dsh-agent = { path = "../dsh-agent" }
 dsh-agent-loop = { path = "../dsh-agent-loop" }
+dsh-base = { path = "../dsh-base" }
 dsh-boot = { path = "../dsh-boot" }
 dsh-kernel = { path = "../dsh-kernel" }
 dsh-llm = { path = "../dsh-llm" }

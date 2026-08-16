@@ -154,8 +154,11 @@ pub fn register(registry: &mut PluginRegistry) {
 
 #[cfg(test)]
 mod tests {
-    use crate::{AppExit, CmdlineArgs, HeadlessIo, MINIMAL_YAML, register_headless_plugins};
+    use crate::{
+        AppExit, BASE_YAML, CmdlineArgs, HeadlessIo, MINIMAL_YAML, register_headless_plugins,
+    };
     use dsh_agent::{register_execution_plugins, register_spine_plugins};
+    use dsh_base::register_base_plugins;
     use dsh_boot::{PluginRegistry, boot_yaml, process_interpolate_env};
     use dsh_kernel::Context;
     use dsh_session::{SESSION_FORMAT_VERSION, Session, SessionHeader, SessionId};
@@ -275,5 +278,40 @@ mod tests {
             "resume must append the cmdline followup onto the seeded session"
         );
         restore_session_root(previous);
+    }
+
+    #[tokio::test]
+    async fn base_yaml_mock_llm_prints_base_ok_and_exits_0() {
+        let _guard = SESSION_ROOT_LOCK.lock().expect("session root");
+        let root = test_temp_dir("dsh-headless-base");
+        let previous = std::env::var("DSH_SESSION_ROOT").ok();
+        unsafe {
+            std::env::set_var("DSH_SESSION_ROOT", root.as_os_str());
+        }
+        let ctx = Context::new();
+        let (exit, rx) = AppExit::pair();
+        ctx.provide("appExit", exit).unwrap();
+        ctx.provide("cmdlineArgs", CmdlineArgs::new(vec!["unused task".into()]))
+            .unwrap();
+        let io = HeadlessIo::capture();
+        ctx.provide("headlessIo", io.clone()).unwrap();
+        let mut registry = PluginRegistry::new();
+        register_spine_plugins(&mut registry);
+        register_execution_plugins(&mut registry);
+        register_base_plugins(&mut registry);
+        register_headless_plugins(&mut registry);
+        let boot = boot_yaml(&ctx, BASE_YAML, &[], &registry, &process_interpolate_env()).await;
+        if let Err(error) = boot {
+            restore_session_root(previous);
+            panic!("{error}");
+        }
+        let timed = tokio::time::timeout(std::time::Duration::from_secs(30), rx).await;
+        let stdout = io.stdout_text();
+        let stderr = io.stderr_text();
+        restore_session_root(previous);
+        let code = timed.expect("appExit timed out").expect("appExit dropped");
+        assert_eq!(code, 0, "stderr={stderr}");
+        assert_eq!(stdout, "base-ok\n");
+        assert_eq!(stderr, "");
     }
 }

@@ -6,7 +6,7 @@ English | [中文](2026-08-16-rust-agent-instructions-baseline.zh.md)
 
 ## Problem
 
-The TypeScript [workspace-context plugin](../feature/2026-06-24-workspace-context.md) injects `AGENTS.md` / `CLAUDE.md` as a logged `user/message` with `source.kind == "agent-instructions"`. Phase 5 of the [Rust rewrite](../../proposed/architecture/2026-08-14-rust-rewrite.md) needs that baseline on the Rust host so headless resume can rematch after an offline file edit, without mounting the plugin in `register_spine_plugins` or `base.cordis.yml` yet, and without a `dsh-agent-loop` → `dsh-agent-instructions` crate cycle.
+The TypeScript [workspace-context plugin](../feature/2026-06-24-workspace-context.md) injects `AGENTS.md` / `CLAUDE.md` as a logged `user/message` with `source.kind == "agent-instructions"`. Phase 5 of the [Rust rewrite](../../proposed/architecture/2026-08-14-rust-rewrite.md) needs that baseline on the Rust host so headless resume can rematch after an offline file edit, without mounting the plugin in `register_spine_plugins`, and without a `dsh-agent-loop` → `dsh-agent-instructions` crate cycle.
 
 TypeScript `workspaceBaselineIdentity` hashes discovery config only. File-content drift is detected later by `state.ts` reconciliation. This crate has no `state.rs`, so a config-only identity would treat an offline `AGENTS.md` edit as a match and skip the new baseline.
 
@@ -28,7 +28,9 @@ An `agent/pre-step` listener reads the live session through `CompactionScope` (s
 
 **Add `Session::from_replay` beside `from_events`.** Rejected: `Session::from_events` already rebuilds the surface.
 
-**Register from `register_spine_plugins` or mount in `base.cordis.yml`.** Rejected: spine composition stays the closed list in [Spine YAML plugins](2026-08-16-spine-plugins-in-dsh-agent.md); this crate is YAML-opt-in until a later task.
+**Register from `register_spine_plugins`.** Rejected: spine composition stays the closed list in [Spine YAML plugins](2026-08-16-spine-plugins-in-dsh-agent.md).
+
+**Omit this plugin from default Phase 6 YAML.** Rejected: `base.cordis.yml` mounts `@deepseek-ai/dsh-agent-instructions` with `maxBytes: 65536` through [dsh-base](2026-08-16-rust-dsh-base-plugins.md).
 
 **Let `dsh-agent-loop` depend on this crate.** Rejected: the loop owns the waterfall type; this crate is a listener. The reverse edge would cycle once the loop is in the spine graph.
 

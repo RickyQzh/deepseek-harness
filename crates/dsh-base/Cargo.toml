@@ -1,0 +1,37 @@
+[package]
+name = "dsh-base"
+version = "0.1.0"
+description = "Phase 6 product plugin aggregator for the DeepSeek Harness Rust host"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+dsh-agent-instructions = { path = "../dsh-agent-instructions" }
+dsh-boot = { path = "../dsh-boot" }
+dsh-compaction-basic = { path = "../dsh-compaction-basic" }
+dsh-jobs-local = { path = "../dsh-jobs-local" }
+dsh-llm = { path = "../dsh-llm" }
+dsh-permission-presets = { path = "../dsh-permission-presets" }
+dsh-skill = { path = "../dsh-skill" }
+dsh-subagent = { path = "../dsh-subagent" }
+dsh-subagent-in-process = { path = "../dsh-subagent-in-process" }
+dsh-time-context = { path = "../dsh-time-context" }
+dsh-token-meter = { path = "../dsh-token-meter" }
+dsh-tool-jobs = { path = "../dsh-tool-jobs" }
+dsh-tool-subagent = { path = "../dsh-tool-subagent" }
+dsh-tool-web = { path = "../dsh-tool-web" }
+dsh-user-approval = { path = "../dsh-user-approval" }
+dsh-web = { path = "../dsh-web" }
+dsh-web-search-deepseek = { path = "../dsh-web-search-deepseek" }
+
+[dev-dependencies]
+dsh-agent = { path = "../dsh-agent" }
+dsh-kernel = { path = "../dsh-kernel" }
+dsh-tools = { path = "../dsh-tools" }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

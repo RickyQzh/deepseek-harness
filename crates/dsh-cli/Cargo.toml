@@ -11,6 +11,7 @@ repository.workspace = true
 [dependencies]
 clap = { workspace = true }
 dsh-agent = { path = "../dsh-agent" }
+dsh-base = { path = "../dsh-base" }
 dsh-boot = { path = "../dsh-boot" }
 dsh-headless = { path = "../dsh-headless" }
 dsh-kernel = { path = "../dsh-kernel" }

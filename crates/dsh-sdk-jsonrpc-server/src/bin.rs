@@ -1,6 +1,7 @@
 //! `dsh-jsonrpc-agent` binary. Stdout is JSON-RPC frames only; diagnostics go to stderr.
 
 use dsh_agent::{register_execution_plugins, register_spine_plugins};
+use dsh_base::register_base_plugins;
 use dsh_boot::{PluginRegistry, boot_yaml, process_interpolate_env};
 use dsh_kernel::Context;
 use dsh_sdk_jsonrpc_server::{
@@ -58,6 +59,7 @@ async fn main() {
     let mut registry = PluginRegistry::new();
     register_spine_plugins(&mut registry);
     register_execution_plugins(&mut registry);
+    register_base_plugins(&mut registry);
     register(&mut registry);
     if let Err(message) = ensure_persist_env() {
         eprintln!("dsh: {message}");

@@ -6,7 +6,7 @@ Status: implemented
 
 ## Problem
 
-TypeScript 的 [workspace-context 插件](../feature/2026-06-24-workspace-context.md) 把 `AGENTS.md` / `CLAUDE.md` 注入为已记录的 `user/message`，且 `source.kind == "agent-instructions"`。[Rust 重写](../../proposed/architecture/2026-08-14-rust-rewrite.md) 的第 5 阶段需要在 Rust 宿主上具备该基线，以便 headless 恢复能在离线编辑文件后重新匹配；此时还不把该插件挂入 `register_spine_plugins` 或 `base.cordis.yml`，也不引入 `dsh-agent-loop` → `dsh-agent-instructions` 的 crate 环。
+TypeScript 的 [workspace-context 插件](../feature/2026-06-24-workspace-context.md) 把 `AGENTS.md` / `CLAUDE.md` 注入为已记录的 `user/message`，且 `source.kind == "agent-instructions"`。[Rust 重写](../../proposed/architecture/2026-08-14-rust-rewrite.md) 的第 5 阶段需要在 Rust 宿主上具备该基线，以便 headless 恢复能在离线编辑文件后重新匹配；此时不把该插件挂入 `register_spine_plugins`，也不引入 `dsh-agent-loop` → `dsh-agent-instructions` 的 crate 环。
 
 TypeScript 的 `workspaceBaselineIdentity` 只哈希发现配置。文件内容漂移稍后由 `state.ts` 对账检测。本 crate 没有 `state.rs`，因此仅配置身份会把离线的 `AGENTS.md` 编辑当成匹配并跳过新基线。
 
@@ -28,7 +28,9 @@ TypeScript 的 `workspaceBaselineIdentity` 只哈希发现配置。文件内容�
 
 **在 `from_events` 旁边再加 `Session::from_replay`。** 否决：`Session::from_events` 已经会重建表层。
 
-**从 `register_spine_plugins` 注册或挂入 `base.cordis.yml`。** 否决：spine 组合仍是 [Spine YAML 插件](2026-08-16-spine-plugins-in-dsh-agent.md) 中的封闭列表；本 crate 在后续任务之前按 YAML 选择加入。
+**从 `register_spine_plugins` 注册。** 否决：spine 组合仍是 [Spine YAML 插件](2026-08-16-spine-plugins-in-dsh-agent.md) 中的封闭列表。
+
+**把该插件排除在默认第 6 阶段 YAML 之外。** 否决：`base.cordis.yml` 通过 [dsh-base](2026-08-16-rust-dsh-base-plugins.md) 挂载 `@deepseek-ai/dsh-agent-instructions`，并设置 `maxBytes: 65536`。
 
 **让 `dsh-agent-loop` 依赖本 crate。** 否决：循环拥有 waterfall（瀑布式事件）类型；本 crate 是监听器。反向边会在循环进入 spine 图后成环。
 

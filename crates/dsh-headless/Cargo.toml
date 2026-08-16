@@ -19,5 +19,8 @@ dsh-user-approval = { path = "../dsh-user-approval" }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
+[dev-dependencies]
+dsh-base = { path = "../dsh-base" }
+
 [lints]
 workspace = true
