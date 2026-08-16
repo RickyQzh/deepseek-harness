@@ -6,7 +6,7 @@ Subagent Service Definition for the DeepSeek Harness Rust host: a named-provider
 
 `inject::<SubagentRuntime>()` yields `Arc<SubagentRuntime>`, so `register_provider` and `start` take `&self` with an interior mutex. Duplicate provider names fail. Unknown names fail. `start` checks advertised start-time capabilities, then delegates to the named provider; it does not enter continuation. `prepare_continuable` is a data stub on each provider and is not called from one-shot `start`.
 
-`subagent/descriptor` version 2 is a log-only session event (`SessionEvent::SubagentDescriptor { data }`). Kernel events `subagent/start` and `subagent/end` are not session events. Depth default is 3; `assert_subagent_max_depth` fails when parent `delegationDepth` (absent = 0) plus one exceeds the cap.
+`subagent/descriptor` version 2 is a log-only session event (`SessionEvent::SubagentDescriptor { data }`). Kernel events `subagent/start` and `subagent/end` are not session events. A published run that emits start must also emit end, including when the child turn fails after publication. Depth default is 3; `assert_subagent_max_depth` fails when parent `delegationDepth` (absent = 0) plus one exceeds the cap.
 
 ## Config
 

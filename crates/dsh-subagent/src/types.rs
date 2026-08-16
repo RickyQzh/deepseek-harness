@@ -10,7 +10,7 @@ use dsh_tools::AbortFlag;
 
 /// Kernel event name emitted before the child turn.
 pub const EVENT_SUBAGENT_START: &str = "subagent/start";
-/// Kernel event name emitted after the child turn.
+/// Kernel event name emitted after the child turn, including when that turn fails.
 pub const EVENT_SUBAGENT_END: &str = "subagent/end";
 
 /// Tag for [`SubagentRunId`].

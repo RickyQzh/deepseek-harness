@@ -3,13 +3,13 @@
 use dsh_agent::{AgentHandle, AgentRegistry, CreateAgentOptions};
 use dsh_kernel::{Context, Payload};
 use dsh_session::{
-    ContentBlock, LogEvent, Message, MessageId, MessageRole, MessageSource, SESSION_FORMAT_VERSION,
-    Session, SessionEvent, SessionHeader, SessionId, SessionOrigin, TurnEndReason,
+    ContentBlock, LogEvent, Message, MessageId, MessageRole, MessageSource, Session, SessionEvent,
+    SessionHeader, SessionId, SessionOrigin, TurnEndReason, SESSION_FORMAT_VERSION,
 };
 use dsh_subagent::{
-    EVENT_SUBAGENT_END, EVENT_SUBAGENT_START, SubagentError, SubagentResult, SubagentRunEndInfo,
-    SubagentRunId, SubagentRunInfo, SubagentStartRequest, SubagentStopReason,
-    assert_subagent_max_depth, delegation_depth_of, snapshot_one_shot_descriptor,
+    assert_subagent_max_depth, delegation_depth_of, snapshot_one_shot_descriptor, SubagentError,
+    SubagentResult, SubagentRunEndInfo, SubagentRunId, SubagentRunInfo, SubagentStartRequest,
+    SubagentStopReason, EVENT_SUBAGENT_END, EVENT_SUBAGENT_START,
 };
 
 /// Events through the last `turn/end` inclusive. Empty when no turn has completed.
@@ -26,6 +26,9 @@ pub(crate) fn completed_turn_prefix(session: &Session) -> Vec<LogEvent> {
 }
 
 /// Establish and drive one in-process one-shot child. Never takes the parent driver permit.
+///
+/// After the child is published, emits `subagent/start` then `subagent/end` whether the
+/// child turn completes or `followup` / `run_until_idle` fails (`SubagentStopReason::Error`).
 ///
 /// # Errors
 ///
@@ -107,20 +110,31 @@ pub async fn start_in_process_run(
         id: child_id.clone(),
     };
     ctx.emit(EVENT_SUBAGENT_START, Payload::new(info));
-    child
-        .followup(user_prompt(&child_id, request.prompt))
-        .await
-        .map_err(|error| SubagentError::other(error.to_string()))?;
-    child
-        .run_until_idle()
-        .await
-        .map_err(|error| SubagentError::other(error.to_string()))?;
-    let (output, stop_reason) = {
-        let agent = child.lock();
-        let events = agent.session.events();
-        let start = seed_len.min(events.len());
-        let suffix = &events[start..];
-        (suffix_output(suffix), suffix_stop_reason(suffix))
+    let driven = async {
+        child
+            .followup(user_prompt(&child_id, request.prompt))
+            .await
+            .map_err(|error| SubagentError::other(error.to_string()))?;
+        child
+            .run_until_idle()
+            .await
+            .map_err(|error| SubagentError::other(error.to_string()))?;
+        let (output, stop_reason) = {
+            let agent = child.lock();
+            let events = agent.session.events();
+            let start = seed_len.min(events.len());
+            let suffix = &events[start..];
+            (suffix_output(suffix), suffix_stop_reason(suffix))
+        };
+        Ok(SubagentResult {
+            stop_reason,
+            output,
+        })
+    }
+    .await;
+    let stop_reason = match &driven {
+        Ok(result) => result.stop_reason,
+        Err(_) => SubagentStopReason::Error,
     };
     ctx.emit(
         EVENT_SUBAGENT_END,
@@ -131,10 +145,7 @@ pub async fn start_in_process_run(
             stop_reason,
         }),
     );
-    Ok(SubagentResult {
-        stop_reason,
-        output,
-    })
+    driven
 }
 
 struct ParentSnapshot {
@@ -244,16 +255,16 @@ mod tests {
     use super::completed_turn_prefix;
     use crate::{register_fork, register_spawn};
     use dsh_agent::{AgentHandle, AgentRegistry, CreateAgentOptions};
-    use dsh_boot::{PluginRegistry, boot_yaml, process_interpolate_env};
+    use dsh_boot::{boot_yaml, process_interpolate_env, PluginRegistry};
     use dsh_kernel::Context;
-    use dsh_llm::{LlmRuntime, MockAdapter, MockScript, text_response, tool_call_response};
+    use dsh_llm::{text_response, tool_call_response, LlmRuntime, MockAdapter, MockScript};
     use dsh_session::{
-        ContentBlock, Message, MessageId, MessageRole, MessageSource, SESSION_FORMAT_VERSION,
-        Session, SessionHeader, SessionId, SessionOrigin,
+        ContentBlock, Message, MessageId, MessageRole, MessageSource, Session, SessionHeader,
+        SessionId, SessionOrigin, SESSION_FORMAT_VERSION,
     };
     use dsh_subagent::{
-        EVENT_SUBAGENT_START, SubagentRunInfo, SubagentRuntime, SubagentStartRequest,
-        SubagentStopReason,
+        SubagentRunEndInfo, SubagentRunInfo, SubagentRuntime, SubagentStartRequest,
+        SubagentStopReason, EVENT_SUBAGENT_END, EVENT_SUBAGENT_START,
     };
     use dsh_system_prompt::{SystemPrompt, SystemPromptConfig};
     use dsh_tools::{AbortFlag, ToolDefinition, ToolError, ToolPresentationMode, ToolRuntime};
@@ -350,6 +361,22 @@ mod tests {
             }
             if tokio::time::Instant::now() > deadline {
                 panic!("timed out waiting for subagent/start");
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+
+    async fn wait_count(slot: &Mutex<usize>, want: usize, what: &str) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let have = *slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if have >= want {
+                return;
+            }
+            if tokio::time::Instant::now() > deadline {
+                panic!("timed out waiting for {what} (have {have}, want {want})");
             }
             tokio::task::yield_now().await;
         }
@@ -464,24 +491,20 @@ mod tests {
             .unwrap();
         assert!(matches!(result.stop_reason, SubagentStopReason::Completed));
         let child = env.child_session(&parent).await;
-        assert!(
-            !child
-                .derive_messages()
-                .iter()
-                .any(|message| message_text(message).contains("secret parent fact"))
-        );
+        assert!(!child
+            .derive_messages()
+            .iter()
+            .any(|message| message_text(message).contains("secret parent fact")));
         assert_eq!(
             child.header().origin.as_ref(),
             Some(&SessionOrigin::Subagent)
         );
         assert_eq!(child.header().delegation_depth, Some(1));
         assert_eq!(child.header().seed_length, None);
-        assert!(
-            child
-                .events()
-                .iter()
-                .any(|event| event.event_type() == "subagent/descriptor")
-        );
+        assert!(child
+            .events()
+            .iter()
+            .any(|event| event.event_type() == "subagent/descriptor"));
     }
 
     #[tokio::test]
@@ -496,12 +519,10 @@ mod tests {
             .await
             .unwrap();
         let child = env.child_session(&parent).await;
-        assert!(
-            child
-                .derive_messages()
-                .iter()
-                .any(|message| message_text(message).contains("inherited"))
-        );
+        assert!(child
+            .derive_messages()
+            .iter()
+            .any(|message| message_text(message).contains("inherited")));
         assert_eq!(child.header().seed_length, Some(parent_prefix.len() as u64));
     }
 
@@ -560,5 +581,85 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("exceeds maxDepth 3"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn emits_subagent_end_when_child_fails_after_start() {
+        // Parent consumes the only scripted reply. The child is then published
+        // (subagent/start) and run_until_idle fails: remaining script is empty,
+        // and the copied provider is unregistered so prepare_call returns Err.
+        let adapter = Arc::new(MockAdapter::new(vec![MockScript::Chunks(text_response(
+            "parent-ack",
+        ))]));
+        let env = boot_with(adapter, |_| {}).await;
+        let starts = Arc::new(Mutex::new(0usize));
+        let ends = Arc::new(Mutex::new(Vec::<SubagentStopReason>::new()));
+        let start_slot = Arc::clone(&starts);
+        let end_slot = Arc::clone(&ends);
+        env.rt
+            .context()
+            .on(EVENT_SUBAGENT_START, move |_| {
+                let start_slot = Arc::clone(&start_slot);
+                async move {
+                    *start_slot
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+                }
+            })
+            .expect("listen start");
+        env.rt
+            .context()
+            .on(EVENT_SUBAGENT_END, move |payload| {
+                let end_slot = Arc::clone(&end_slot);
+                let reason = payload
+                    .downcast_ref::<SubagentRunEndInfo>()
+                    .map(|info| info.stop_reason);
+                async move {
+                    if let Some(reason) = reason {
+                        end_slot
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(reason);
+                    }
+                }
+            })
+            .expect("listen end");
+        let parent = env
+            .agents
+            .create(CreateAgentOptions {
+                session_id: SessionId::new(format!("fail-parent-{}", unique_suffix())),
+                cwd: None,
+                provider: "mock".into(),
+                model: "mock".into(),
+                max_tokens: None,
+            })
+            .unwrap();
+        parent.followup(user_text("go", "go")).await.unwrap();
+        parent.run_until_idle().await.unwrap();
+        parent.lock().options.provider = "missing".into();
+        let outcome = env.rt.start("spawn", prompt("hi"), parent).await;
+        assert!(outcome.is_err(), "{outcome:?}");
+        wait_count(&starts, 1, "subagent/start").await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let end_reasons = ends
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if !end_reasons.is_empty() {
+                assert_eq!(end_reasons, vec![SubagentStopReason::Error]);
+                assert_eq!(
+                    *starts
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                    end_reasons.len()
+                );
+                break;
+            }
+            if tokio::time::Instant::now() > deadline {
+                panic!("timed out waiting for subagent/end after child failure");
+            }
+            tokio::task::yield_now().await;
+        }
     }
 }

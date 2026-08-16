@@ -6,7 +6,7 @@
 
 Spawn 设置 `inherits_parent_context = false`，并启动全新的子会话。Fork 设置 `inherits_parent_context = true`，并用父级事件直到最后一个 `turn/end`（含）为子会话播种（没有已完成轮次时种子为空）。两者都将每项启动时能力声明为 true。一次性 `start` 从不调用 `prepare_continuable`。
 
-`start_in_process_run` 生成 `SessionId` `sub-{pid}-{nanos}`，写入 `parent_session`、`origin = subagent`、`delegation_depth = parent + 1`，在父级有 `cwd` 时复制它，追加第 2 版 descriptor `{ mode: "one-shot", provider, label }`，经 `AgentRegistry::resume` 恢复（不用 `create`，因为 `create` 会把 `parent_session` 强制为 `None`），从 `parent.lock()` 同步复制父级 provider/model/max_tokens 且不在 `.await` 上持有该守卫，在**子**句柄上 `followup` 提示词，然后只对子句柄调用 `run_until_idle`。它从不占用父级 driver 许可。`TurnEndReason::Blocked` 映射为 `SubagentStopReason::Refusal`。结果 `output` 是 `seed_length` 之后子会话自己后缀中的 assistant 文本。
+`start_in_process_run` 生成 `SessionId` `sub-{pid}-{nanos}`，写入 `parent_session`、`origin = subagent`、`delegation_depth = parent + 1`，在父级有 `cwd` 时复制它，追加第 2 版 descriptor `{ mode: "one-shot", provider, label }`，经 `AgentRegistry::resume` 恢复（不用 `create`，因为 `create` 会把 `parent_session` 强制为 `None`），从 `parent.lock()` 同步复制父级 provider/model/max_tokens 且不在 `.await` 上持有该守卫，在**子**句柄上 `followup` 提示词，然后只对子句柄调用 `run_until_idle`。它从不占用父级 driver 许可。在发出 `subagent/start` 之后，子轮次完成时以及 `followup` 或 `run_until_idle` 失败时（停止原因 `Error`）都会发出 `subagent/end`。`TurnEndReason::Blocked` 映射为 `SubagentStopReason::Refusal`。结果 `output` 是 `seed_length` 之后子会话自己后缀中的 assistant 文本。
 
 同一 kernel context 上需要 `agents`。缺少 `agents` 会在 start 时失败。
 

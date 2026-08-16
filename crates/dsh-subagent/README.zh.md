@@ -6,7 +6,7 @@
 
 `inject::<SubagentRuntime>()` 得到 `Arc<SubagentRuntime>`，因此 `register_provider` 与 `start` 在内部 mutex 上取 `&self`。重复的提供方名称会失败。未知名称会失败。`start` 检查已声明的启动时能力，再委派给具名提供方；它不进入继续执行。`prepare_continuable` 是每个提供方上的数据桩，一次性 `start` 不会调用它。
 
-`subagent/descriptor` 第 2 版是仅日志会话事件（`SessionEvent::SubagentDescriptor { data }`）。内核事件 `subagent/start` 与 `subagent/end` 不是会话事件。深度默认值为 3；当父级 `delegationDepth`（缺省为 0）加一超过上限时，`assert_subagent_max_depth` 会失败。
+`subagent/descriptor` 第 2 版是仅日志会话事件（`SessionEvent::SubagentDescriptor { data }`）。内核事件 `subagent/start` 与 `subagent/end` 不是会话事件。已发出 start 的已发布运行也必须发出 end，包括子轮次在发布后失败的情况。深度默认值为 3；当父级 `delegationDepth`（缺省为 0）加一超过上限时，`assert_subagent_max_depth` 会失败。
 
 ## 配置
 
