@@ -26,6 +26,7 @@ DeepSeek Harness 宿主进程的 Rust workspace 成员。布局、保留/放弃�
 | [`dsh-token-meter`](dsh-token-meter/README.md) | 重放 token 计量：固定每 4 字符一 token 的启发式、surface fold、提供方 usage 锚点。 |
 | [`dsh-compaction`](dsh-compaction/README.md) | 压缩引擎类型、检查点来源与工具配对切割辅助函数。 |
 | [`dsh-compaction-basic`](dsh-compaction-basic/README.md) | 仅日志压缩锁、表层替换与溢出重试。 |
+| [`dsh-agent-instructions`](dsh-agent-instructions/README.md) | 工作区 `AGENTS.md` / `CLAUDE.md` 基线注入与 JSONL 恢复。 |
 | [`dsh-agent`](dsh-agent/README.md) | 按会话 id 持有的实时 LoopAgent 注册表；Session append-sink 工厂。 |
 | [`dsh-agent-loop`](dsh-agent-loop/README.md) | 脚本化循环：持久化 inbox、idle / maintenance / running、运行时上下文快照、请求重建、工具调用调度。 |
 | [`dsh-subprocess`](dsh-subprocess/README.md) | 完全指定的 argv 派发与凭据擦除后的子进程环境。 |

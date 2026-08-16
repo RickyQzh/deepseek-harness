@@ -268,6 +268,66 @@ impl AgentRegistry {
         Ok(handle)
     }
 
+    /// Resume `session` or return the live handle when `session.id()` is already registered.
+    ///
+    /// `options.session_id` must equal `session.id()`. `on_session_create` hooks run;
+    /// permission pinning is idempotent on an existing log.
+    ///
+    /// # Errors
+    ///
+    /// [`AgentError::ResumeIdMismatch`] when the ids differ.
+    /// [`AgentError::Loop`] when inbox replay of the loaded session fails.
+    pub fn resume(
+        &self,
+        mut session: Session,
+        options: CreateAgentOptions,
+    ) -> Result<AgentHandle, AgentError> {
+        if session.id().as_str() != options.session_id.as_str() {
+            return Err(AgentError::ResumeIdMismatch(
+                session.id().as_str().to_string(),
+                options.session_id.as_str().to_string(),
+            ));
+        }
+        let key = options.session_id.as_str().to_string();
+        {
+            let agents = self.agents.lock().expect("agents");
+            if let Some(existing) = agents.get(&key) {
+                return Ok(existing.clone());
+            }
+        }
+        if let Some(factory) = self.sink_factory.lock().expect("sink").clone() {
+            session.set_append_sink(Some(factory(options.session_id.as_str())));
+        }
+        for hook in self.session_create.lock().expect("session create").iter() {
+            hook(&mut session);
+        }
+        let loop_agent = LoopAgent::new(
+            self.ctx.clone(),
+            session,
+            LoopOptions {
+                provider: options.provider,
+                model: options.model,
+                max_tokens: options.max_tokens,
+                max_parallel_tool_calls: dsh_agent_loop::DEFAULT_MAX_PARALLEL_TOOL_CALLS,
+            },
+            Arc::clone(&self.tools),
+            self.prompt.clone(),
+            Arc::clone(&self.llm),
+        )?;
+        let handle = AgentHandle {
+            id: options.session_id,
+            inner: Arc::new(AgentInner {
+                driver: AsyncMutex::new(()),
+                state: Mutex::new(loop_agent),
+            }),
+        };
+        self.agents
+            .lock()
+            .expect("agents")
+            .insert(key, handle.clone());
+        Ok(handle)
+    }
+
     /// Live handle, if present.
     #[must_use]
     pub fn get(&self, session_id: &str) -> Option<AgentHandle> {

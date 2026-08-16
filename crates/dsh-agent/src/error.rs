@@ -11,4 +11,7 @@ pub enum AgentError {
     /// Inbox or loop failure.
     #[error(transparent)]
     Loop(#[from] LoopError),
+    /// [`AgentRegistry::resume`] was called with a session whose id does not match `options`.
+    #[error("resume session id `{0}` does not match options `{1}`")]
+    ResumeIdMismatch(String, String),
 }

@@ -4,7 +4,7 @@
 
 JSONL 是产品默认格式（`session.jsonl` / `session.jsonl.zstd`）。本 crate 编码 `type: "session"` 头行、事件行、打包的 chunk 行，以及可拼接的带校验和 zstd 帧。它依赖 `dsh-session`，不依赖 compose。
 
-`JsonlSessionStore` 将未压缩、未打包的 JSONL 写入 `{root}/{sessionId}/session.jsonl`（`SessionId::as_str()`，没有 `--<project>--` 段），以便与 Python SDK 和 jsonrpc fixture（测试前置数据）一致；`flush` 可以整文件重写。`from_env` 在 `DSH_SESSION_ROOT` 已设置且非空时使用该目录，否则使用 `{DSH_HOME}/sessions`。
+`JsonlSessionStore` 将未压缩、未打包的 JSONL 写入 `{root}/{sessionId}/session.jsonl`（`SessionId::as_str()`，没有 `--<project>--` 段），以便与 Python SDK 和 jsonrpc fixture（测试前置数据）一致；`flush` 可以整文件重写，`load` 经 `decode_session_log` 再 `Session::from_events` 读回。`from_env` 在 `DSH_SESSION_ROOT` 已设置且非空时使用该目录，否则使用 `{DSH_HOME}/sessions`。
 
 `plugin::register` 提供 `sessions` 服务：默认 `from_env`，当配置 `root` 为字符串时使用 `with_root`。
 

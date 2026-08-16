@@ -1,0 +1,30 @@
+[package]
+name = "dsh-agent-instructions"
+version = "0.1.0"
+description = "Workspace AGENTS.md baseline injection and resume for the DeepSeek Harness Rust host"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+dsh-agent-loop = { path = "../dsh-agent-loop" }
+dsh-boot = { path = "../dsh-boot" }
+dsh-fs = { path = "../dsh-fs" }
+dsh-kernel = { path = "../dsh-kernel" }
+dsh-session = { path = "../dsh-session" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+dsh-agent = { path = "../dsh-agent" }
+dsh-llm = { path = "../dsh-llm" }
+dsh-session-persist = { path = "../dsh-session-persist" }
+dsh-system-prompt = { path = "../dsh-system-prompt" }
+dsh-tools = { path = "../dsh-tools" }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

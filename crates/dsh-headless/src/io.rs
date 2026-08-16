@@ -25,19 +25,36 @@ impl CmdlineArgs {
 /// Task text published by `headless-startup`.
 pub struct HeadlessStartup {
     task: String,
+    resume_session_id: Option<String>,
 }
 
 impl HeadlessStartup {
-    /// Non-empty task text.
+    /// Non-empty task text, with no session resume.
     #[must_use]
     pub fn new(task: impl Into<String>) -> Self {
-        Self { task: task.into() }
+        Self {
+            task: task.into(),
+            resume_session_id: None,
+        }
+    }
+
+    /// Record optional YAML `resumeSessionId`. Empty strings are treated as absent.
+    #[must_use]
+    pub fn with_resume_session_id(mut self, id: Option<String>) -> Self {
+        self.resume_session_id = id.filter(|value| !value.is_empty());
+        self
     }
 
     /// The one-shot prompt.
     #[must_use]
     pub fn task(&self) -> &str {
         &self.task
+    }
+
+    /// Session id to load and resume, when YAML `resumeSessionId` was set.
+    #[must_use]
+    pub fn resume_session_id(&self) -> Option<&str> {
+        self.resume_session_id.as_deref()
     }
 }
 

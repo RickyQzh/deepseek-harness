@@ -204,6 +204,24 @@ pub enum MessageSource {
         #[serde(rename = "callId")]
         call_id: CallId,
     },
+    /// Workspace instruction baseline or later instruction delta.
+    AgentInstructions {
+        /// Context form; always `instructions`.
+        form: String,
+        /// Marks the complete startup/resume baseline rather than a later delta.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        baseline: Option<bool>,
+        /// Discovery, precedence, budget, and loaded-file identity for resume checks.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "baselineIdentity"
+        )]
+        baseline_identity: Option<String>,
+        /// Structured instruction transitions represented by this message.
+        #[serde(default)]
+        changes: Vec<Value>,
+    },
 }
 
 /// One named contribution to a snapshot-form context.
@@ -742,6 +760,36 @@ mod tests {
                 assert_eq!(source_command_id.as_deref(), Some("cmd-9"));
             }
             other => panic!("expected plugin source, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_instructions_source_uses_kebab_kind_and_camel_identity() {
+        let source = MessageSource::AgentInstructions {
+            form: "instructions".into(),
+            baseline: Some(true),
+            baseline_identity: Some("ident-1".into()),
+            changes: vec![json!({"action":"set","path":"AGENTS.md"})],
+        };
+        let value = serde_json::to_value(&source).expect("serialize");
+        assert_eq!(value["kind"], "agent-instructions");
+        assert_eq!(value["form"], "instructions");
+        assert_eq!(value["baseline"], true);
+        assert_eq!(value["baselineIdentity"], "ident-1");
+        let back: MessageSource = serde_json::from_value(value).expect("deserialize");
+        match back {
+            MessageSource::AgentInstructions {
+                form,
+                baseline,
+                baseline_identity,
+                changes,
+            } => {
+                assert_eq!(form, "instructions");
+                assert_eq!(baseline, Some(true));
+                assert_eq!(baseline_identity.as_deref(), Some("ident-1"));
+                assert_eq!(changes.len(), 1);
+            }
+            other => panic!("expected agent-instructions source, got {other:?}"),
         }
     }
 }

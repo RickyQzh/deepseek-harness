@@ -33,12 +33,13 @@ fn fail(io: &HeadlessIo, exit: &AppExit, error: &HeadlessError) {
 
 async fn run(
     task: String,
+    resume_session_id: Option<String>,
     agents: Arc<AgentRegistry>,
     sessions: Arc<JsonlSessionStore>,
     io: HeadlessIo,
     exit: Arc<AppExit>,
 ) {
-    match run_inner(task, agents, sessions, &io).await {
+    match run_inner(task, resume_session_id, agents, sessions, &io).await {
         Ok(code) => exit.exit(code),
         Err(error) => fail(&io, &exit, &error),
     }
@@ -46,6 +47,7 @@ async fn run(
 
 async fn run_inner(
     task: String,
+    resume_session_id: Option<String>,
     agents: Arc<AgentRegistry>,
     sessions: Arc<JsonlSessionStore>,
     io: &HeadlessIo,
@@ -61,19 +63,35 @@ async fn run_inner(
     } else {
         provider.clone()
     };
-    let session_id = SessionId::new(mint_id("session"));
     let cwd = std::env::var("DSH_CWD").ok().or_else(|| {
         std::env::current_dir()
             .ok()
             .map(|p| p.to_string_lossy().into_owned())
     });
-    let handle = agents.create(CreateAgentOptions {
-        session_id,
-        cwd,
-        provider,
-        model,
-        max_tokens: None,
-    })?;
+    let handle = if let Some(resume_id) = resume_session_id {
+        let session = sessions.load(&SessionId::new(resume_id))?;
+        let session_id = session.id().clone();
+        let cwd = session.header().cwd.clone().or(cwd);
+        agents.resume(
+            session,
+            CreateAgentOptions {
+                session_id,
+                cwd,
+                provider,
+                model,
+                max_tokens: None,
+            },
+        )?
+    } else {
+        let session_id = SessionId::new(mint_id("session"));
+        agents.create(CreateAgentOptions {
+            session_id,
+            cwd,
+            provider,
+            model,
+            max_tokens: None,
+        })?
+    };
     let key = handle.id().as_str().to_string();
     agents.when_idle(&key).await?;
     let first_seq = {
@@ -119,7 +137,15 @@ pub fn register(registry: &mut PluginRegistry) {
                 .map(|arc| (*arc).clone())
                 .unwrap_or_else(HeadlessIo::stdio);
             let task = startup.task().to_string();
-            drop(tokio::spawn(run(task, agents, sessions, io, exit)));
+            let resume_session_id = startup.resume_session_id().map(str::to_string);
+            drop(tokio::spawn(run(
+                task,
+                resume_session_id,
+                agents,
+                sessions,
+                io,
+                exit,
+            )));
             Ok(())
         })
     });
@@ -132,6 +158,11 @@ mod tests {
     use dsh_agent::{register_execution_plugins, register_spine_plugins};
     use dsh_boot::{PluginRegistry, boot_yaml, process_interpolate_env};
     use dsh_kernel::Context;
+    use dsh_session::{SESSION_FORMAT_VERSION, Session, SessionHeader, SessionId};
+    use dsh_session_persist::JsonlSessionStore;
+    use std::sync::Mutex;
+
+    static SESSION_ROOT_LOCK: Mutex<()> = Mutex::new(());
 
     fn test_temp_dir(prefix: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -146,8 +177,16 @@ mod tests {
         dir
     }
 
+    fn restore_session_root(previous: Option<String>) {
+        match previous {
+            Some(value) => unsafe { std::env::set_var("DSH_SESSION_ROOT", value) },
+            None => unsafe { std::env::remove_var("DSH_SESSION_ROOT") },
+        }
+    }
+
     #[tokio::test]
     async fn mock_llm_prints_last_text_and_exits_0_on_completed() {
+        let _guard = SESSION_ROOT_LOCK.lock().expect("session root");
         let root = test_temp_dir("dsh-headless");
         let previous = std::env::var("DSH_SESSION_ROOT").ok();
         unsafe {
@@ -180,9 +219,61 @@ mod tests {
         assert_eq!(code, 0, "stderr={}", io.stderr_text());
         assert_eq!(io.stdout_text(), "headless-ok\n");
         assert_eq!(io.stderr_text(), "");
-        match previous {
-            Some(value) => unsafe { std::env::set_var("DSH_SESSION_ROOT", value) },
-            None => unsafe { std::env::remove_var("DSH_SESSION_ROOT") },
+        restore_session_root(previous);
+    }
+
+    #[tokio::test]
+    async fn resume_session_id_loads_existing_jsonl_then_followup() {
+        let _guard = SESSION_ROOT_LOCK.lock().expect("session root");
+        let root = test_temp_dir("dsh-headless-resume");
+        let previous = std::env::var("DSH_SESSION_ROOT").ok();
+        unsafe {
+            std::env::set_var("DSH_SESSION_ROOT", root.as_os_str());
         }
+        let store = JsonlSessionStore::with_root(&root);
+        let session = Session::new(SessionHeader {
+            version: SESSION_FORMAT_VERSION,
+            id: SessionId::new("workspace-context-resume"),
+            created_at: 1,
+            cwd: Some("/work".into()),
+            parent_session: None,
+            seed_length: None,
+            origin: None,
+            delegation_depth: None,
+            agent_preset: None,
+        });
+        store.flush(&session).unwrap();
+        let yaml = MINIMAL_YAML.replace(
+            "- name: headless-startup\n",
+            "- name: headless-startup\n  config:\n    resumeSessionId: workspace-context-resume\n",
+        );
+        let ctx = Context::new();
+        let (exit, rx) = AppExit::pair();
+        ctx.provide("appExit", exit).unwrap();
+        ctx.provide("cmdlineArgs", CmdlineArgs::new(vec!["unused task".into()]))
+            .unwrap();
+        let io = HeadlessIo::capture();
+        ctx.provide("headlessIo", io.clone()).unwrap();
+        let mut registry = PluginRegistry::new();
+        register_spine_plugins(&mut registry);
+        register_execution_plugins(&mut registry);
+        register_headless_plugins(&mut registry);
+        boot_yaml(&ctx, &yaml, &[], &registry, &process_interpolate_env())
+            .await
+            .unwrap();
+        let code = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
+            .await
+            .expect("appExit timed out")
+            .expect("appExit dropped");
+        assert_eq!(code, 0, "stderr={}", io.stderr_text());
+        assert_eq!(io.stdout_text(), "headless-ok\n");
+        let loaded = store
+            .load(&SessionId::new("workspace-context-resume"))
+            .unwrap();
+        assert!(
+            loaded.events().len() > session.events().len(),
+            "resume must append the cmdline followup onto the seeded session"
+        );
+        restore_session_root(previous);
     }
 }

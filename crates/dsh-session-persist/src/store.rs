@@ -66,6 +66,21 @@ impl JsonlSessionStore {
         let text = encode_session_log(session.header(), session.events(), false)?;
         std::fs::write(&path, text).map_err(|error| PersistError::Io(error.to_string()))
     }
+
+    /// Read uncompressed JSONL from [`Self::path_for`] and rebuild the session surface.
+    ///
+    /// # Errors
+    ///
+    /// [`PersistError::Io`] when the file cannot be read.
+    /// [`PersistError::Corrupt`], [`PersistError::Format`], or [`PersistError::Session`]
+    /// from [`decode_session_log`] / [`Session::from_events`].
+    pub fn load(&self, id: &SessionId) -> Result<Session, PersistError> {
+        let path = self.path_for(id);
+        let text =
+            std::fs::read_to_string(&path).map_err(|error| PersistError::Io(error.to_string()))?;
+        let (header, events) = crate::decode_session_log(&text)?;
+        Ok(Session::from_events(header, events)?)
+    }
 }
 
 #[cfg(test)]
@@ -146,6 +161,38 @@ mod tests {
         let text2 = std::fs::read_to_string(&path).unwrap();
         let (_, events2) = decode_session_log(&text2).unwrap();
         assert_eq!(events2.len(), 1);
+    }
+
+    fn session_with_id(id: &str) -> Session {
+        let mut session = Session::new(header(id));
+        session
+            .append(SessionEvent::UserMessage {
+                seq: 0,
+                time: 0,
+                data: Message {
+                    id: MessageId::new("m0"),
+                    role: MessageRole::User,
+                    content: vec![ContentBlock::Text { text: "hi".into() }],
+                    source: MessageSource::User,
+                },
+                surface_op: Some(SurfaceOp::Append),
+                source_event_seqs: None,
+                ignorable: None,
+            })
+            .unwrap();
+        session
+    }
+
+    #[test]
+    fn load_round_trips_uncompressed_jsonl() {
+        let dir = test_temp_dir("load");
+        let store = JsonlSessionStore::with_root(&dir);
+        let session = session_with_id("workspace-context-resume");
+        store.flush(&session).unwrap();
+        let loaded = store
+            .load(&SessionId::new("workspace-context-resume"))
+            .unwrap();
+        assert_eq!(loaded.events().len(), session.events().len());
     }
 
     #[test]

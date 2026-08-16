@@ -157,6 +157,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-agent-instructions"
+version = "0.1.0"
+dependencies = [
+ "dsh-agent",
+ "dsh-agent-loop",
+ "dsh-boot",
+ "dsh-fs",
+ "dsh-kernel",
+ "dsh-llm",
+ "dsh-session",
+ "dsh-session-persist",
+ "dsh-system-prompt",
+ "dsh-tools",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "dsh-agent-loop"
 version = "0.1.0"
 dependencies = [

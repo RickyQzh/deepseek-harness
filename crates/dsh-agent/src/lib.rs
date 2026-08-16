@@ -1,4 +1,4 @@
-//! Live `LoopAgent` registry: create, followup, and run_until_idle behind a mutex.
+//! Live `LoopAgent` registry: create, resume, followup, and run_until_idle behind a mutex.
 
 mod error;
 pub mod plugin;
