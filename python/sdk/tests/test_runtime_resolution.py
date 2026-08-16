@@ -25,14 +25,22 @@ def test_default_config_is_shipped_with_the_package() -> None:
 
 
 def test_unknown_explicit_mode_fails_loud() -> None:
-    with pytest.raises(ValueError, match="expected 'exe' or 'node'"):
+    with pytest.raises(ValueError, match="expected 'exe', 'node', or 'rust'"):
         resolve_bundled_launch_args("bogus")
 
 
 def test_unknown_env_mode_fails_loud(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(RUNTIME_MODE_ENV_VAR, "bogus")
-    with pytest.raises(ValueError, match="expected 'exe' or 'node'"):
+    with pytest.raises(ValueError, match="expected 'exe', 'node', or 'rust'"):
         resolve_bundled_launch_args()
+
+
+def test_rust_mode_uses_dsh_runtime_bin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    binary = tmp_path / "dsh-jsonrpc-agent"
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+    monkeypatch.setenv("DSH_RUNTIME_BIN", str(binary))
+    assert resolve_bundled_launch_args("rust") == (str(binary),)
 
 
 def test_explicit_mode_wins_over_env_mode(monkeypatch: pytest.MonkeyPatch) -> None:
