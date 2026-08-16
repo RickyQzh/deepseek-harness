@@ -2,6 +2,9 @@
 
 mod render;
 
+#[cfg(test)]
+mod phase4_exit;
+
 use std::sync::Arc;
 
 use dsh_sandbox::SANDBOX_UNAVAILABLE;

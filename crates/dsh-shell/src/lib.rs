@@ -7,6 +7,9 @@ mod error;
 mod render;
 mod types;
 
+#[cfg(test)]
+mod phase4_exit;
+
 pub use bash::{BashConfig, ENV_OVERRIDES, LocalBashExecutor, ShellProcess, ShellProcessRead};
 pub use bash_sandbox::{Confine, SandboxBashExecutor};
 pub use classify::{

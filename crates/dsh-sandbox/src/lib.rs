@@ -9,6 +9,9 @@ mod provider;
 mod roots;
 mod types;
 
+#[cfg(test)]
+mod phase4_exit;
+
 pub use error::{SANDBOX_UNAVAILABLE, SandboxError};
 pub use escalation::{
     ESCALATION_TARGETS, EscalationApprover, EscalationOutcome, EscalationRequest,

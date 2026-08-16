@@ -7,6 +7,9 @@ mod read;
 mod search;
 mod write;
 
+#[cfg(test)]
+mod phase4_exit;
+
 use std::sync::Arc;
 
 use dsh_fs::{LocalFileSystem, ObservationGate, ObservationOwner};

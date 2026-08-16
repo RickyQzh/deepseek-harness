@@ -8,6 +8,9 @@ mod observation;
 mod sandbox;
 mod types;
 
+#[cfg(test)]
+mod phase4_exit;
+
 pub use containment::is_path_under;
 pub use error::{FsError, FsErrorCode};
 pub use local::LocalFileSystem;
