@@ -86,6 +86,14 @@ mod tests {
                 .iter()
                 .any(|p| p == "mock")
         );
+        // inject of a provided service does not wait for sibling register_adapter;
+        // AgentRegistry must lock the kernel mutex, not a map cloned at setup.
+        let agents = ctx.get::<AgentRegistry>("agents").unwrap();
+        assert!(
+            agents.list_providers().iter().any(|p| p == "mock"),
+            "{:?}",
+            agents.list_providers()
+        );
         match previous {
             Some(value) => unsafe { std::env::set_var("DSH_SESSION_ROOT", value) },
             None => unsafe { std::env::remove_var("DSH_SESSION_ROOT") },

@@ -54,20 +54,41 @@ impl AgentHandle {
 /// Live agents keyed by session id string.
 pub struct AgentRegistry {
     agents: Mutex<HashMap<String, AgentHandle>>,
-    llm: Mutex<LlmRuntime>,
-    tools: Mutex<ToolRuntime>,
+    llm: Arc<Mutex<LlmRuntime>>,
+    tools: Arc<Mutex<ToolRuntime>>,
     prompt: SystemPrompt,
     sink_factory: Mutex<Option<SinkFactory>>,
 }
 
 impl AgentRegistry {
-    /// Empty registry that clones `llm` / `tools` into each created agent.
+    /// Empty registry wrapping owned `llm` / `tools` in new mutexes.
+    ///
+    /// Tests that do not share kernel services use this constructor.
+    /// [`create`](Self::create) still clones the maps into each `LoopAgent`.
     #[must_use]
     pub fn new(llm: LlmRuntime, tools: ToolRuntime, prompt: SystemPrompt) -> Self {
+        Self::from_shared(
+            Arc::new(Mutex::new(llm)),
+            Arc::new(Mutex::new(tools)),
+            prompt,
+        )
+    }
+
+    /// Hold the kernel's `llm` and `tools` mutexes by Arc.
+    ///
+    /// `list_providers`, [`llm`](Self::llm), and [`tools`](Self::tools) lock those
+    /// mutexes, so sibling `register_adapter` / `register` on the same mutexes stays
+    /// visible. [`create`](Self::create) clones the maps into each `LoopAgent`.
+    #[must_use]
+    pub fn from_shared(
+        llm: Arc<Mutex<LlmRuntime>>,
+        tools: Arc<Mutex<ToolRuntime>>,
+        prompt: SystemPrompt,
+    ) -> Self {
         Self {
             agents: Mutex::new(HashMap::new()),
-            llm: Mutex::new(llm),
-            tools: Mutex::new(tools),
+            llm,
+            tools,
             prompt,
             sink_factory: Mutex::new(None),
         }
@@ -334,5 +355,32 @@ mod tests {
     fn list_providers_includes_registered_mock() {
         let registry = registry_with_text("x");
         assert!(registry.list_providers().iter().any(|p| p == "mock"));
+    }
+
+    #[test]
+    fn from_shared_sees_adapter_registered_on_the_same_mutex() {
+        let llm = Arc::new(Mutex::new(LlmRuntime::new()));
+        let tools = Arc::new(Mutex::new(ToolRuntime::new(ToolPresentationMode::Native)));
+        let registry = AgentRegistry::from_shared(
+            Arc::clone(&llm),
+            Arc::clone(&tools),
+            SystemPrompt::new(SystemPromptConfig::default()).unwrap(),
+        );
+        assert!(
+            registry.list_providers().is_empty(),
+            "{:?}",
+            registry.list_providers()
+        );
+        llm.lock().expect("llm").register_adapter(
+            "mock",
+            Arc::new(MockAdapter::new(vec![MockScript::Chunks(text_response(
+                "x",
+            ))])),
+        );
+        assert!(
+            registry.list_providers().iter().any(|p| p == "mock"),
+            "{:?}",
+            registry.list_providers()
+        );
     }
 }
