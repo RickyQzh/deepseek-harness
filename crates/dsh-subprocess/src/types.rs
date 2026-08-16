@@ -91,6 +91,7 @@ pub struct SubprocessOutputRead {
 /// One captured stream: the (possibly truncated) text plus recovery info.
 ///
 /// [`crate::OutputCollector::finalize`] produces this after the stream ends.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CollectedOutput {
     /// Collected text — the tail of the stream when truncated.
     pub text: String,

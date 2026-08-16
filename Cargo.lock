@@ -221,6 +221,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-shell"
+version = "0.1.0"
+dependencies = [
+ "dsh-sandbox",
+ "dsh-subprocess",
+ "dsh-tools",
+ "thiserror",
+]
+
+[[package]]
 name = "dsh-subprocess"
 version = "0.1.0"
 dependencies = [
