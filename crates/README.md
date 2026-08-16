@@ -27,3 +27,4 @@ Rust workspace members for the DeepSeek Harness host process. Layout, keep-or-dr
 | [`dsh-shell`](dsh-shell/README.md) | Shell request/spec types, POSIX bash executor, and exit-status parse. |
 | [`dsh-tool-fs`](dsh-tool-fs/README.md) | Model-facing read/write/edit/glob/grep filesystem tools. |
 | [`dsh-tool-bash`](dsh-tool-bash/README.md) | Model-facing bash tool. |
+| [`dsh-sdk-protocol`](dsh-sdk-protocol/README.md) | SDK JSON-RPC 2.0 wire types (`initialize`, `session/prompt`, `shutdown`, four notifications). |

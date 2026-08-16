@@ -200,6 +200,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-sdk-protocol"
+version = "0.1.0"
+dependencies = [
+ "dsh-session",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "dsh-session"
 version = "0.1.0"
 dependencies = [
