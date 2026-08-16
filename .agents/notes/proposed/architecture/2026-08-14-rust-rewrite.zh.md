@@ -410,7 +410,7 @@ TypeScript 包仍在交付时，其 Vitest + 覆盖率仍为必需。快照与 e
 | 笔记 | 时机 |
 |---|---|
 | [2026-08-14-rust-tooling-and-gates.md](../process/2026-08-14-rust-tooling-and-gates.md) | 阶段 0 的钉住、CI 路径过滤与覆盖率后续 |
-| `proposed/testing/…-rust-snapshot-harness.md` | 阶段 5，若快照驱动需要自己的决策记录 |
+| [2026-08-15-rust-snapshot-harness.md](../testing/2026-08-15-rust-snapshot-harness.md) | 阶段 5 快照驱动：保留 Vitest；为阶段 5 子集生成 Rust 二进制 |
 | `proposed/architecture/…-rust-gui-host-wire.md` | 阶段 7，若四象限映射需要冻结的 IDL |
 | `proposed/architecture/…-dynamic-plugins.md` | 仅当重新引入自修改时 |
 

@@ -410,7 +410,7 @@ Do **not** start from [docs/architecture.md](../../../../docs/architecture.md) o
 | Note | When |
 |---|---|
 | [2026-08-14-rust-tooling-and-gates.md](../process/2026-08-14-rust-tooling-and-gates.md) | Phase 0 pin, CI path filters, and coverage follow-up |
-| `proposed/testing/…-rust-snapshot-harness.md` | Phase 5, if the snapshot driver needs its own decision record |
+| [2026-08-15-rust-snapshot-harness.md](../testing/2026-08-15-rust-snapshot-harness.md) | Phase 5 snapshot driver: Vitest stays; spawn the Rust bin for the Phase 5 subset |
 | `proposed/architecture/…-rust-gui-host-wire.md` | Phase 7, if the four-quadrant map needs a frozen IDL |
 | `proposed/architecture/…-dynamic-plugins.md` | Only if self-modification is reintroduced |
 
