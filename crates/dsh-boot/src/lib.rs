@@ -39,6 +39,12 @@ pub const PLUGIN_SKILL: &str = "@deepseek-ai/dsh-skill";
 pub const PLUGIN_SKILL_FILESYSTEM: &str = "@deepseek-ai/dsh-skill-filesystem";
 /// YAML `name` for `@deepseek-ai/dsh-tool-skill`.
 pub const PLUGIN_TOOL_SKILL: &str = "@deepseek-ai/dsh-tool-skill";
+/// YAML `name` for `@deepseek-ai/dsh-web`.
+pub const PLUGIN_WEB: &str = "@deepseek-ai/dsh-web";
+/// YAML `name` for `@deepseek-ai/dsh-web-search-deepseek`.
+pub const PLUGIN_WEB_SEARCH_DEEPSEEK: &str = "@deepseek-ai/dsh-web-search-deepseek";
+/// YAML `name` for `@deepseek-ai/dsh-tool-web`.
+pub const PLUGIN_TOOL_WEB: &str = "@deepseek-ai/dsh-tool-web";
 /// YAML `name` for `@deepseek-ai/dsh-compaction-tool-result-pruner`.
 pub const PLUGIN_TOOL_RESULT_PRUNER: &str = "@deepseek-ai/dsh-compaction-tool-result-pruner";
 /// YAML `name` for `@deepseek-ai/dsh-tools`.

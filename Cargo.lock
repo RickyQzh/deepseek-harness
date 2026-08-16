@@ -561,6 +561,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-tool-web"
+version = "0.1.0"
+dependencies = [
+ "dsh-boot",
+ "dsh-kernel",
+ "dsh-session",
+ "dsh-tools",
+ "dsh-web",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "dsh-tools"
 version = "0.1.0"
 dependencies = [
@@ -584,6 +597,32 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "dsh-web"
+version = "0.1.0"
+dependencies = [
+ "dsh-boot",
+ "dsh-kernel",
+ "dsh-tools",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "dsh-web-search-deepseek"
+version = "0.1.0"
+dependencies = [
+ "dsh-boot",
+ "dsh-credentials",
+ "dsh-kernel",
+ "dsh-tools",
+ "dsh-web",
+ "reqwest",
+ "serde_json",
  "tokio",
 ]
 

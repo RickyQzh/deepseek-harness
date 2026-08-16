@@ -1,0 +1,23 @@
+[package]
+name = "dsh-tool-web"
+version = "0.1.0"
+description = "Model-facing web_search tool for the DeepSeek Harness Rust host; web_fetch stays off"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+dsh-boot = { path = "../dsh-boot" }
+dsh-kernel = { path = "../dsh-kernel" }
+dsh-session = { path = "../dsh-session" }
+dsh-tools = { path = "../dsh-tools" }
+dsh-web = { path = "../dsh-web" }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true
