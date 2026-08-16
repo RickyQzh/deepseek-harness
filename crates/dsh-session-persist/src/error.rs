@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-/// Failure while encoding or decoding a session log artifact.
+/// Failure while encoding, decoding, or writing a session log artifact.
 #[derive(Debug, Error)]
 pub enum PersistError {
     /// Format version or unknown required event type.
@@ -14,4 +14,7 @@ pub enum PersistError {
     /// Corrupt header, event line, or Zstandard frame.
     #[error("{0}")]
     Corrupt(String),
+    /// Filesystem failure while creating directories or writing the log.
+    #[error("session store io: {0}")]
+    Io(String),
 }

@@ -1,0 +1,215 @@
+//! Live uncompressed JSONL session store.
+
+use std::path::{Path, PathBuf};
+
+use dsh_session::{Session, SessionId};
+
+use crate::PersistError;
+use crate::jsonl::encode_session_log;
+
+/// Directory-backed JSONL store. One file per session, rewritten on flush.
+#[derive(Debug)]
+pub struct JsonlSessionStore {
+    root: PathBuf,
+}
+
+impl JsonlSessionStore {
+    /// `DSH_SESSION_ROOT` if set and non-empty, else `{DSH_HOME}/sessions`.
+    ///
+    /// # Errors
+    ///
+    /// [`PersistError::Io`] when neither variable is set.
+    pub fn from_env() -> Result<Self, PersistError> {
+        if let Ok(root) = std::env::var("DSH_SESSION_ROOT") {
+            if !root.is_empty() {
+                return Ok(Self::with_root(root));
+            }
+        }
+        match std::env::var("DSH_HOME") {
+            Ok(home) if !home.is_empty() => {
+                Ok(Self::with_root(PathBuf::from(home).join("sessions")))
+            }
+            _ => Err(PersistError::Io(
+                "DSH_SESSION_ROOT or DSH_HOME must be set for JSONL persistence".into(),
+            )),
+        }
+    }
+
+    /// Use `root` as the sessions directory.
+    #[must_use]
+    pub fn with_root(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    /// Sessions directory.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// `{root}/{id}/session.jsonl`.
+    #[must_use]
+    pub fn path_for(&self, id: &SessionId) -> PathBuf {
+        self.root.join(id.as_str()).join("session.jsonl")
+    }
+
+    /// Encode the live session as uncompressed JSONL and replace the file.
+    ///
+    /// # Errors
+    ///
+    /// [`PersistError::Corrupt`] on encode failure; [`PersistError::Io`] on create/write.
+    pub fn flush(&self, session: &Session) -> Result<(), PersistError> {
+        let path = self.path_for(session.id());
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| PersistError::Io(error.to_string()))?;
+        }
+        let text = encode_session_log(session.header(), session.events(), false)?;
+        std::fs::write(&path, text).map_err(|error| PersistError::Io(error.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::JsonlSessionStore;
+    use crate::decode_session_log;
+    use dsh_session::{
+        ContentBlock, Message, MessageId, MessageRole, MessageSource, SESSION_FORMAT_VERSION,
+        Session, SessionEvent, SessionHeader, SessionId, SurfaceOp,
+    };
+
+    // Process-global env; Cargo's default harness runs tests in parallel.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn test_temp_dir(prefix: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "{prefix}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        dir
+    }
+
+    fn header(id: &str) -> SessionHeader {
+        SessionHeader {
+            version: SESSION_FORMAT_VERSION,
+            id: SessionId::new(id),
+            created_at: 1,
+            cwd: Some("/work".into()),
+            parent_session: None,
+            seed_length: None,
+            origin: None,
+            delegation_depth: None,
+            agent_preset: None,
+        }
+    }
+
+    #[test]
+    fn flush_writes_uncompressed_jsonl_under_session_id_dir() {
+        let root = test_temp_dir("dsh-store");
+        let store = JsonlSessionStore::with_root(&root);
+        let mut session = Session::new(header("sdk-snapshot-text"));
+        session
+            .append(SessionEvent::UserMessage {
+                seq: 0,
+                time: 0,
+                data: Message {
+                    id: MessageId::new("m0"),
+                    role: MessageRole::User,
+                    content: vec![ContentBlock::Text { text: "hi".into() }],
+                    source: MessageSource::User,
+                },
+                surface_op: Some(SurfaceOp::Append),
+                source_event_seqs: None,
+                ignorable: None,
+            })
+            .unwrap();
+        store.flush(&session).unwrap();
+        let path = store.path_for(&SessionId::new("sdk-snapshot-text"));
+        assert_eq!(path, root.join("sdk-snapshot-text").join("session.jsonl"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.starts_with('\u{28}'), "must not be zstd");
+        assert!(
+            text.contains("\"type\":\"session\"")
+                || text.contains("\"type\": \"session\"")
+                || text.contains("session")
+        );
+        let (decoded_header, events) = decode_session_log(&text).unwrap();
+        assert_eq!(decoded_header.id.as_str(), "sdk-snapshot-text");
+        assert_eq!(events.len(), 1);
+        store.flush(&session).unwrap();
+        let text2 = std::fs::read_to_string(&path).unwrap();
+        let (_, events2) = decode_session_log(&text2).unwrap();
+        assert_eq!(events2.len(), 1);
+    }
+
+    #[test]
+    fn from_env_prefers_dsh_session_root() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let root = test_temp_dir("dsh-store-env");
+        let previous_root = std::env::var("DSH_SESSION_ROOT").ok();
+        let previous_home = std::env::var("DSH_HOME").ok();
+        unsafe {
+            std::env::set_var("DSH_SESSION_ROOT", root.as_os_str());
+            std::env::set_var("DSH_HOME", "/tmp/should-not-use");
+        }
+        let store = JsonlSessionStore::from_env().unwrap();
+        assert_eq!(store.root(), root.as_path());
+        match previous_root {
+            Some(value) => unsafe { std::env::set_var("DSH_SESSION_ROOT", value) },
+            None => unsafe { std::env::remove_var("DSH_SESSION_ROOT") },
+        }
+        match previous_home {
+            Some(value) => unsafe { std::env::set_var("DSH_HOME", value) },
+            None => unsafe { std::env::remove_var("DSH_HOME") },
+        }
+    }
+
+    #[test]
+    fn from_env_uses_dsh_home_sessions_when_root_unset() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let home = test_temp_dir("dsh-home");
+        let previous_root = std::env::var("DSH_SESSION_ROOT").ok();
+        let previous_home = std::env::var("DSH_HOME").ok();
+        unsafe {
+            std::env::remove_var("DSH_SESSION_ROOT");
+            std::env::set_var("DSH_HOME", home.as_os_str());
+        }
+        let store = JsonlSessionStore::from_env().unwrap();
+        assert_eq!(store.root(), home.join("sessions").as_path());
+        match previous_root {
+            Some(value) => unsafe { std::env::set_var("DSH_SESSION_ROOT", value) },
+            None => unsafe { std::env::remove_var("DSH_SESSION_ROOT") },
+        }
+        match previous_home {
+            Some(value) => unsafe { std::env::set_var("DSH_HOME", value) },
+            None => unsafe { std::env::remove_var("DSH_HOME") },
+        }
+    }
+
+    #[test]
+    fn from_env_fails_when_neither_root_nor_home_is_set() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let previous_root = std::env::var("DSH_SESSION_ROOT").ok();
+        let previous_home = std::env::var("DSH_HOME").ok();
+        unsafe {
+            std::env::remove_var("DSH_SESSION_ROOT");
+            std::env::remove_var("DSH_HOME");
+        }
+        let err = JsonlSessionStore::from_env().expect_err("missing");
+        assert!(err.to_string().contains("DSH_SESSION_ROOT or DSH_HOME"));
+        match previous_root {
+            Some(value) => unsafe { std::env::set_var("DSH_SESSION_ROOT", value) },
+            None => unsafe { std::env::remove_var("DSH_SESSION_ROOT") },
+        }
+        match previous_home {
+            Some(value) => unsafe { std::env::set_var("DSH_HOME", value) },
+            None => unsafe { std::env::remove_var("DSH_HOME") },
+        }
+    }
+}
