@@ -3,7 +3,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use dsh_agent_loop::{AgentStatus, LoopAgent, LoopOptions};
+use dsh_agent_loop::{AgentStatus, CancelCause, CancelOptions, LoopAgent, LoopOptions};
+use dsh_kernel::Context;
 use dsh_llm::LlmRuntime;
 use dsh_session::{
     AppendSink, Message, MessageId, SESSION_FORMAT_VERSION, Session, SessionHeader, SessionId,
@@ -15,6 +16,13 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::AgentError;
 
 type SinkFactory = Arc<dyn Fn(&str) -> AppendSink + Send + Sync>;
+type SessionCreateHook = Arc<dyn Fn(&mut Session) + Send + Sync>;
+
+/// Driver permit plus session/inbox state for one live agent.
+struct AgentInner {
+    driver: AsyncMutex<()>,
+    state: Mutex<LoopAgent>,
+}
 
 /// Options for [`AgentRegistry::create`].
 pub struct CreateAgentOptions {
@@ -34,7 +42,7 @@ pub struct CreateAgentOptions {
 #[derive(Clone)]
 pub struct AgentHandle {
     id: SessionId,
-    agent: Arc<AsyncMutex<LoopAgent>>,
+    inner: Arc<AgentInner>,
 }
 
 impl AgentHandle {
@@ -44,36 +52,103 @@ impl AgentHandle {
         &self.id
     }
 
-    /// Lock the live `LoopAgent`. Hold only for short reads or a single `followup`.
-    pub async fn lock(&self) -> tokio::sync::MutexGuard<'_, dsh_agent_loop::LoopAgent> {
-        self.agent.lock().await
+    /// Lock session/inbox state. Hold only for short reads; do not hold across `.await`.
+    pub fn lock(&self) -> std::sync::MutexGuard<'_, LoopAgent> {
+        self.inner.state.lock().expect("loop agent state")
     }
 
-    #[cfg(test)]
-    pub(crate) async fn lock_for_test(
-        &self,
-    ) -> tokio::sync::MutexGuard<'_, dsh_agent_loop::LoopAgent> {
-        self.lock().await
+    /// Queue `message` on next-turn without taking the driver permit.
+    ///
+    /// # Errors
+    ///
+    /// [`AgentError::Loop`] from the inbox splice.
+    pub async fn followup(&self, message: Message) -> Result<(), AgentError> {
+        self.inner
+            .state
+            .lock()
+            .expect("loop agent state")
+            .followup(message)?;
+        Ok(())
+    }
+
+    /// Queue `message` on next-step and latch a wake, without taking the driver permit.
+    ///
+    /// # Errors
+    ///
+    /// [`AgentError::Loop`] from the inbox splice.
+    pub async fn steer(&self, message: Message) -> Result<(), AgentError> {
+        self.inner
+            .state
+            .lock()
+            .expect("loop agent state")
+            .steer(message)?;
+        Ok(())
+    }
+
+    /// Queue `message` on next-step without latching a wake or taking the driver permit.
+    ///
+    /// # Errors
+    ///
+    /// [`AgentError::Loop`] from the inbox splice.
+    pub async fn inject(&self, message: Message) -> Result<(), AgentError> {
+        self.inner
+            .state
+            .lock()
+            .expect("loop agent state")
+            .inject(message)?;
+        Ok(())
+    }
+
+    /// Abort the current reservation, then wait until the driver permit is free.
+    ///
+    /// # Errors
+    ///
+    /// [`AgentError::Loop`] from inbox `clear`.
+    pub async fn cancel(&self) -> Result<(), AgentError> {
+        self.inner
+            .state
+            .lock()
+            .expect("loop agent state")
+            .cancel(CancelCause::User, CancelOptions::default())?;
+        let _driver = self.inner.driver.lock().await;
+        Ok(())
+    }
+
+    /// Acquire the driver permit and drive until idle.
+    ///
+    /// Locks session state only around synchronous mutations and releases it
+    /// across LLM stream and tool-body `.await` points.
+    ///
+    /// # Errors
+    ///
+    /// [`AgentError::Loop`] from the turn driver.
+    pub async fn run_until_idle(&self) -> Result<(), AgentError> {
+        let _driver = self.inner.driver.lock().await;
+        LoopAgent::run_until_idle_locked(&self.inner.state).await?;
+        Ok(())
     }
 }
 
 /// Live agents keyed by session id string.
 pub struct AgentRegistry {
+    ctx: Context,
     agents: Mutex<HashMap<String, AgentHandle>>,
     llm: Arc<Mutex<LlmRuntime>>,
     tools: Arc<Mutex<ToolRuntime>>,
     prompt: SystemPrompt,
     sink_factory: Mutex<Option<SinkFactory>>,
+    session_create: Mutex<Vec<SessionCreateHook>>,
 }
 
 impl AgentRegistry {
     /// Empty registry wrapping owned `llm` / `tools` in new mutexes.
     ///
     /// Tests that do not share kernel services use this constructor.
-    /// [`create`](Self::create) still clones the maps into each `LoopAgent`.
+    /// [`create`](Self::create) stores the same mutex Arcs on each `LoopAgent`.
     #[must_use]
     pub fn new(llm: LlmRuntime, tools: ToolRuntime, prompt: SystemPrompt) -> Self {
         Self::from_shared(
+            Context::new(),
             Arc::new(Mutex::new(llm)),
             Arc::new(Mutex::new(tools)),
             prompt,
@@ -84,20 +159,31 @@ impl AgentRegistry {
     ///
     /// `list_providers`, [`llm`](Self::llm), and [`tools`](Self::tools) lock those
     /// mutexes, so sibling `register_adapter` / `register` on the same mutexes stays
-    /// visible. [`create`](Self::create) clones the maps into each `LoopAgent`.
+    /// visible. [`create`](Self::create) stores the same mutex Arcs on each `LoopAgent`.
     #[must_use]
     pub fn from_shared(
+        ctx: Context,
         llm: Arc<Mutex<LlmRuntime>>,
         tools: Arc<Mutex<ToolRuntime>>,
         prompt: SystemPrompt,
     ) -> Self {
         Self {
+            ctx,
             agents: Mutex::new(HashMap::new()),
             llm,
             tools,
             prompt,
             sink_factory: Mutex::new(None),
+            session_create: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Run `hook` on a newly built session before [`LoopAgent::new`].
+    pub fn on_session_create(&self, hook: Arc<dyn Fn(&mut Session) + Send + Sync>) {
+        self.session_create
+            .lock()
+            .expect("session create")
+            .push(hook);
     }
 
     /// Provider route ids on the shared runtime.
@@ -125,7 +211,7 @@ impl AgentRegistry {
     ///
     /// # Errors
     ///
-    /// [`AgentError::Loop`] when inbox replay of an empty session fails (should not happen).
+    /// [`AgentError::Loop`] when inbox replay of the session fails.
     pub fn create(&self, opts: CreateAgentOptions) -> Result<AgentHandle, AgentError> {
         let key = opts.session_id.as_str().to_string();
         {
@@ -152,7 +238,11 @@ impl AgentRegistry {
         if let Some(factory) = self.sink_factory.lock().expect("sink").clone() {
             session.set_append_sink(Some(factory(opts.session_id.as_str())));
         }
+        for hook in self.session_create.lock().expect("session create").iter() {
+            hook(&mut session);
+        }
         let loop_agent = LoopAgent::new(
+            self.ctx.clone(),
             session,
             LoopOptions {
                 provider: opts.provider,
@@ -160,13 +250,16 @@ impl AgentRegistry {
                 max_tokens: opts.max_tokens,
                 max_parallel_tool_calls: dsh_agent_loop::DEFAULT_MAX_PARALLEL_TOOL_CALLS,
             },
-            self.tools.lock().expect("tools").clone(),
+            Arc::clone(&self.tools),
             self.prompt.clone(),
-            self.llm.lock().expect("llm").clone(),
+            Arc::clone(&self.llm),
         )?;
         let handle = AgentHandle {
             id: opts.session_id,
-            agent: Arc::new(AsyncMutex::new(loop_agent)),
+            inner: Arc::new(AgentInner {
+                driver: AsyncMutex::new(()),
+                state: Mutex::new(loop_agent),
+            }),
         };
         self.agents
             .lock()
@@ -181,16 +274,6 @@ impl AgentRegistry {
         self.agents.lock().expect("agents").get(session_id).cloned()
     }
 
-    async fn lock(
-        &self,
-        session_id: &str,
-    ) -> Result<tokio::sync::OwnedMutexGuard<LoopAgent>, AgentError> {
-        let handle = self
-            .get(session_id)
-            .ok_or_else(|| AgentError::UnknownSession(session_id.to_string()))?;
-        Ok(Arc::clone(&handle.agent).lock_owned().await)
-    }
-
     /// Queue `message` on next-turn. Does not start a driver.
     ///
     /// # Errors
@@ -202,20 +285,23 @@ impl AgentRegistry {
         message: Message,
     ) -> Result<MessageId, AgentError> {
         let id = message.id.clone();
-        let mut agent = self.lock(session_id).await?;
-        agent.followup(message)?;
+        let handle = self
+            .get(session_id)
+            .ok_or_else(|| AgentError::UnknownSession(session_id.to_string()))?;
+        handle.followup(message).await?;
         Ok(id)
     }
 
-    /// Drive until idle. Holds the agent mutex for the whole call.
+    /// Drive until idle. Acquires the driver permit for the whole call.
     ///
     /// # Errors
     ///
     /// [`AgentError::UnknownSession`] or loop failure.
     pub async fn run_until_idle(&self, session_id: &str) -> Result<(), AgentError> {
-        let mut agent = self.lock(session_id).await?;
-        agent.run_until_idle().await?;
-        Ok(())
+        let handle = self
+            .get(session_id)
+            .ok_or_else(|| AgentError::UnknownSession(session_id.to_string()))?;
+        handle.run_until_idle().await
     }
 
     /// Current whole-agent status.
@@ -224,8 +310,10 @@ impl AgentRegistry {
     ///
     /// [`AgentError::UnknownSession`].
     pub async fn status(&self, session_id: &str) -> Result<AgentStatus, AgentError> {
-        let agent = self.lock(session_id).await?;
-        Ok(agent.status())
+        let handle = self
+            .get(session_id)
+            .ok_or_else(|| AgentError::UnknownSession(session_id.to_string()))?;
+        Ok(handle.lock().status())
     }
 
     /// [`run_until_idle`](Self::run_until_idle) then assert idle.
@@ -297,7 +385,7 @@ mod tests {
         registry.when_idle("sess-1").await.unwrap();
         assert_eq!(registry.status("sess-1").await.unwrap(), AgentStatus::Idle);
         let agent = registry.get("sess-1").unwrap();
-        let guard = agent.lock_for_test().await;
+        let guard = agent.lock();
         let serialized = format!("{:?}", guard.session.events());
         assert!(serialized.contains("hello from registry"), "{serialized}");
         let completed = guard.session.events().iter().any(|event| {
@@ -310,11 +398,10 @@ mod tests {
         assert!(completed);
     }
 
-    #[allow(unused_mut)]
     #[tokio::test]
     async fn append_sink_receives_session_events() {
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let mut registry = registry_with_text("sink-hi");
+        let registry = registry_with_text("sink-hi");
         let seen_clone = Arc::clone(&seen);
         registry.set_sink_factory(Some(Arc::new(move |_id: &str| {
             let seen = Arc::clone(&seen_clone);
@@ -364,10 +451,136 @@ mod tests {
     }
 
     #[test]
+    fn session_create_hook_runs_before_loop_agent_is_published() {
+        let registry = registry_with_text("unused");
+        registry.on_session_create(Arc::new(|session| {
+            session
+                .append(SessionEvent::AgentInboxSpliced {
+                    seq: 0,
+                    time: 0,
+                    data: dsh_session::InboxSplicedData {
+                        target: dsh_session::InboxTarget::NextTurn,
+                        start: 0,
+                        removed_count: None,
+                        inserted: vec![Message {
+                            id: MessageId::new("from-hook"),
+                            role: MessageRole::User,
+                            content: vec![ContentBlock::Text {
+                                text: "hook-message".into(),
+                            }],
+                            source: MessageSource::User,
+                        }],
+                        outcome: None,
+                    },
+                    ignorable: None,
+                })
+                .expect("hook append");
+        }));
+        let handle = registry
+            .create(CreateAgentOptions {
+                session_id: SessionId::new("sess-hook"),
+                cwd: None,
+                provider: "mock".into(),
+                model: "mock".into(),
+                max_tokens: None,
+            })
+            .unwrap();
+        let agent = handle.lock();
+        assert!(
+            agent
+                .inbox
+                .next_turn()
+                .iter()
+                .any(|message| message.id.as_str() == "from-hook"),
+            "LoopAgent::new must replay splices the session-create hook appended"
+        );
+    }
+
+    fn inbox_contains(handle: &super::AgentHandle, text: &str) -> bool {
+        let agent = handle.lock();
+        agent
+            .inbox
+            .next_turn()
+            .iter()
+            .chain(agent.inbox.next_step().iter())
+            .any(|message| {
+                message.content.iter().any(|block| match block {
+                    ContentBlock::Text { text: body } => body == text,
+                    _ => false,
+                })
+            })
+    }
+
+    fn user_text(id: &str, text: &str) -> Message {
+        Message {
+            id: MessageId::new(id),
+            role: MessageRole::User,
+            content: vec![ContentBlock::Text { text: text.into() }],
+            source: MessageSource::User,
+        }
+    }
+
+    async fn hanging_tool_agent() -> super::AgentHandle {
+        use dsh_llm::tool_call_response;
+        use dsh_tools::ToolDefinition;
+        let adapter = Arc::new(MockAdapter::new(vec![MockScript::Chunks(
+            tool_call_response("c1", "hang", &serde_json::json!({}), None),
+        )]));
+        let mut llm = LlmRuntime::new();
+        llm.register_adapter("mock", adapter);
+        let mut tools = ToolRuntime::new(ToolPresentationMode::Native);
+        tools.register(ToolDefinition {
+            name: "hang".into(),
+            description: "never returns".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            execute: Box::new(|_args, exec| {
+                Box::pin(async move {
+                    exec.signal.cancelled().await;
+                    Err(dsh_tools::ToolError::Other("hung until cancel".into()))
+                })
+            }),
+            render: Box::new(|_, _| Vec::new()),
+            is_concurrency_safe: None,
+        });
+        let registry = AgentRegistry::new(
+            llm,
+            tools,
+            SystemPrompt::new(SystemPromptConfig::default()).unwrap(),
+        );
+        let handle = registry
+            .create(CreateAgentOptions {
+                session_id: SessionId::new("hang-1"),
+                cwd: None,
+                provider: "mock".into(),
+                model: "mock".into(),
+                max_tokens: None,
+            })
+            .unwrap();
+        handle.followup(user_text("go", "go")).await.unwrap();
+        handle
+    }
+
+    #[tokio::test]
+    async fn followup_during_tool_await_does_not_need_driver_permit() {
+        let agent = hanging_tool_agent().await;
+        let handle = agent.clone();
+        let driver = tokio::spawn(async move { handle.run_until_idle().await });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        agent
+            .followup(user_text("settlement", "settlement"))
+            .await
+            .unwrap();
+        assert!(inbox_contains(&agent, "settlement"));
+        agent.cancel().await.unwrap();
+        let _ = driver.await;
+    }
+
+    #[test]
     fn from_shared_sees_adapter_registered_on_the_same_mutex() {
         let llm = Arc::new(Mutex::new(LlmRuntime::new()));
         let tools = Arc::new(Mutex::new(ToolRuntime::new(ToolPresentationMode::Native)));
         let registry = AgentRegistry::from_shared(
+            dsh_kernel::Context::new(),
             Arc::clone(&llm),
             Arc::clone(&tools),
             SystemPrompt::new(SystemPromptConfig::default()).unwrap(),

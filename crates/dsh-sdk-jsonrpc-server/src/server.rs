@@ -217,7 +217,7 @@ impl HarnessSdkJsonRpcServer {
             );
             let _ = agents.when_idle(&session_id).await;
             if let Some(handle) = agents.get(&session_id) {
-                let guard = handle.lock().await;
+                let guard = handle.lock();
                 let _ = sessions.flush(&guard.session);
             }
             let idle = SessionStatusNotification::new(session_id, SessionStatus::Idle);
@@ -398,8 +398,8 @@ mod tests {
         let types: Vec<String> = Vec::new();
         // Hang never emits turn/end; the result already returned.
         let _ = types;
-        // `when_idle` holds the agent mutex for the Hang stream. Abort the recorded
-        // request signal so `LoopAgent::cancel` can lock afterwards.
+        // `when_idle` holds the driver permit for the Hang stream. Abort the recorded
+        // request signal so `LoopAgent::cancel` can settle afterwards.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             let aborted = {
@@ -421,7 +421,7 @@ mod tests {
         }
         let handle = agents.get("sess-lazy").expect("agent");
         {
-            let mut guard = handle.lock().await;
+            let mut guard = handle.lock();
             guard
                 .cancel(CancelCause::User, CancelOptions::default())
                 .expect("cancel");

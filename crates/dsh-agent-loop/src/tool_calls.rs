@@ -2,6 +2,9 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context as TaskContext, Poll, Wake, Waker};
+use std::thread::{self, Thread};
 
 use dsh_session::{
     CallId, ContentBlock, Message, MessageId, MessageRole, MessageSource, Session, SessionEvent,
@@ -21,6 +24,33 @@ use crate::error::LoopError;
 type DispatchFuture = Pin<Box<dyn Future<Output = ScheduledToolDispatch> + Send>>;
 type InFlightFuture =
     Pin<Box<dyn Future<Output = (usize, ToolExecution, ScheduledToolDispatch)> + Send>>;
+
+/// Session and tool-runtime access for one scheduled tool-call group.
+pub(crate) trait ToolCallHost {
+    /// Run `f` with exclusive access to the session log.
+    fn with_session<R>(&mut self, f: impl FnOnce(&mut Session) -> R) -> R;
+    /// Shared tool runtime. Callers lock around `prepare` / `finalize` and drop
+    /// the guard across `dispatch` `.await`.
+    fn tools(&self) -> &Mutex<ToolRuntime>;
+}
+
+/// Direct session and tools mutex, used by in-process [`crate::LoopAgent`] tests.
+pub(crate) struct DirectHost<'a> {
+    /// Session log that receives `tool/call` and `tool/result`.
+    pub session: &'a mut Session,
+    /// Shared tool runtime.
+    pub tools: &'a Mutex<ToolRuntime>,
+}
+
+impl ToolCallHost for DirectHost<'_> {
+    fn with_session<R>(&mut self, f: impl FnOnce(&mut Session) -> R) -> R {
+        f(self.session)
+    }
+
+    fn tools(&self) -> &Mutex<ToolRuntime> {
+        self.tools
+    }
+}
 
 /// Whether the scheduled calls ended the turn or stopped on abort.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -47,10 +77,9 @@ struct GroupOutcome {
 /// Schedule one assistant step's tool-call blocks in model order.
 ///
 /// Exclusive calls are a barrier of one and run the full tool pipeline.
-/// Parallel-safe calls run [`ToolRuntime::prepare`] serially on `&mut ToolRuntime`
-/// (pre / approval / guards, collapse, abort-before-body, real tokens), then
-/// join [`ToolRuntime::dispatch`] futures without holding `&mut ToolRuntime`
-/// across the body `.await`, then [`ToolRuntime::finalize`]. A later sibling
+/// Parallel-safe calls run [`ToolRuntime::prepare`] serially while the tools
+/// mutex is held, overlap [`ToolRuntime::dispatch`] bodies without that mutex,
+/// then [`ToolRuntime::finalize`]. A later sibling
 /// is reclassified before start, and an exclusive reclassification stops
 /// replenishing the pool. Abort stops new starts, drains in-flight bodies, and
 /// appends synthetic `ABORTED_BEFORE_DISPATCH` results for not-started calls.
@@ -61,9 +90,8 @@ struct GroupOutcome {
 ///
 /// [`LoopError::Session`] when a `tool/call` or `tool/result` append is rejected.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn execute_tool_calls(
-    session: &mut Session,
-    tools: &mut ToolRuntime,
+pub(crate) async fn execute_tool_calls<H: ToolCallHost>(
+    host: &mut H,
     turn: u64,
     step: u64,
     tool_calls: &[ContentBlock],
@@ -76,15 +104,14 @@ pub(crate) async fn execute_tool_calls(
     let mut concluded = false;
     while next < planned.len() {
         let input = planned_input(&planned[next], signal);
-        let mode = tools.execution_mode(&input);
+        let mode = host.tools().lock().expect("tools").execution_mode(&input);
         let group_end = if mode == ToolExecutionMode::Parallel {
             planned.len()
         } else {
             next + 1
         };
         let outcome = run_group(
-            session,
-            tools,
+            host,
             turn,
             step,
             &planned[next..group_end],
@@ -98,7 +125,7 @@ pub(crate) async fn execute_tool_calls(
         concluded |= outcome.concluded;
         if outcome.aborted {
             for call in &planned[next..] {
-                append_skipped_tool_call(session, turn, step, call)?;
+                append_skipped_tool_call(host, turn, step, call)?;
             }
             return Ok(ToolCallsOutcome {
                 concluded,
@@ -143,9 +170,8 @@ fn planned_input(call: &PlannedCall, signal: &AbortFlag) -> ToolExecutionInput {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_group(
-    session: &mut Session,
-    tools: &mut ToolRuntime,
+async fn run_group<H: ToolCallHost>(
+    host: &mut H,
     turn: u64,
     step: u64,
     group: &[PlannedCall],
@@ -172,12 +198,16 @@ async fn run_group(
         while !aborted && next_to_start < group.len() && in_flight.len() < pool_limit {
             if next_to_start > 0 && mode == ToolExecutionMode::Parallel {
                 let input = planned_input(&group[next_to_start], signal);
-                if tools.execution_mode(&input) != ToolExecutionMode::Parallel {
+                if host.tools().lock().expect("tools").execution_mode(&input)
+                    != ToolExecutionMode::Parallel
+                {
                     break;
                 }
             }
             let index = next_to_start;
-            call_seqs[index] = match append_tool_call(session, turn, step, &group[index]) {
+            call_seqs[index] = match host
+                .with_session(|session| append_tool_call(session, turn, step, &group[index]))
+            {
                 Ok(seq) => seq,
                 Err(error) => {
                     drain_in_flight(&mut in_flight).await;
@@ -187,20 +217,21 @@ async fn run_group(
             started += 1;
             next_to_start += 1;
             if mode == ToolExecutionMode::Parallel {
-                match start_parallel(tools, &group[index], signal).await {
+                match start_parallel(host.tools(), &group[index], signal) {
                     StartKind::InFlight { exec, body } => {
                         in_flight.push(Box::pin(async move { (index, exec, body.await) }));
                     }
                     StartKind::Ready(result) => slots[index] = Some(result),
                 }
             } else {
-                slots[index] = Some(tools.execute(planned_input(&group[index], signal)).await);
+                slots[index] =
+                    Some(execute_locked(host.tools(), planned_input(&group[index], signal)).await);
             }
             if signal.is_aborted() {
                 aborted = true;
             }
             if let Err(error) = commit_ready(
-                session,
+                host,
                 turn,
                 step,
                 group,
@@ -221,12 +252,12 @@ async fn run_group(
         let Some((index, exec, dispatched)) = in_flight.next().await else {
             break;
         };
-        slots[index] = Some(settle_dispatch(tools, &exec, dispatched).await);
+        slots[index] = Some(settle_dispatch(host.tools(), &exec, dispatched));
         if signal.is_aborted() {
             aborted = true;
         }
         if let Err(error) = commit_ready(
-            session,
+            host,
             turn,
             step,
             group,
@@ -243,7 +274,7 @@ async fn run_group(
 
     if aborted {
         for call in &group[started..] {
-            append_skipped_tool_call(session, turn, step, call)?;
+            append_skipped_tool_call(host, turn, step, call)?;
         }
         return Ok(GroupOutcome {
             consumed: group.len(),
@@ -266,32 +297,95 @@ enum StartKind {
     Ready(ToolExecutionResult),
 }
 
-async fn start_parallel(
-    tools: &mut ToolRuntime,
-    call: &PlannedCall,
-    signal: &AbortFlag,
-) -> StartKind {
-    let prepared = tools.prepare(planned_input(call, signal)).await;
+fn start_parallel(tools: &Mutex<ToolRuntime>, call: &PlannedCall, signal: &AbortFlag) -> StartKind {
+    let prepared = prepare_locked(tools, planned_input(call, signal));
     match prepared {
         ScheduledToolPreparation::Dispatch { exec } => {
-            let body = tools.dispatch(&exec);
+            let body = dispatch_locked(tools, &exec);
             StartKind::InFlight { exec, body }
         }
-        ScheduledToolPreparation::PostResult { exec, result } => {
-            StartKind::Ready(tools.finalize(&exec, result).await)
-        }
+        ScheduledToolPreparation::PostResult { exec, result } => StartKind::Ready(settle_dispatch(
+            tools,
+            &exec,
+            ScheduledToolDispatch::PostResult { result },
+        )),
         ScheduledToolPreparation::FinalResult { result, .. } => StartKind::Ready(result),
     }
 }
 
-async fn settle_dispatch(
-    tools: &ToolRuntime,
+async fn execute_locked(
+    tools: &Mutex<ToolRuntime>,
+    input: ToolExecutionInput,
+) -> ToolExecutionResult {
+    let prepared = prepare_locked(tools, input);
+    match prepared {
+        ScheduledToolPreparation::Dispatch { exec } => {
+            let body = dispatch_locked(tools, &exec);
+            let dispatched = body.await;
+            settle_dispatch(tools, &exec, dispatched)
+        }
+        ScheduledToolPreparation::PostResult { exec, result } => {
+            settle_dispatch(tools, &exec, ScheduledToolDispatch::PostResult { result })
+        }
+        ScheduledToolPreparation::FinalResult { result, .. } => result,
+    }
+}
+
+fn settle_dispatch(
+    tools: &Mutex<ToolRuntime>,
     exec: &ToolExecution,
     dispatched: ScheduledToolDispatch,
 ) -> ToolExecutionResult {
     match dispatched {
-        ScheduledToolDispatch::PostResult { result } => tools.finalize(exec, result).await,
+        ScheduledToolDispatch::PostResult { result } => finalize_locked(tools, exec, result),
         ScheduledToolDispatch::FinalResult { result } => result,
+    }
+}
+
+/// Lock `tools` for [`ToolRuntime::prepare`] and drop the guard before returning.
+///
+/// `std::sync::MutexGuard` is `!Send`, so the future is driven to completion
+/// here rather than `.await`ed in a `Send` task.
+fn prepare_locked(
+    tools: &Mutex<ToolRuntime>,
+    input: ToolExecutionInput,
+) -> ScheduledToolPreparation {
+    let mut tools = tools.lock().expect("tools");
+    block_on(tools.prepare(input))
+}
+
+fn dispatch_locked(tools: &Mutex<ToolRuntime>, exec: &ToolExecution) -> DispatchFuture {
+    let tools = tools.lock().expect("tools");
+    tools.dispatch(exec)
+}
+
+/// Lock `tools` for [`ToolRuntime::finalize`] and drop the guard before returning.
+fn finalize_locked(
+    tools: &Mutex<ToolRuntime>,
+    exec: &ToolExecution,
+    result: ToolExecutionResult,
+) -> ToolExecutionResult {
+    let tools = tools.lock().expect("tools");
+    block_on(tools.finalize(exec, result))
+}
+
+struct ThreadWaker(Thread);
+
+impl Wake for ThreadWaker {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark();
+    }
+}
+
+fn block_on<F: Future>(future: F) -> F::Output {
+    let waker = Waker::from(Arc::new(ThreadWaker(thread::current())));
+    let mut cx = TaskContext::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    loop {
+        match future.as_mut().poll(&mut cx) {
+            Poll::Ready(output) => return output,
+            Poll::Pending => thread::park(),
+        }
     }
 }
 
@@ -300,8 +394,8 @@ async fn drain_in_flight(in_flight: &mut FuturesUnordered<InFlightFuture>) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn commit_ready(
-    session: &mut Session,
+fn commit_ready<H: ToolCallHost>(
+    host: &mut H,
     turn: u64,
     step: u64,
     group: &[PlannedCall],
@@ -316,15 +410,17 @@ fn commit_ready(
             break;
         };
         let call = &group[*committed];
-        append_tool_result(
-            session,
-            turn,
-            step,
-            call,
-            &result,
-            call_seqs[*committed],
-            accept_context,
-        )?;
+        host.with_session(|session| {
+            append_tool_result(
+                session,
+                turn,
+                step,
+                call,
+                &result,
+                call_seqs[*committed],
+                accept_context,
+            )
+        })?;
         *concluded |= matches!(
             result,
             ToolExecutionResult::Success {
@@ -337,22 +433,24 @@ fn commit_ready(
     Ok(())
 }
 
-fn append_skipped_tool_call(
-    session: &mut Session,
+fn append_skipped_tool_call<H: ToolCallHost>(
+    host: &mut H,
     turn: u64,
     step: u64,
     call: &PlannedCall,
 ) -> Result<(), LoopError> {
-    let call_seq = append_tool_call(session, turn, step, call)?;
-    append_tool_result(
-        session,
-        turn,
-        step,
-        call,
-        &aborted_before_dispatch(),
-        call_seq,
-        &mut |_| {},
-    )
+    let call_seq = host.with_session(|session| append_tool_call(session, turn, step, call))?;
+    host.with_session(|session| {
+        append_tool_result(
+            session,
+            turn,
+            step,
+            call,
+            &aborted_before_dispatch(),
+            call_seq,
+            &mut |_| {},
+        )
+    })
 }
 
 fn append_tool_call(
@@ -471,7 +569,7 @@ fn aborted_before_dispatch() -> ToolExecutionResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{ToolCallsOutcome, execute_tool_calls};
+    use super::{DirectHost, ToolCallsOutcome, execute_tool_calls};
     use crate::test_header;
     use dsh_session::{CallId, ContentBlock, LogEvent, Session, SessionEvent};
     use dsh_tools::{
@@ -480,6 +578,7 @@ mod tests {
     };
     use serde_json::json;
     use std::sync::Arc;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn tool_call(id: &str, name: &str, args: serde_json::Value) -> ContentBlock {
@@ -541,10 +640,13 @@ mod tests {
             tool_call("c1", "slow", json!({"id": "a"})),
             tool_call("c2", "slow", json!({"id": "b"})),
         ];
+        let tools = Mutex::new(tools);
         let mut extra = Vec::new();
         let outcome = execute_tool_calls(
-            &mut session,
-            &mut tools,
+            &mut DirectHost {
+                session: &mut session,
+                tools: &tools,
+            },
             1,
             1,
             &blocks,
@@ -587,10 +689,13 @@ mod tests {
             tool_call("c1", "slow", json!({"id": "a"})),
             tool_call("c2", "slow", json!({"id": "b"})),
         ];
+        let tools = Mutex::new(tools);
         let mut extra = Vec::new();
         let outcome = execute_tool_calls(
-            &mut session,
-            &mut tools,
+            &mut DirectHost {
+                session: &mut session,
+                tools: &tools,
+            },
             1,
             1,
             &blocks,
@@ -639,10 +744,13 @@ mod tests {
             tool_call("c1", "par", json!({"id": "a"})),
             tool_call("c2", "par", json!({"id": "b"})),
         ];
+        let tools = Mutex::new(tools);
         let mut extra = Vec::new();
         let outcome = execute_tool_calls(
-            &mut session,
-            &mut tools,
+            &mut DirectHost {
+                session: &mut session,
+                tools: &tools,
+            },
             1,
             1,
             &blocks,

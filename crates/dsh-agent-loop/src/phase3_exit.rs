@@ -30,6 +30,9 @@ mod tests {
             "parallel_siblings_start_together_exclusive_is_a_barrier",
             "each_step_request_append_extends_the_previous",
             "header_change_is_logged_when_the_canonical_header_differs",
+            "pre_step_waterfall_must_call_next_to_keep_claimed_messages",
+            "pre_step_without_next_rejects_the_step",
+            "request_error_retry_without_next_owns_recovery",
         ] {
             assert!(source.contains(name), "missing ported test {name}");
         }

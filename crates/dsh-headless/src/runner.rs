@@ -77,7 +77,7 @@ async fn run_inner(
     let key = handle.id().as_str().to_string();
     agents.when_idle(&key).await?;
     let first_seq = {
-        let guard = handle.lock().await;
+        let guard = handle.lock();
         guard.session.events().len() as u64
     };
     let message = Message {
@@ -89,7 +89,7 @@ async fn run_inner(
     agents.followup(&key, message).await?;
     agents.when_idle(&key).await?;
     {
-        let guard = handle.lock().await;
+        let guard = handle.lock();
         sessions.flush(&guard.session)?;
         let outcome = summarize(guard.session.events(), first_seq);
         io.write_stdout(&format!("{}\n", outcome.text));

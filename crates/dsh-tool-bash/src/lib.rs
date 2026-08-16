@@ -259,6 +259,7 @@ mod tests {
         let mut llm = LlmRuntime::new();
         llm.register_adapter("mock", adapter);
         let mut agent = LoopAgent::new(
+            dsh_kernel::Context::new(),
             Session::new(header("/")),
             LoopOptions {
                 provider: "mock".into(),
@@ -266,9 +267,9 @@ mod tests {
                 max_tokens: None,
                 max_parallel_tool_calls: 10,
             },
-            tools,
+            Arc::new(std::sync::Mutex::new(tools)),
             SystemPrompt::new(SystemPromptConfig::default()).unwrap(),
-            llm,
+            Arc::new(std::sync::Mutex::new(llm)),
         )
         .unwrap();
         agent
@@ -314,6 +315,7 @@ mod tests {
         let mut llm = LlmRuntime::new();
         llm.register_adapter("mock", adapter);
         let mut agent = LoopAgent::new(
+            dsh_kernel::Context::new(),
             Session::new(header(&dir.to_string_lossy())),
             LoopOptions {
                 provider: "mock".into(),
@@ -321,9 +323,9 @@ mod tests {
                 max_tokens: None,
                 max_parallel_tool_calls: 10,
             },
-            tools,
+            Arc::new(std::sync::Mutex::new(tools)),
             SystemPrompt::new(SystemPromptConfig::default()).unwrap(),
-            llm,
+            Arc::new(std::sync::Mutex::new(llm)),
         )
         .unwrap();
         agent

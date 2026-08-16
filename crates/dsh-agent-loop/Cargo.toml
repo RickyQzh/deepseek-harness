@@ -9,6 +9,7 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
+dsh-kernel = { path = "../dsh-kernel" }
 dsh-llm = { path = "../dsh-llm" }
 dsh-session = { path = "../dsh-session" }
 dsh-system-prompt = { path = "../dsh-system-prompt" }

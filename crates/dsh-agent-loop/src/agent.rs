@@ -1,7 +1,9 @@
 //! Idle / maintenance / running phase machine, sticky turn reasons, and tool dispatch.
 
 use std::future::Future;
+use std::sync::{Arc, Mutex};
 
+use dsh_kernel::{Context, Next};
 use dsh_llm::{BlockAssembler, GenerateOptions, LlmRuntime};
 use dsh_session::{
     AssistantChunkData, AssistantMessageData, ContentBlock, EpochHeader, FinishReason, InboxTarget,
@@ -19,6 +21,7 @@ use futures::StreamExt;
 use crate::error::LoopError;
 use crate::inbox::Inbox;
 use crate::runtime_context::RuntimeContextProjection;
+use crate::tool_calls::{ToolCallHost, ToolCallsOutcome};
 
 #[cfg(test)]
 pub use crate::RUNTIME_CONTEXT_SOURCE;
@@ -26,9 +29,12 @@ pub use crate::RUNTIME_CONTEXT_SOURCE;
 /// Default maximum in-flight parallel-safe tool calls per agent step.
 pub const DEFAULT_MAX_PARALLEL_TOOL_CALLS: usize = 10;
 
-type PreStepListener = Box<dyn Fn(&LoopAgent, Vec<Message>) -> PreStepDecision + Send + Sync>;
+/// Kernel waterfall name for pre-step admission.
+pub const EVENT_AGENT_PRE_STEP: &str = "agent/pre-step";
+/// Kernel waterfall name for model-request error recovery.
+pub const EVENT_AGENT_REQUEST_ERROR: &str = "agent/request-error";
+
 type RequestListener = Box<dyn Fn(&LlmCallConfig) -> LlmCallConfig + Send + Sync>;
-type RequestErrorListener = Box<dyn Fn(&LlmFailure) -> RequestErrorAction + Send + Sync>;
 
 /// Externally visible activity: maintenance reports idle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,6 +112,30 @@ pub enum RequestErrorAction {
     Fail,
 }
 
+/// Extra fields a pre-step listener may read. The waterfall value is [`PreStepDecision`].
+#[derive(Clone, Debug)]
+pub struct PreStepPayload {
+    /// Claimed user-role messages plus an optional runtime-context snapshot.
+    pub messages: Vec<Message>,
+    /// Open turn number.
+    pub turn: u64,
+    /// Step that would be entered; `0` before the first step of the turn.
+    pub step: u64,
+}
+
+/// Extra fields a request-error listener may read. The waterfall value is [`RequestErrorAction`].
+#[derive(Clone, Debug)]
+pub struct RequestErrorPayload {
+    /// Turn of the failed request.
+    pub turn: u64,
+    /// Step of the failed request.
+    pub step: u64,
+    /// Provider route of the failed request.
+    pub provider: String,
+    /// Terminal model-request failure.
+    pub failure: LlmFailure,
+}
+
 /// Route and scheduler defaults for one loop instance.
 #[derive(Clone, Debug)]
 pub struct LoopOptions {
@@ -157,18 +187,17 @@ pub struct LoopAgent {
     pub session: Session,
     /// Durable pending-message projection.
     pub inbox: Inbox,
-    /// Tool registry used by later tool-call scheduling.
-    pub tools: ToolRuntime,
+    /// Shared tool registry used by tool-call scheduling.
+    pub tools: Arc<Mutex<ToolRuntime>>,
     /// System prompt and runtime-context assembly.
     pub prompt: SystemPrompt,
-    /// Adapter registry used to stream model output.
-    pub llm: LlmRuntime,
+    /// Shared adapter registry used to stream model output.
+    pub llm: Arc<Mutex<LlmRuntime>>,
+    ctx: Context,
     phase: Phase,
     request_header_logged: bool,
     runtime_context: RuntimeContextProjection,
-    pre_step: Vec<PreStepListener>,
     on_request: Vec<RequestListener>,
-    on_request_error: Vec<RequestErrorListener>,
     wake_latched: bool,
     cancel_cause: Option<CancelCause>,
 }
@@ -180,11 +209,12 @@ impl LoopAgent {
     ///
     /// [`LoopError::Invalid`] when persisted inbox splices do not apply.
     pub fn new(
+        ctx: Context,
         session: Session,
         options: LoopOptions,
-        tools: ToolRuntime,
+        tools: Arc<Mutex<ToolRuntime>>,
         prompt: SystemPrompt,
-        llm: LlmRuntime,
+        llm: Arc<Mutex<LlmRuntime>>,
     ) -> Result<Self, LoopError> {
         let inbox = Inbox::replay(&session)?;
         let runtime_context = RuntimeContextProjection::replay(&session);
@@ -196,12 +226,11 @@ impl LoopAgent {
             tools,
             prompt,
             llm,
+            ctx,
             phase: Phase::Idle { last_turn },
             request_header_logged: false,
             runtime_context,
-            pre_step: Vec::new(),
             on_request: Vec::new(),
-            on_request_error: Vec::new(),
             wake_latched: false,
             cancel_cause: None,
             session,
@@ -272,12 +301,16 @@ impl LoopAgent {
         Ok(())
     }
 
-    /// Append a pre-step listener. An empty listener list uses claimed messages plus an optional snapshot.
-    pub fn on_pre_step(
-        &mut self,
-        listener: impl Fn(&LoopAgent, Vec<Message>) -> PreStepDecision + Send + Sync + 'static,
-    ) {
-        self.pre_step.push(Box::new(listener));
+    /// Register a kernel waterfall listener on [`EVENT_AGENT_PRE_STEP`].
+    ///
+    /// A listener that returns without calling `next` short-circuits. An empty
+    /// listener list keeps claimed messages plus an optional snapshot.
+    pub fn on_pre_step<F, Fut>(&self, listener: F)
+    where
+        F: Fn(PreStepDecision, Next<PreStepDecision>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = PreStepDecision> + Send + 'static,
+    {
+        let _ = self.ctx.on_waterfall(EVENT_AGENT_PRE_STEP, listener);
     }
 
     /// Append a request-config listener. Listeners run in registration order over the seed config.
@@ -288,12 +321,16 @@ impl LoopAgent {
         self.on_request.push(Box::new(listener));
     }
 
-    /// Append a request-error listener. The last listener's action is used; default is fail.
-    pub fn on_request_error(
-        &mut self,
-        listener: impl Fn(&LlmFailure) -> RequestErrorAction + Send + Sync + 'static,
-    ) {
-        self.on_request_error.push(Box::new(listener));
+    /// Register a kernel waterfall listener on [`EVENT_AGENT_REQUEST_ERROR`].
+    ///
+    /// A listener that returns without calling `next` owns recovery. The default
+    /// seed is [`RequestErrorAction::Fail`].
+    pub fn on_request_error<F, Fut>(&self, listener: F)
+    where
+        F: Fn(RequestErrorAction, Next<RequestErrorAction>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = RequestErrorAction> + Send + 'static,
+    {
+        let _ = self.ctx.on_waterfall(EVENT_AGENT_REQUEST_ERROR, listener);
     }
 
     /// Run `job` while the agent is reserved as maintenance. A latched wake is consumed on return
@@ -344,41 +381,20 @@ impl LoopAgent {
     /// [`LoopError::Session`] when a log append fails.
     /// [`LoopError::Prompt`] when prompt assembly or render fails.
     pub async fn run_until_idle(&mut self) -> Result<(), LoopError> {
-        if !matches!(self.phase, Phase::Idle { .. }) {
-            return Err(self.active_work_error());
-        }
-        loop {
-            let Phase::Idle { last_turn } = self.phase else {
-                return Err(self.active_work_error());
-            };
-            if self.inbox.next_turn().is_empty() && !self.wake_latched {
-                return Ok(());
-            }
-            self.wake_latched = false;
-            self.phase = Phase::Running {
-                abort: AbortFlag::new(),
-                turn: last_turn,
-                step: 0,
-                wake_requested: false,
-            };
-            let drive = self.drive_running().await;
-            let (last_turn, wake_requested) = match &self.phase {
-                Phase::Running {
-                    turn,
-                    wake_requested,
-                    ..
-                } => (*turn, *wake_requested),
-                Phase::Idle { last_turn } => (*last_turn, false),
-                Phase::Maintenance { last_turn, .. } => (*last_turn, false),
-            };
-            self.phase = Phase::Idle { last_turn };
-            drive?;
-            if wake_requested && self.inbox.has_pending() {
-                self.wake_latched = true;
-                continue;
-            }
-            return Ok(());
-        }
+        drive(&mut DriveTarget::Exclusive(self)).await
+    }
+
+    /// Drive turns while locking `state` only around synchronous session mutations.
+    ///
+    /// Releases `state` across the pre-step waterfall, the LLM stream, the
+    /// request-error waterfall, and tool-body `.await` points so a concurrent
+    /// [`Self::followup`] can splice the inbox.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::run_until_idle`].
+    pub async fn run_until_idle_locked(state: &Mutex<Self>) -> Result<(), LoopError> {
+        drive(&mut DriveTarget::Shared(state)).await
     }
 
     fn send(
@@ -442,12 +458,7 @@ impl LoopAgent {
         ))
     }
 
-    async fn drive_running(&mut self) -> Result<(), LoopError> {
-        while self.turn().await? {}
-        Ok(())
-    }
-
-    async fn turn(&mut self) -> Result<bool, LoopError> {
+    fn begin_turn(&mut self) -> Result<u64, LoopError> {
         let Phase::Running { turn, abort, .. } = &self.phase else {
             return Err(LoopError::Invalid(format!(
                 "agent \"{}\": turn without driver reservation",
@@ -470,152 +481,13 @@ impl LoopAgent {
             data: TurnStartData { turn },
             ignorable: None,
         })?;
-
-        let mut turn_ends: Option<TurnEndReason> = None;
-        let body = self.run_turn_steps(turn, &mut turn_ends).await;
-        if let Err(error) = &body {
-            if turn_ends.is_none() {
-                turn_ends = Some(if self.is_aborted() {
-                    TurnEndReason::Aborted {
-                        reason: self.cancel_reason_json(),
-                    }
-                } else {
-                    TurnEndReason::Error {
-                        error: llm_failure_from_loop_error(error),
-                    }
-                });
-            }
-        }
-        let reason = turn_ends.unwrap_or(TurnEndReason::Completed);
-        let aborted_turn = self.is_aborted() || matches!(reason, TurnEndReason::Aborted { .. });
-        let end_result = self.push_event(|seq| SessionEvent::TurnEnd {
-            seq,
-            time: seq as i64,
-            data: TurnEndData { turn, reason },
-            ignorable: None,
-        });
-        body?;
-        end_result?;
-        if aborted_turn {
-            return Ok(false);
-        }
-        if !self.inbox.has_pending() {
-            return Ok(false);
-        }
-        if let Phase::Running {
-            abort,
-            step,
-            wake_requested,
-            ..
-        } = &mut self.phase
-        {
-            *abort = AbortFlag::new();
-            *step = 0;
-            *wake_requested = false;
-        }
-        Ok(true)
+        Ok(turn)
     }
 
-    async fn run_turn_steps(
-        &mut self,
-        turn: u64,
-        turn_ends: &mut Option<TurnEndReason>,
-    ) -> Result<(), LoopError> {
-        let mut target = InboxTarget::NextTurn;
-        loop {
-            if self.is_aborted() {
-                *turn_ends = Some(TurnEndReason::Aborted {
-                    reason: self.cancel_reason_json(),
-                });
-                return Err(LoopError::Invalid(format!(
-                    "agent \"{}\" aborted",
-                    self.id.as_str()
-                )));
-            }
-            let (decision, assembly) = self.pre_step(target)?;
-            match decision {
-                PreStepDecision::Reject => {
-                    *turn_ends = Some(TurnEndReason::Blocked);
-                    return Ok(());
-                }
-                PreStepDecision::Enter { messages } => {
-                    let step_zero = matches!(self.phase, Phase::Running { step: 0, .. });
-                    if step_zero && messages.is_empty() {
-                        *turn_ends = Some(TurnEndReason::Completed);
-                        return Ok(());
-                    }
-                    if turn_ends.is_some() && messages.is_empty() {
-                        break;
-                    }
-                    let step = match &mut self.phase {
-                        Phase::Running { step, .. } => {
-                            *step += 1;
-                            *step
-                        }
-                        _ => {
-                            return Err(LoopError::Invalid(format!(
-                                "agent \"{}\": step outside running phase",
-                                self.id.as_str()
-                            )));
-                        }
-                    };
-                    self.push_event(|seq| SessionEvent::StepStart {
-                        seq,
-                        time: seq as i64,
-                        data: StepBoundaryData { turn, step },
-                        ignorable: None,
-                    })?;
-                    for message in messages {
-                        self.push_event(|seq| SessionEvent::UserMessage {
-                            seq,
-                            time: seq as i64,
-                            data: message,
-                            surface_op: Some(SurfaceOp::Append),
-                            source_event_seqs: None,
-                            ignorable: None,
-                        })?;
-                    }
-                    let step_result = self.execute_step(&assembly).await;
-                    let end_result = self.push_event(|seq| SessionEvent::StepEnd {
-                        seq,
-                        time: seq as i64,
-                        data: StepBoundaryData { turn, step },
-                        ignorable: None,
-                    });
-                    let step_end = step_result?;
-                    end_result?;
-                    if turn_ends
-                        .as_ref()
-                        .map(|reason| !matches!(reason, TurnEndReason::MaxTokens))
-                        .unwrap_or(true)
-                    {
-                        if let Some(ref end) = step_end {
-                            *turn_ends = Some(end.clone());
-                        }
-                    }
-                    if self.is_aborted() {
-                        *turn_ends = Some(TurnEndReason::Aborted {
-                            reason: self.cancel_reason_json(),
-                        });
-                        return Ok(());
-                    }
-                    if turn_ends.is_some()
-                        && self.inbox.next_step().is_empty()
-                        && !matches!(step_end, Some(TurnEndReason::MaxTokens))
-                    {
-                        break;
-                    }
-                    target = InboxTarget::NextStep;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn pre_step(
+    fn claim_pre_step(
         &mut self,
         target: InboxTarget,
-    ) -> Result<(PreStepDecision, PromptAssembly), LoopError> {
+    ) -> Result<(Context, PreStepDecision, PromptAssembly), LoopError> {
         let turn = match &self.phase {
             Phase::Running { turn, .. } => *turn,
             _ => {
@@ -634,41 +506,23 @@ impl LoopAgent {
             .map_err(|error| LoopError::Prompt(error.to_string()))?;
         let current = join_context_sections(&sections);
         let snapshot = self.runtime_context.project(&current, &sections);
-        let decision = if self.pre_step.is_empty() {
-            let mut messages = claimed;
-            if let Some(snapshot) = snapshot {
-                messages.push(snapshot);
-            }
-            PreStepDecision::Enter { messages }
-        } else {
-            let listeners = std::mem::take(&mut self.pre_step);
-            let mut messages = claimed;
-            let mut reject = false;
-            for listener in &listeners {
-                match listener(self, std::mem::take(&mut messages)) {
-                    PreStepDecision::Reject => {
-                        reject = true;
-                        break;
-                    }
-                    PreStepDecision::Enter { messages: next } => messages = next,
-                }
-            }
-            self.pre_step = listeners;
-            if reject {
-                PreStepDecision::Reject
-            } else {
-                PreStepDecision::Enter { messages }
-            }
-        };
-        Ok((decision, assembly))
+        let mut messages = claimed;
+        if let Some(snapshot) = snapshot {
+            messages.push(snapshot);
+        }
+        Ok((
+            self.ctx.clone(),
+            PreStepDecision::Enter { messages },
+            assembly,
+        ))
     }
 
-    async fn execute_step(
-        &mut self,
-        assembly: &PromptAssembly,
-    ) -> Result<Option<TurnEndReason>, LoopError> {
-        let (turn, step) = match &self.phase {
-            Phase::Running { turn, step, .. } => (*turn, *step),
+    fn open_step(&mut self, turn: u64, messages: Vec<Message>) -> Result<u64, LoopError> {
+        let step = match &mut self.phase {
+            Phase::Running { step, .. } => {
+                *step += 1;
+                *step
+            }
             _ => {
                 return Err(LoopError::Invalid(format!(
                     "agent \"{}\": step outside running phase",
@@ -676,106 +530,87 @@ impl LoopAgent {
                 )));
             }
         };
-        loop {
-            if self.is_aborted() {
-                return Ok(Some(TurnEndReason::Aborted {
-                    reason: self.cancel_reason_json(),
-                }));
+        self.push_event(|seq| SessionEvent::StepStart {
+            seq,
+            time: seq as i64,
+            data: StepBoundaryData { turn, step },
+            ignorable: None,
+        })?;
+        for message in messages {
+            self.push_event(|seq| SessionEvent::UserMessage {
+                seq,
+                time: seq as i64,
+                data: message,
+                surface_op: Some(SurfaceOp::Append),
+                source_event_seqs: None,
+                ignorable: None,
+            })?;
+        }
+        Ok(step)
+    }
+
+    fn ingest_chunks(
+        &mut self,
+        turn: u64,
+        step: u64,
+        chunks: Vec<StreamChunk>,
+    ) -> Result<StreamIngest, LoopError> {
+        let mut assembler = BlockAssembler::new();
+        let mut chunk_seqs = Vec::new();
+        for chunk in chunks {
+            let seq = self.push_event(|seq| SessionEvent::AssistantChunk {
+                seq,
+                time: seq as i64,
+                data: AssistantChunkData {
+                    turn,
+                    step,
+                    chunk: chunk.clone(),
+                },
+                ignorable: None,
+            })?;
+            chunk_seqs.push(seq);
+            assembler.push(chunk);
+        }
+        match assembler.finish() {
+            FinishReason::Error { failure } | FinishReason::Aborted { failure } => {
+                Ok(StreamIngest::Failed(failure))
             }
-            let system =
-                render_prompt(assembly).map_err(|error| LoopError::Prompt(error.to_string()))?;
-            let boundary_messages = self.session.derive_messages();
-            let request = self
-                .build_request(turn, step, &assembly.tools, &system, boundary_messages)
-                .await?;
-            let provider = request.provider.clone();
-            let model = request.model.clone();
-            let chunks = self.collect_stream(request).await;
-            let mut assembler = BlockAssembler::new();
-            let mut chunk_seqs = Vec::new();
-            for chunk in chunks {
-                let seq = self.push_event(|seq| SessionEvent::AssistantChunk {
-                    seq,
-                    time: seq as i64,
-                    data: AssistantChunkData {
-                        turn,
-                        step,
-                        chunk: chunk.clone(),
-                    },
-                    ignorable: None,
-                })?;
-                chunk_seqs.push(seq);
-                assembler.push(chunk);
-            }
-            match assembler.finish() {
-                FinishReason::Error { failure } | FinishReason::Aborted { failure } => {
-                    match self.request_error_action(&failure) {
-                        RequestErrorAction::Retry => continue,
-                        RequestErrorAction::Fail => {
-                            return Ok(Some(TurnEndReason::Error { error: failure }));
-                        }
-                    }
-                }
-                finish => {
-                    self.append_assistant(turn, step, &assembler, &chunk_seqs, &provider, &model)?;
-                    if matches!(finish, FinishReason::MaxTokens) {
-                        return Ok(Some(TurnEndReason::MaxTokens));
-                    }
-                    let tool_calls: Vec<ContentBlock> = assembler
-                        .blocks()
-                        .into_iter()
-                        .filter(|block| matches!(block, ContentBlock::ToolCall { .. }))
-                        .collect();
-                    if tool_calls.is_empty() {
-                        return Ok(Some(TurnEndReason::Completed));
-                    }
-                    let signal = match &self.phase {
-                        Phase::Running { abort, .. } | Phase::Maintenance { abort, .. } => {
-                            abort.clone()
-                        }
-                        Phase::Idle { .. } => AbortFlag::new(),
-                    };
-                    let max_parallel = self.options.max_parallel_tool_calls;
-                    let mut extra = Vec::new();
-                    let outcome = crate::tool_calls::execute_tool_calls(
-                        &mut self.session,
-                        &mut self.tools,
-                        turn,
-                        step,
-                        &tool_calls,
-                        &signal,
-                        max_parallel,
-                        &mut |message| extra.push(message),
-                    )
-                    .await?;
-                    for message in extra {
-                        let start = self.inbox.next_step().len();
-                        self.inbox.splice(
-                            &mut self.session,
-                            InboxTarget::NextStep,
-                            start,
-                            0,
-                            vec![message],
-                            true,
-                        )?;
-                    }
-                    if outcome.aborted || self.is_aborted() {
-                        return Ok(Some(TurnEndReason::Aborted {
-                            reason: self.cancel_reason_json(),
-                        }));
-                    }
-                    return Ok(if outcome.concluded {
-                        Some(TurnEndReason::Completed)
-                    } else {
-                        None
-                    });
-                }
-            }
+            finish => Ok(StreamIngest::Ready {
+                assembler,
+                chunk_seqs,
+                finish,
+            }),
+        }
+    }
+
+    fn reset_running_for_next_turn(&mut self) {
+        if let Phase::Running {
+            abort,
+            step,
+            wake_requested,
+            ..
+        } = &mut self.phase
+        {
+            *abort = AbortFlag::new();
+            *step = 0;
+            *wake_requested = false;
+        }
+    }
+
+    fn settle_driver(&mut self) -> (u64, bool) {
+        match &self.phase {
+            Phase::Running {
+                turn,
+                wake_requested,
+                ..
+            } => (*turn, *wake_requested),
+            Phase::Idle { last_turn } => (*last_turn, false),
+            Phase::Maintenance { last_turn, .. } => (*last_turn, false),
         }
     }
 
     /// Compose one frozen request from step-boundary messages and the header fold.
-    async fn build_request(
+    fn build_request(
         &mut self,
         turn: u64,
         step: u64,
@@ -816,6 +651,8 @@ impl LoopAgent {
         }
         let prepared = self
             .llm
+            .lock()
+            .expect("llm")
             .prepare_call(&config)
             .map_err(|error| LoopError::Invalid(error.to_string()))?;
         let header = canonical_header(&EpochHeader {
@@ -879,18 +716,6 @@ impl LoopAgent {
         })
     }
 
-    async fn collect_stream(&mut self, request: GenerateOptions) -> Vec<StreamChunk> {
-        let llm = std::mem::replace(&mut self.llm, LlmRuntime::new());
-        let mut stream = llm.stream(request);
-        let mut chunks = Vec::new();
-        while let Some(chunk) = stream.next().await {
-            chunks.push(chunk);
-        }
-        drop(stream);
-        self.llm = llm;
-        chunks
-    }
-
     fn append_assistant(
         &mut self,
         turn: u64,
@@ -921,14 +746,6 @@ impl LoopAgent {
         Ok(())
     }
 
-    fn request_error_action(&self, failure: &LlmFailure) -> RequestErrorAction {
-        let mut action = RequestErrorAction::Fail;
-        for listener in &self.on_request_error {
-            action = listener(failure);
-        }
-        action
-    }
-
     fn cancel_reason_json(&self) -> serde_json::Value {
         match self.cancel_cause {
             Some(CancelCause::Disposed) => serde_json::json!({"kind": "disposed"}),
@@ -945,6 +762,370 @@ impl LoopAgent {
         }
         Ok(seq)
     }
+}
+
+enum DriveTarget<'a> {
+    Exclusive(&'a mut LoopAgent),
+    Shared(&'a Mutex<LoopAgent>),
+}
+
+enum StreamIngest {
+    Failed(LlmFailure),
+    Ready {
+        assembler: BlockAssembler,
+        chunk_seqs: Vec<u64>,
+        finish: FinishReason,
+    },
+}
+
+struct SharedHost<'a> {
+    state: &'a Mutex<LoopAgent>,
+    tools: Arc<Mutex<ToolRuntime>>,
+}
+
+impl ToolCallHost for SharedHost<'_> {
+    fn with_session<R>(&mut self, f: impl FnOnce(&mut Session) -> R) -> R {
+        let mut agent = self.state.lock().expect("loop agent state");
+        f(&mut agent.session)
+    }
+
+    fn tools(&self) -> &Mutex<ToolRuntime> {
+        &self.tools
+    }
+}
+
+impl DriveTarget<'_> {
+    fn with<R>(&mut self, f: impl FnOnce(&mut LoopAgent) -> R) -> R {
+        match self {
+            DriveTarget::Exclusive(agent) => f(agent),
+            DriveTarget::Shared(state) => {
+                let mut agent = state.lock().expect("loop agent state");
+                f(&mut agent)
+            }
+        }
+    }
+
+    async fn execute_tools(
+        &mut self,
+        turn: u64,
+        step: u64,
+        tool_calls: &[ContentBlock],
+        signal: &AbortFlag,
+        max_parallel: usize,
+        extra: &mut Vec<Message>,
+    ) -> Result<ToolCallsOutcome, LoopError> {
+        match self {
+            DriveTarget::Exclusive(agent) => {
+                crate::tool_calls::execute_tool_calls(
+                    &mut crate::tool_calls::DirectHost {
+                        session: &mut agent.session,
+                        tools: agent.tools.as_ref(),
+                    },
+                    turn,
+                    step,
+                    tool_calls,
+                    signal,
+                    max_parallel,
+                    &mut |message| extra.push(message),
+                )
+                .await
+            }
+            DriveTarget::Shared(state) => {
+                let tools = {
+                    let agent = state.lock().expect("loop agent state");
+                    Arc::clone(&agent.tools)
+                };
+                crate::tool_calls::execute_tool_calls(
+                    &mut SharedHost {
+                        state: *state,
+                        tools,
+                    },
+                    turn,
+                    step,
+                    tool_calls,
+                    signal,
+                    max_parallel,
+                    &mut |message| extra.push(message),
+                )
+                .await
+            }
+        }
+    }
+}
+
+async fn drive(target: &mut DriveTarget<'_>) -> Result<(), LoopError> {
+    if target.with(|agent| !matches!(agent.phase, Phase::Idle { .. })) {
+        return Err(target.with(|agent| agent.active_work_error()));
+    }
+    loop {
+        let should_stop = target.with(|agent| -> Result<bool, LoopError> {
+            let Phase::Idle { last_turn } = agent.phase else {
+                return Err(agent.active_work_error());
+            };
+            if agent.inbox.next_turn().is_empty() && !agent.wake_latched {
+                return Ok(true);
+            }
+            agent.wake_latched = false;
+            agent.phase = Phase::Running {
+                abort: AbortFlag::new(),
+                turn: last_turn,
+                step: 0,
+                wake_requested: false,
+            };
+            Ok(false)
+        })?;
+        if should_stop {
+            return Ok(());
+        }
+        let running = drive_running(target).await;
+        let should_continue = target.with(|agent| {
+            let (last_turn, wake_requested) = agent.settle_driver();
+            agent.phase = Phase::Idle { last_turn };
+            wake_requested && agent.inbox.has_pending()
+        });
+        running?;
+        if should_continue {
+            target.with(|agent| agent.wake_latched = true);
+            continue;
+        }
+        return Ok(());
+    }
+}
+
+async fn drive_running(target: &mut DriveTarget<'_>) -> Result<(), LoopError> {
+    while turn(target).await? {}
+    Ok(())
+}
+
+async fn turn(target: &mut DriveTarget<'_>) -> Result<bool, LoopError> {
+    let started = target.with(LoopAgent::begin_turn);
+    if let Err(error) = &started {
+        if target.with(|agent| agent.is_aborted()) {
+            return Err(LoopError::Invalid(error.to_string()));
+        }
+    }
+    let turn = started?;
+    let mut turn_ends: Option<TurnEndReason> = None;
+    let body = run_turn_steps(target, turn, &mut turn_ends).await;
+    if let Err(error) = &body {
+        if turn_ends.is_none() {
+            turn_ends = Some(if target.with(|agent| agent.is_aborted()) {
+                TurnEndReason::Aborted {
+                    reason: target.with(|agent| agent.cancel_reason_json()),
+                }
+            } else {
+                TurnEndReason::Error {
+                    error: llm_failure_from_loop_error(error),
+                }
+            });
+        }
+    }
+    let reason = turn_ends.unwrap_or(TurnEndReason::Completed);
+    let aborted_turn =
+        target.with(|agent| agent.is_aborted()) || matches!(reason, TurnEndReason::Aborted { .. });
+    let end_result = target.with(|agent| {
+        agent.push_event(|seq| SessionEvent::TurnEnd {
+            seq,
+            time: seq as i64,
+            data: TurnEndData { turn, reason },
+            ignorable: None,
+        })
+    });
+    body?;
+    end_result?;
+    if aborted_turn {
+        return Ok(false);
+    }
+    if !target.with(|agent| agent.inbox.has_pending()) {
+        return Ok(false);
+    }
+    target.with(|agent| agent.reset_running_for_next_turn());
+    Ok(true)
+}
+
+async fn run_turn_steps(
+    target: &mut DriveTarget<'_>,
+    turn: u64,
+    turn_ends: &mut Option<TurnEndReason>,
+) -> Result<(), LoopError> {
+    let mut inbox_target = InboxTarget::NextTurn;
+    loop {
+        if target.with(|agent| agent.is_aborted()) {
+            *turn_ends = Some(TurnEndReason::Aborted {
+                reason: target.with(|agent| agent.cancel_reason_json()),
+            });
+            return Err(LoopError::Invalid(
+                target.with(|agent| format!("agent \"{}\" aborted", agent.id.as_str())),
+            ));
+        }
+        let (ctx, seed, assembly) = target.with(|agent| agent.claim_pre_step(inbox_target))?;
+        let decision = ctx.waterfall(EVENT_AGENT_PRE_STEP, seed).await;
+        match decision {
+            PreStepDecision::Reject => {
+                *turn_ends = Some(TurnEndReason::Blocked);
+                return Ok(());
+            }
+            PreStepDecision::Enter { messages } => {
+                let step_zero =
+                    target.with(|agent| matches!(agent.phase, Phase::Running { step: 0, .. }));
+                if step_zero && messages.is_empty() {
+                    *turn_ends = Some(TurnEndReason::Completed);
+                    return Ok(());
+                }
+                if turn_ends.is_some() && messages.is_empty() {
+                    break;
+                }
+                let step = target.with(|agent| agent.open_step(turn, messages))?;
+                let step_result = execute_step(target, &assembly, turn, step).await;
+                let end_result = target.with(|agent| {
+                    agent.push_event(|seq| SessionEvent::StepEnd {
+                        seq,
+                        time: seq as i64,
+                        data: StepBoundaryData { turn, step },
+                        ignorable: None,
+                    })
+                });
+                let step_end = step_result?;
+                end_result?;
+                if turn_ends
+                    .as_ref()
+                    .map(|reason| !matches!(reason, TurnEndReason::MaxTokens))
+                    .unwrap_or(true)
+                {
+                    if let Some(ref end) = step_end {
+                        *turn_ends = Some(end.clone());
+                    }
+                }
+                if target.with(|agent| agent.is_aborted()) {
+                    *turn_ends = Some(TurnEndReason::Aborted {
+                        reason: target.with(|agent| agent.cancel_reason_json()),
+                    });
+                    return Ok(());
+                }
+                if turn_ends.is_some()
+                    && target.with(|agent| agent.inbox.next_step().is_empty())
+                    && !matches!(step_end, Some(TurnEndReason::MaxTokens))
+                {
+                    break;
+                }
+                inbox_target = InboxTarget::NextStep;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn execute_step(
+    target: &mut DriveTarget<'_>,
+    assembly: &PromptAssembly,
+    turn: u64,
+    step: u64,
+) -> Result<Option<TurnEndReason>, LoopError> {
+    loop {
+        if target.with(|agent| agent.is_aborted()) {
+            return Ok(Some(TurnEndReason::Aborted {
+                reason: target.with(|agent| agent.cancel_reason_json()),
+            }));
+        }
+        let prepared = target.with(|agent| -> Result<_, LoopError> {
+            let system =
+                render_prompt(assembly).map_err(|error| LoopError::Prompt(error.to_string()))?;
+            let boundary_messages = agent.session.derive_messages();
+            let request =
+                agent.build_request(turn, step, &assembly.tools, &system, boundary_messages)?;
+            let llm = agent.llm.lock().expect("llm").clone();
+            Ok((request, llm, agent.ctx.clone()))
+        })?;
+        let (request, llm, ctx) = prepared;
+        let provider = request.provider.clone();
+        let model = request.model.clone();
+        let chunks = collect_stream_from(llm, request).await;
+        let ingest = target.with(|agent| agent.ingest_chunks(turn, step, chunks))?;
+        match ingest {
+            StreamIngest::Failed(failure) => {
+                let action = ctx
+                    .waterfall(EVENT_AGENT_REQUEST_ERROR, RequestErrorAction::Fail)
+                    .await;
+                if target.with(|agent| agent.is_aborted()) {
+                    return Ok(Some(TurnEndReason::Aborted {
+                        reason: target.with(|agent| agent.cancel_reason_json()),
+                    }));
+                }
+                match action {
+                    RequestErrorAction::Retry => continue,
+                    RequestErrorAction::Fail => {
+                        return Ok(Some(TurnEndReason::Error { error: failure }));
+                    }
+                }
+            }
+            StreamIngest::Ready {
+                assembler,
+                chunk_seqs,
+                finish,
+            } => {
+                target.with(|agent| {
+                    agent.append_assistant(turn, step, &assembler, &chunk_seqs, &provider, &model)
+                })?;
+                if matches!(finish, FinishReason::MaxTokens) {
+                    return Ok(Some(TurnEndReason::MaxTokens));
+                }
+                let tool_calls: Vec<ContentBlock> = assembler
+                    .blocks()
+                    .into_iter()
+                    .filter(|block| matches!(block, ContentBlock::ToolCall { .. }))
+                    .collect();
+                if tool_calls.is_empty() {
+                    return Ok(Some(TurnEndReason::Completed));
+                }
+                let (signal, max_parallel) = target.with(|agent| {
+                    let signal = match &agent.phase {
+                        Phase::Running { abort, .. } | Phase::Maintenance { abort, .. } => {
+                            abort.clone()
+                        }
+                        Phase::Idle { .. } => AbortFlag::new(),
+                    };
+                    (signal, agent.options.max_parallel_tool_calls)
+                });
+                let mut extra = Vec::new();
+                let outcome = target
+                    .execute_tools(turn, step, &tool_calls, &signal, max_parallel, &mut extra)
+                    .await?;
+                target.with(|agent| -> Result<(), LoopError> {
+                    for message in extra {
+                        let start = agent.inbox.next_step().len();
+                        agent.inbox.splice(
+                            &mut agent.session,
+                            InboxTarget::NextStep,
+                            start,
+                            0,
+                            vec![message],
+                            true,
+                        )?;
+                    }
+                    Ok(())
+                })?;
+                if outcome.aborted || target.with(|agent| agent.is_aborted()) {
+                    return Ok(Some(TurnEndReason::Aborted {
+                        reason: target.with(|agent| agent.cancel_reason_json()),
+                    }));
+                }
+                return Ok(if outcome.concluded {
+                    Some(TurnEndReason::Completed)
+                } else {
+                    None
+                });
+            }
+        }
+    }
+}
+
+async fn collect_stream_from(llm: LlmRuntime, request: GenerateOptions) -> Vec<StreamChunk> {
+    let mut stream = llm.stream(request);
+    let mut chunks = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        chunks.push(chunk);
+    }
+    chunks
 }
 
 fn llm_failure_from_loop_error(error: &LoopError) -> LlmFailure {
@@ -975,8 +1156,9 @@ pub(crate) use crate::{event_types, test_header, user_text};
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentStatus, CancelCause, CancelOptions, LoopAgent, LoopOptions, Phase, PreStepDecision,
-        event_types, test_header, user_text,
+        AgentStatus, CancelCause, CancelOptions, EVENT_AGENT_PRE_STEP, EVENT_AGENT_REQUEST_ERROR,
+        LoopAgent, LoopOptions, Phase, PreStepDecision, RequestErrorAction, event_types,
+        test_header, user_text,
     };
     use dsh_llm::{LlmRuntime, MockAdapter, MockScript, max_tokens_response, text_response};
     use dsh_session::{LlmCallConfig, MessageSource, Session, TurnEndReason};
@@ -990,6 +1172,7 @@ mod tests {
         let mut llm = LlmRuntime::new();
         llm.register_adapter("mock", adapter.clone());
         let agent = LoopAgent::new(
+            dsh_kernel::Context::new(),
             Session::new(test_header("loop-1")),
             LoopOptions {
                 provider: "mock".into(),
@@ -997,9 +1180,11 @@ mod tests {
                 max_tokens: None,
                 max_parallel_tool_calls: 10,
             },
-            ToolRuntime::new(dsh_tools::ToolPresentationMode::Native),
+            Arc::new(std::sync::Mutex::new(ToolRuntime::new(
+                dsh_tools::ToolPresentationMode::Native,
+            ))),
             SystemPrompt::new(SystemPromptConfig::default()).unwrap(),
-            llm,
+            Arc::new(std::sync::Mutex::new(llm)),
         )
         .unwrap();
         (agent, adapter)
@@ -1026,24 +1211,27 @@ mod tests {
         let (mut agent, adapter) = harness(vec![MockScript::Chunks(text_response("ok"))]);
         let saw_turn_before_claim = Arc::new(AtomicBool::new(false));
         let saw = saw_turn_before_claim.clone();
-        agent.on_pre_step(move |agent, claimed| {
-            let types = event_types(&agent.session);
-            assert!(types.iter().any(|t| t == "turn/start"));
-            assert!(!types.iter().any(|t| t == "step/start"));
-            saw.store(true, Ordering::SeqCst);
-            assert_eq!(claimed.len(), 1);
-            PreStepDecision::Enter { messages: claimed }
+        agent.on_pre_step(move |decision, next| {
+            let saw = saw.clone();
+            async move {
+                saw.store(true, Ordering::SeqCst);
+                next(decision).await
+            }
         });
         agent.followup(user_text("m1", "hi")).unwrap();
         agent.run_until_idle().await.unwrap();
         assert!(saw_turn_before_claim.load(Ordering::SeqCst));
+        let types = event_types(&agent.session);
+        let turn = types.iter().position(|t| t.as_str() == "turn/start");
+        let step = types.iter().position(|t| t.as_str() == "step/start");
+        assert!(turn.unwrap() < step.unwrap(), "{types:?}");
         assert_eq!(adapter.requests.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
     async fn empty_first_claim_logs_a_turn_without_a_step() {
         let (mut agent, adapter) = harness(vec![MockScript::Chunks(text_response("must not run"))]);
-        agent.on_pre_step(|_, _| PreStepDecision::Enter { messages: vec![] });
+        agent.on_pre_step(|_decision, _next| async { PreStepDecision::Enter { messages: vec![] } });
         agent.followup(user_text("m1", "go")).unwrap();
         agent.run_until_idle().await.unwrap();
         let types: Vec<_> = event_types(&agent.session)
@@ -1127,6 +1315,7 @@ mod tests {
         let mut llm = LlmRuntime::new();
         llm.register_adapter("mock", adapter.clone());
         let mut agent = LoopAgent::new(
+            dsh_kernel::Context::new(),
             Session::new(test_header("snap")),
             LoopOptions {
                 provider: "mock".into(),
@@ -1134,9 +1323,11 @@ mod tests {
                 max_tokens: None,
                 max_parallel_tool_calls: 10,
             },
-            ToolRuntime::new(dsh_tools::ToolPresentationMode::Native),
+            Arc::new(std::sync::Mutex::new(ToolRuntime::new(
+                dsh_tools::ToolPresentationMode::Native,
+            ))),
             prompt,
-            llm,
+            Arc::new(std::sync::Mutex::new(llm)),
         )
         .unwrap();
         agent.followup(user_text("m1", "first")).unwrap();
@@ -1212,13 +1403,16 @@ mod tests {
         let n = Arc::new(AtomicUsize::new(0));
         agent.on_pre_step({
             let n = n.clone();
-            move |_, claimed| {
-                let step = n.fetch_add(1, Ordering::SeqCst) + 1;
-                if step == 1 {
-                    PreStepDecision::Enter { messages: claimed }
-                } else {
-                    PreStepDecision::Enter {
-                        messages: vec![user_text("cont", "continue after truncation")],
+            move |decision, _next| {
+                let n = n.clone();
+                async move {
+                    let step = n.fetch_add(1, Ordering::SeqCst) + 1;
+                    if step == 1 {
+                        decision
+                    } else {
+                        PreStepDecision::Enter {
+                            messages: vec![user_text("cont", "continue after truncation")],
+                        }
                     }
                 }
             }
@@ -1356,6 +1550,7 @@ mod tests {
             is_concurrency_safe: None,
         });
         let mut agent = LoopAgent::new(
+            dsh_kernel::Context::new(),
             Session::new(test_header("abort-drain")),
             LoopOptions {
                 provider: "mock".into(),
@@ -1363,9 +1558,9 @@ mod tests {
                 max_tokens: None,
                 max_parallel_tool_calls: 1,
             },
-            tools,
+            Arc::new(std::sync::Mutex::new(tools)),
             SystemPrompt::new(SystemPromptConfig::default()).unwrap(),
-            llm,
+            Arc::new(std::sync::Mutex::new(llm)),
         )
         .unwrap();
         agent.followup(user_text("m1", "go")).unwrap();
@@ -1483,6 +1678,7 @@ mod tests {
             is_concurrency_safe: Some(Box::new(|_| true)),
         });
         let mut agent = LoopAgent::new(
+            dsh_kernel::Context::new(),
             Session::new(test_header("par")),
             LoopOptions {
                 provider: "mock".into(),
@@ -1490,9 +1686,9 @@ mod tests {
                 max_tokens: None,
                 max_parallel_tool_calls: 10,
             },
-            tools,
+            Arc::new(std::sync::Mutex::new(tools)),
             SystemPrompt::new(SystemPromptConfig::default()).unwrap(),
-            llm,
+            Arc::new(std::sync::Mutex::new(llm)),
         )
         .unwrap();
         agent.followup(user_text("m1", "go")).unwrap();
@@ -1501,6 +1697,144 @@ mod tests {
             max_live.load(Ordering::SeqCst) >= 2,
             "parallel siblings must overlap"
         );
+    }
+
+    fn loop_agent_with_ctx(ctx: dsh_kernel::Context, _text: &str) -> LoopAgent {
+        let adapter = Arc::new(MockAdapter::new(vec![MockScript::Chunks(text_response(
+            "ok",
+        ))]));
+        let mut llm = LlmRuntime::new();
+        llm.register_adapter("mock", adapter);
+        LoopAgent::new(
+            ctx,
+            Session::new(test_header("loop-ctx")),
+            LoopOptions {
+                provider: "mock".into(),
+                model: "mock".into(),
+                max_tokens: None,
+                max_parallel_tool_calls: 10,
+            },
+            Arc::new(std::sync::Mutex::new(ToolRuntime::new(
+                dsh_tools::ToolPresentationMode::Native,
+            ))),
+            SystemPrompt::new(SystemPromptConfig::default()).unwrap(),
+            Arc::new(std::sync::Mutex::new(llm)),
+        )
+        .unwrap()
+    }
+
+    fn last_turn_end(agent: &LoopAgent) -> Option<&dsh_session::TurnEndReason> {
+        agent
+            .session
+            .events()
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                dsh_session::LogEvent::Known(dsh_session::SessionEvent::TurnEnd {
+                    data, ..
+                }) => Some(&data.reason),
+                _ => None,
+            })
+    }
+
+    fn last_assistant_text(agent: &LoopAgent) -> String {
+        agent
+            .session
+            .events()
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                dsh_session::LogEvent::Known(dsh_session::SessionEvent::AssistantMessage {
+                    data,
+                    ..
+                }) => data.message.content.iter().find_map(|block| match block {
+                    dsh_session::ContentBlock::Text { text } => Some(text.clone()),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    fn loop_agent_fail_then_text(
+        ctx: dsh_kernel::Context,
+        code: &str,
+        recovered: &str,
+    ) -> LoopAgent {
+        let adapter = Arc::new(MockAdapter::new(vec![
+            MockScript::Fail(dsh_llm::LlmError::new("busy", code)),
+            MockScript::Chunks(text_response(recovered)),
+        ]));
+        let mut llm = LlmRuntime::new();
+        llm.register_adapter("mock", adapter);
+        LoopAgent::new(
+            ctx,
+            Session::new(test_header("loop-retry")),
+            LoopOptions {
+                provider: "mock".into(),
+                model: "mock".into(),
+                max_tokens: None,
+                max_parallel_tool_calls: 10,
+            },
+            Arc::new(std::sync::Mutex::new(ToolRuntime::new(
+                dsh_tools::ToolPresentationMode::Native,
+            ))),
+            SystemPrompt::new(SystemPromptConfig::default()).unwrap(),
+            Arc::new(std::sync::Mutex::new(llm)),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn pre_step_waterfall_must_call_next_to_keep_claimed_messages() {
+        let ctx = dsh_kernel::Context::new();
+        ctx.on_waterfall::<PreStepDecision, _, _>(
+            EVENT_AGENT_PRE_STEP,
+            |decision, next| async move { next(decision).await },
+        )
+        .unwrap();
+        let mut agent = loop_agent_with_ctx(ctx, "keep me");
+        agent.followup(user_text("keep-me", "keep me")).unwrap();
+        agent.run_until_idle().await.unwrap();
+        assert!(agent.session.events().iter().any(|e| matches!(
+            e,
+            dsh_session::LogEvent::Known(dsh_session::SessionEvent::UserMessage { data, .. })
+                if data.content.iter().any(|block| matches!(
+                    block,
+                    dsh_session::ContentBlock::Text { text } if text == "keep me"
+                ))
+        )));
+    }
+
+    #[tokio::test]
+    async fn pre_step_without_next_rejects_the_step() {
+        let ctx = dsh_kernel::Context::new();
+        ctx.on_waterfall::<PreStepDecision, _, _>(
+            EVENT_AGENT_PRE_STEP,
+            |_decision, _next| async move { PreStepDecision::Reject },
+        )
+        .unwrap();
+        let mut agent = loop_agent_with_ctx(ctx, "blocked");
+        agent.followup(user_text("blocked", "blocked")).unwrap();
+        agent.run_until_idle().await.unwrap();
+        assert!(matches!(
+            last_turn_end(&agent),
+            Some(dsh_session::TurnEndReason::Blocked)
+        ));
+    }
+
+    #[tokio::test]
+    async fn request_error_retry_without_next_owns_recovery() {
+        let ctx = dsh_kernel::Context::new();
+        ctx.on_waterfall::<RequestErrorAction, _, _>(
+            EVENT_AGENT_REQUEST_ERROR,
+            |_action, _next| async { RequestErrorAction::Retry },
+        )
+        .unwrap();
+        let mut agent = loop_agent_fail_then_text(ctx, "RATE_LIMIT", "recovered");
+        agent.followup(user_text("hi", "hi")).unwrap();
+        agent.run_until_idle().await.unwrap();
+        assert_eq!(last_assistant_text(&agent), "recovered");
     }
 
     mod reconstruction {
@@ -1561,6 +1895,7 @@ mod tests {
                 is_concurrency_safe: None,
             });
             let mut agent = LoopAgent::new(
+                dsh_kernel::Context::new(),
                 Session::new(test_header("a1")),
                 LoopOptions {
                     provider: "mock".into(),
@@ -1568,13 +1903,13 @@ mod tests {
                     max_tokens: None,
                     max_parallel_tool_calls: 10,
                 },
-                tools,
+                Arc::new(std::sync::Mutex::new(tools)),
                 SystemPrompt::new(SystemPromptConfig {
                     persona: "stable base".into(),
                     ..SystemPromptConfig::default()
                 })
                 .unwrap(),
-                llm,
+                Arc::new(std::sync::Mutex::new(llm)),
             )
             .unwrap();
             agent.followup(user_text("m1", "go")).unwrap();
@@ -1671,6 +2006,7 @@ mod tests {
             let mut llm = LlmRuntime::new();
             llm.register_adapter("mock", adapter.clone());
             let mut agent = LoopAgent::new(
+                dsh_kernel::Context::new(),
                 Session::new(test_header("adapter-max-tokens")),
                 LoopOptions {
                     provider: "mock".into(),
@@ -1678,9 +2014,11 @@ mod tests {
                     max_tokens: None,
                     max_parallel_tool_calls: 10,
                 },
-                ToolRuntime::new(dsh_tools::ToolPresentationMode::Native),
+                Arc::new(std::sync::Mutex::new(ToolRuntime::new(
+                    dsh_tools::ToolPresentationMode::Native,
+                ))),
                 SystemPrompt::new(SystemPromptConfig::default()).unwrap(),
-                llm,
+                Arc::new(std::sync::Mutex::new(llm)),
             )
             .unwrap();
             agent.followup(user_text("m1", "first")).unwrap();

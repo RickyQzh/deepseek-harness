@@ -27,7 +27,12 @@ pub fn register(registry: &mut PluginRegistry) {
             let prompt = ctx.inject::<SystemPrompt>("systemPrompt").await?;
             ctx.provide(
                 "agents",
-                AgentRegistry::from_shared(Arc::clone(&llm), Arc::clone(&tools), (*prompt).clone()),
+                AgentRegistry::from_shared(
+                    ctx.clone(),
+                    Arc::clone(&llm),
+                    Arc::clone(&tools),
+                    (*prompt).clone(),
+                ),
             )
             .map_err(|error| setup_err(error.to_string()))?;
             Ok(())

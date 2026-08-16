@@ -10,8 +10,9 @@ mod tool_calls;
 mod phase3_exit;
 
 pub use agent::{
-    AgentStatus, CancelCause, CancelOptions, DEFAULT_MAX_PARALLEL_TOOL_CALLS, LoopAgent,
-    LoopOptions, Phase, PreStepDecision, RequestErrorAction,
+    AgentStatus, CancelCause, CancelOptions, DEFAULT_MAX_PARALLEL_TOOL_CALLS, EVENT_AGENT_PRE_STEP,
+    EVENT_AGENT_REQUEST_ERROR, LoopAgent, LoopOptions, Phase, PreStepDecision, PreStepPayload,
+    RequestErrorAction, RequestErrorPayload,
 };
 pub use error::LoopError;
 pub use inbox::Inbox;
