@@ -88,6 +88,10 @@ impl SubprocessHandle {
 
     /// Wait for the direct child to exit, seal collectors, and return exit facts.
     ///
+    /// After the child exits, collect-mode drains are joined for at most `grace_ms`. On timeout the
+    /// collect readers are aborted so a descendant that still holds the write end cannot hang this
+    /// future. Pipe-mode streams are not closed here.
+    ///
     /// Rejects only when waiting on the child fails after a successful spawn.
     pub async fn done(&self) -> Result<SubprocessOutcome, SubprocessError> {
         loop {
@@ -243,12 +247,7 @@ fn spawn_unix(
     let waiter_inner = Arc::clone(&inner);
     tokio::spawn(async move {
         let wait_result = child.wait().await;
-        if let Some(task) = stdout_task {
-            let _ = task.await;
-        }
-        if let Some(task) = stderr_task {
-            let _ = task.await;
-        }
+        join_collect_drains(stdout_task, stderr_task, waiter_inner.grace_ms).await;
         if let Some(collector) = &waiter_inner.stdout {
             collector.lock().await.seal();
         }
@@ -340,6 +339,56 @@ where
             (Some(collector), Some(task))
         }
         _ => (None, None),
+    }
+}
+
+/// Join collect drain tasks for at most `grace_ms`, then abort any still-running readers.
+///
+/// Aborting drops `ChildStdout`/`ChildStderr` (the Rust equivalent of Node `destroy()`), so a
+/// descendant that inherited a collect-mode pipe cannot hold [`SubprocessHandle::done`] open.
+/// Pipe-mode streams are not passed here.
+#[cfg(unix)]
+async fn join_collect_drains(
+    mut stdout_task: Option<tokio::task::JoinHandle<()>>,
+    mut stderr_task: Option<tokio::task::JoinHandle<()>>,
+    grace_ms: u64,
+) {
+    let stdout_abort = stdout_task
+        .as_ref()
+        .map(tokio::task::JoinHandle::abort_handle);
+    let stderr_abort = stderr_task
+        .as_ref()
+        .map(tokio::task::JoinHandle::abort_handle);
+    let drains = async {
+        match (stdout_task.as_mut(), stderr_task.as_mut()) {
+            (Some(stdout), Some(stderr)) => {
+                let _ = tokio::join!(stdout, stderr);
+            }
+            (Some(stdout), None) => {
+                let _ = stdout.await;
+            }
+            (None, Some(stderr)) => {
+                let _ = stderr.await;
+            }
+            (None, None) => {}
+        }
+    };
+    if tokio::time::timeout(Duration::from_millis(grace_ms), drains)
+        .await
+        .is_err()
+    {
+        if let Some(abort) = stdout_abort {
+            abort.abort();
+        }
+        if let Some(abort) = stderr_abort {
+            abort.abort();
+        }
+        if let Some(task) = stdout_task {
+            let _ = task.await;
+        }
+        if let Some(task) = stderr_task {
+            let _ = task.await;
+        }
     }
 }
 
@@ -530,6 +579,35 @@ mod tests {
             .expect("done")
             .unwrap();
         assert!(outcome.exit_code != Some(0) || outcome.signal.is_some());
+        assert!(handle.wait_for_exit().await);
+    }
+
+    #[tokio::test]
+    async fn bounds_inherited_pipe_draining_after_the_shell_exits() {
+        let spec = SubprocessSpawnSpec {
+            argv: vec!["/bin/sh".into(), "-c".into(), "sleep 30 &".into()],
+            cwd: "/".into(),
+            stdio: SubprocessStdio {
+                stdin: SubprocessStdin::Ignore,
+                stdout: SubprocessOutput::Collect(SubprocessCollect {
+                    max_bytes: 64,
+                    spill_max_bytes: None,
+                }),
+                stderr: SubprocessOutput::Collect(SubprocessCollect {
+                    max_bytes: 64,
+                    spill_max_bytes: None,
+                }),
+            },
+            grace_ms: 200,
+            signal: None,
+            env: None,
+        };
+        let handle = spawn_subprocess(spec).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle.done())
+            .await
+            .expect("done")
+            .unwrap();
+        handle.terminate();
         assert!(handle.wait_for_exit().await);
     }
 }

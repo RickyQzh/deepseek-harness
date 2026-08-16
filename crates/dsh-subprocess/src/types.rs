@@ -56,6 +56,9 @@ pub struct SubprocessSpawnSpec {
     /// Per-stream stdio dispositions.
     pub stdio: SubprocessStdio,
     /// Positive grace period in milliseconds, no greater than [`crate::MAX_GRACE_MS`].
+    ///
+    /// Bounds both [`crate::SubprocessHandle::terminate`] SIGTERM→SIGKILL escalation and collect-mode
+    /// drain after the direct child exits.
     pub grace_ms: u64,
     /// Cooperative cancellation; abort starts terminate escalation. `None` means no abort signal.
     pub signal: Option<AbortFlag>,
