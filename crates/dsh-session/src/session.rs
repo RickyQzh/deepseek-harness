@@ -1,5 +1,7 @@
 //! In-memory session: header, log, and incremental surface.
 
+use std::sync::Arc;
+
 use crate::error::SessionError;
 use crate::event::{LogEvent, SessionEvent};
 use crate::header::SessionHeader;
@@ -8,12 +10,25 @@ use crate::message::{EpochHeader, Message};
 use crate::request_header::fold_request_header_iter;
 use crate::surface::{SurfaceManager, derive_event_message};
 
+/// Observer invoked after a known event is admitted (`seq` already assigned).
+pub type AppendSink = Arc<dyn Fn(&LogEvent) + Send + Sync>;
+
 /// Append-only session log with an incremental message-producing surface.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Session {
     header: SessionHeader,
     events: Vec<LogEvent>,
     surface: SurfaceManager,
+    append_sink: Option<AppendSink>,
+}
+
+impl std::fmt::Debug for Session {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Session")
+            .field("header", &self.header)
+            .field("events", &self.events)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Session {
@@ -24,7 +39,13 @@ impl Session {
             header,
             events: Vec::new(),
             surface: SurfaceManager::default(),
+            append_sink: None,
         }
+    }
+
+    /// Install or clear the append observer. Invoked once per successful [`Session::append`].
+    pub fn set_append_sink(&mut self, sink: Option<AppendSink>) {
+        self.append_sink = sink;
     }
 
     /// Restore a session by validating each known event incrementally.
@@ -95,6 +116,11 @@ impl Session {
         let plan = self.surface.validate_next(&event, &self.events, expected)?;
         self.events.push(LogEvent::Known(event));
         self.surface.apply(plan);
+        if let Some(sink) = &self.append_sink {
+            if let Some(LogEvent::Known(_)) = self.events.last() {
+                sink(self.events.last().expect("pushed"));
+            }
+        }
         match self.events.last() {
             Some(LogEvent::Known(event)) => Ok(event),
             Some(LogEvent::Leftover(_)) | None => unreachable!("append pushes Known"),
@@ -221,6 +247,25 @@ mod tests {
         let mut session = Session::new(header());
         let error = session.append(user(3, "x")).expect_err("seq");
         assert!(error.to_string().contains("not contiguous"));
+    }
+
+    #[test]
+    fn append_sink_observes_known_events() {
+        use std::sync::{Arc, Mutex};
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut session = Session::new(header());
+        let seen_clone = Arc::clone(&seen);
+        session.set_append_sink(Some(Arc::new(move |event| {
+            seen_clone
+                .lock()
+                .expect("seen")
+                .push(event.event_type().to_string());
+        })));
+        session.append(user(0, "hello")).unwrap();
+        assert_eq!(
+            *seen.lock().expect("seen"),
+            vec!["user/message".to_string()]
+        );
     }
 
     #[test]

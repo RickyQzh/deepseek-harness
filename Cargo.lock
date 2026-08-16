@@ -88,6 +88,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-agent"
+version = "0.1.0"
+dependencies = [
+ "dsh-agent-loop",
+ "dsh-llm",
+ "dsh-session",
+ "dsh-system-prompt",
+ "dsh-tools",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "dsh-agent-loop"
 version = "0.1.0"
 dependencies = [

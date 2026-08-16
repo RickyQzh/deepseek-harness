@@ -10,4 +10,4 @@ A `max-tokens` step is sticky for that turn: a later completed step does not rep
 
 ## Known Limitations and Deferred Work
 
-- Factory `create` / `resume`, agent registry, and kernel plugin wrapping are Phase 5. This crate owns `LoopAgent` directly. Bash / fs tools are Phase 4; tests register mock tools.
+- Factory `create` / `resume` and kernel plugin wrapping are Phase 5. Live registry lives in `dsh-agent`. This crate owns `LoopAgent` directly. Bash / fs tools are Phase 4; tests register mock tools.

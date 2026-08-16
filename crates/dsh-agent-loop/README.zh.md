@@ -10,4 +10,4 @@
 
 ## 已知限制与暂缓事项
 
-- 工厂 `create` / `resume`、agent 注册表以及 kernel 插件包装属于第 5 阶段。本 crate 直接持有 `LoopAgent`。Bash / fs 工具属于第 4 阶段；测试注册 mock 工具。
+- 工厂 `create` / `resume` 以及 kernel 插件包装属于第 5 阶段。实时注册表位于 `dsh-agent`。本 crate 直接持有 `LoopAgent`。Bash / fs 工具属于第 4 阶段；测试注册 mock 工具。

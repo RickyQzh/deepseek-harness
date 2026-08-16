@@ -135,6 +135,7 @@ pub enum ScheduledToolDispatch {
     },
 }
 
+#[derive(Clone)]
 struct RegisteredTool {
     execute: StoredBody,
     render: StoredRender,
@@ -163,6 +164,20 @@ pub struct ToolRuntime {
     post: Vec<PostFn>,
     guards: Vec<ToolGuard>,
     approval: Option<ApprovalHook>,
+}
+
+impl Clone for ToolRuntime {
+    fn clone(&self) -> Self {
+        Self {
+            mode: self.mode,
+            next_token: self.next_token,
+            tools: self.tools.clone(),
+            pre: self.pre.clone(),
+            post: self.post.clone(),
+            guards: Vec::new(),
+            approval: None,
+        }
+    }
 }
 
 impl ToolRuntime {

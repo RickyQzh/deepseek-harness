@@ -188,6 +188,7 @@ pub fn render_context_snapshot(assembly: &PromptAssembly) -> Result<String, Prom
 }
 
 /// Registry for ordered sections, contexts, tools, variables, and assemble listeners.
+#[derive(Clone)]
 pub struct SystemPrompt {
     sections: Vec<PromptSection>,
     contexts: Vec<PromptContext>,

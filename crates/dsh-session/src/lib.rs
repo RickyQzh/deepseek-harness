@@ -36,5 +36,5 @@ pub use message::{
 };
 pub use repair::{TOOL_NOT_STARTED, TOOL_OUTCOME_UNKNOWN, interrupted_turn_closers};
 pub use request_header::{canonical_header, fold_request_header, header_equals};
-pub use session::Session;
+pub use session::{AppendSink, Session};
 pub use surface::{SurfaceFoldReplacement, SurfaceFoldResult, derive_event_message, fold_surface};

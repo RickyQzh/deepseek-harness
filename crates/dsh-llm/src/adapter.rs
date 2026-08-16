@@ -65,6 +65,14 @@ impl Default for LlmRuntime {
     }
 }
 
+impl Clone for LlmRuntime {
+    fn clone(&self) -> Self {
+        Self {
+            adapters: self.adapters.clone(),
+        }
+    }
+}
+
 impl LlmRuntime {
     /// Empty registry.
     #[must_use]
@@ -72,6 +80,12 @@ impl LlmRuntime {
         Self {
             adapters: HashMap::new(),
         }
+    }
+
+    /// Provider route ids currently registered.
+    #[must_use]
+    pub fn list_providers(&self) -> Vec<String> {
+        self.adapters.keys().cloned().collect()
     }
 
     /// Register `adapter` for `provider`, replacing any previous adapter on that route.
