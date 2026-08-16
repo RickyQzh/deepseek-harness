@@ -1,6 +1,7 @@
 //! Kernel plugin `@deepseek-ai/dsh-time-context`.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use dsh_agent_loop::{CompactionScope, EVENT_AGENT_PRE_STEP, PreStepDecision};
 use dsh_boot::{PLUGIN_TIME_CONTEXT, PluginRegistry, PluginSetup};
@@ -31,11 +32,12 @@ const CONFIG_KEYS: &[&str] = &["timeZone", "refreshIntervalMs"];
 pub struct TimeContextConfig {
     /// Optional display-zone label. This phase always formats wall time as UTC.
     pub time_zone: Option<String>,
-    /// Minimum milliseconds between durable injections in one session.
+    /// Minimum wall-clock milliseconds between prepends for one session in this process.
     ///
     /// Omit or `0` to inject at every eligible entering pre-step. A positive
-    /// value injects only when the session has no earlier time-context
-    /// injection or elapsed time is at least this many milliseconds.
+    /// value injects only when this plugin instance has not prepended for that
+    /// session yet, or wall-clock elapsed since that prepend is at least this
+    /// many milliseconds. Log `time` is not a wall clock.
     pub refresh_interval_ms: Option<u64>,
 }
 
@@ -128,10 +130,12 @@ pub fn install_time_context(ctx: &Context, config: TimeContextConfig) {
 }
 
 fn register_listener(ctx: &Context, config: TimeContextConfig) -> Result<(), KernelError> {
+    let last_by_session = Arc::new(Mutex::new(HashMap::<String, u64>::new()));
     ctx.on_waterfall::<PreStepDecision, _, _>(EVENT_AGENT_PRE_STEP, move |decision, next| {
         let config = config.clone();
+        let last_by_session = Arc::clone(&last_by_session);
         async move {
-            let decision = inject_if_due(decision, &config, unix_now_ms());
+            let decision = inject_if_due(decision, &config, unix_now_ms(), &last_by_session);
             next(decision).await
         }
     })
@@ -142,6 +146,7 @@ fn inject_if_due(
     decision: PreStepDecision,
     config: &TimeContextConfig,
     now_ms: u64,
+    last_by_session: &Mutex<HashMap<String, u64>>,
 ) -> PreStepDecision {
     let Some(view) = CompactionScope::try_current(|scope| {
         if scope.abort().is_aborted() {
@@ -153,29 +158,31 @@ fn inject_if_due(
     .flatten() else {
         return decision;
     };
-    apply_injection(decision, &view, now_ms, config)
+    let mut last_by_session = last_by_session
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    apply_injection(decision, &view, now_ms, &mut last_by_session, config)
 }
 
-/// Turn, next step, and elapsed-time baselines read from the live session.
+/// Turn, next step, session id, and elapsed-time baselines from the live session.
 pub(crate) struct InjectionView {
+    session_id: String,
     turn: u64,
     step: u64,
-    last_injection: Option<i64>,
     previous: Option<i64>,
 }
 
 fn injection_view(session: &Session) -> InjectionView {
     let (turn, step) = next_turn_step(session);
-    let last_injection = latest_injection_time(session);
     let previous = if step == 1 {
         preceding_message_time(session)
     } else {
         preceding_step_context_time(session, turn)
     };
     InjectionView {
+        session_id: session.id().as_str().to_string(),
         turn,
         step,
-        last_injection,
         previous,
     }
 }
@@ -196,17 +203,6 @@ fn next_turn_step(session: &Session) -> (u64, u64) {
         }
     }
     (turn, step + 1)
-}
-
-fn latest_injection_time(session: &Session) -> Option<i64> {
-    for event in session.events().iter().rev() {
-        if let LogEvent::Known(SessionEvent::UserMessage { time, data, .. }) = event {
-            if is_time_context_source(&data.source) {
-                return Some(*time);
-            }
-        }
-    }
-    None
 }
 
 fn preceding_message_time(session: &Session) -> Option<i64> {
@@ -242,7 +238,7 @@ fn is_time_context_source(source: &MessageSource) -> bool {
     matches!(source, MessageSource::Plugin { plugin, .. } if plugin == PLUGIN_SOURCE)
 }
 
-fn should_skip_interval(now_ms: u64, last: Option<i64>, interval: Option<u64>) -> bool {
+fn should_skip_interval(now_ms: u64, last: Option<u64>, interval: Option<u64>) -> bool {
     let Some(interval) = interval else {
         return false;
     };
@@ -252,18 +248,21 @@ fn should_skip_interval(now_ms: u64, last: Option<i64>, interval: Option<u64>) -
     let Some(last) = last else {
         return false;
     };
-    if last < 0 {
-        return false;
-    }
-    let last = last as u64;
     now_ms >= last && now_ms.saturating_sub(last) < interval
 }
 
+/// Epoch-ms values at or above this are treated as wall clock; seq-as-time is not.
+const MIN_PLAUSIBLE_UNIX_MS: i64 = 1_000_000_000_000;
+
 /// Prepend a time-context user message onto a non-empty [`PreStepDecision::Enter`].
+///
+/// `last_by_session` records wall-clock prepend times keyed by session id string.
+/// The map is updated only when this call actually prepends.
 pub(crate) fn apply_injection(
     decision: PreStepDecision,
     view: &InjectionView,
     now_ms: u64,
+    last_by_session: &mut HashMap<String, u64>,
     config: &TimeContextConfig,
 ) -> PreStepDecision {
     let PreStepDecision::Enter { mut messages } = decision else {
@@ -272,11 +271,13 @@ pub(crate) fn apply_injection(
     if messages.is_empty() {
         return PreStepDecision::Enter { messages };
     }
-    if should_skip_interval(now_ms, view.last_injection, config.refresh_interval_ms) {
+    let last = last_by_session.get(&view.session_id).copied();
+    if should_skip_interval(now_ms, last, config.refresh_interval_ms) {
         return PreStepDecision::Enter { messages };
     }
     let text = render_text(now_ms, view.turn, view.step, view.previous);
     messages.insert(0, time_context_message(text));
+    last_by_session.insert(view.session_id.clone(), now_ms);
     PreStepDecision::Enter { messages }
 }
 
@@ -288,8 +289,10 @@ pub(crate) fn view_from_session(session: &Session) -> InjectionView {
 
 fn render_text(now_ms: u64, turn: u64, step: u64, previous: Option<i64>) -> String {
     let elapsed = match previous {
-        None => "unavailable".to_string(),
-        Some(previous) => format_duration(elapsed_ms(now_ms, previous)),
+        Some(previous) if previous >= MIN_PLAUSIBLE_UNIX_MS => {
+            format_duration(elapsed_ms(now_ms, previous))
+        }
+        _ => "unavailable".to_string(),
     };
     let baseline = if step == 1 {
         "model-visible message"
@@ -303,9 +306,6 @@ fn render_text(now_ms: u64, turn: u64, step: u64, previous: Option<i64>) -> Stri
 }
 
 fn elapsed_ms(now_ms: u64, previous: i64) -> u64 {
-    if previous < 0 {
-        return 0;
-    }
     now_ms.saturating_sub(previous as u64)
 }
 

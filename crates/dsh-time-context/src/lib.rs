@@ -22,6 +22,7 @@ mod tests {
     use dsh_system_prompt::{SystemPrompt, SystemPromptConfig};
     use dsh_tools::{ToolPresentationMode, ToolRuntime};
     use serde_json::json;
+    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
     fn user_text(id: &str, text: &str) -> Message {
@@ -85,6 +86,17 @@ mod tests {
                     source_command_id: None,
                 },
             },
+            surface_op: Some(SurfaceOp::Append),
+            source_event_seqs: None,
+            ignorable: None,
+        }
+    }
+
+    fn human_user(seq: u64, time: i64) -> SessionEvent {
+        SessionEvent::UserMessage {
+            seq,
+            time,
+            data: user_text("human", "hi"),
             surface_op: Some(SurfaceOp::Append),
             source_event_seqs: None,
             ignorable: None,
@@ -188,34 +200,40 @@ mod tests {
         let session = session_with_turn(1);
         let view = view_from_session(&session);
         let config = TimeContextConfig::default();
+        let mut last = HashMap::new();
         assert!(matches!(
-            apply_injection(PreStepDecision::Reject, &view, 0, &config),
+            apply_injection(PreStepDecision::Reject, &view, 0, &mut last, &config),
             PreStepDecision::Reject
         ));
+        assert!(last.is_empty());
         let empty = apply_injection(
             PreStepDecision::Enter {
                 messages: Vec::new(),
             },
             &view,
             0,
+            &mut last,
             &config,
         );
         assert!(matches!(
             empty,
             PreStepDecision::Enter { ref messages } if messages.is_empty()
         ));
+        assert!(last.is_empty());
     }
 
     #[test]
     fn first_step_text_uses_model_visible_baseline() {
         let session = session_with_turn(1);
         let view = view_from_session(&session);
+        let mut last = HashMap::new();
         let decision = apply_injection(
             PreStepDecision::Enter {
                 messages: claimed(),
             },
             &view,
             0,
+            &mut last,
             &TimeContextConfig::default(),
         );
         let texts = enter_texts(decision);
@@ -238,51 +256,89 @@ mod tests {
                 ignorable: None,
             })
             .unwrap();
-        session.append(plugin_user(2, 0)).unwrap();
+        session.append(plugin_user(2, 1_709_164_739_000)).unwrap();
         let view = view_from_session(&session);
+        let mut last = HashMap::new();
         let decision = apply_injection(
             PreStepDecision::Enter {
                 messages: claimed(),
             },
             &view,
-            61_000,
+            1_709_164_800_000,
+            &mut last,
             &TimeContextConfig::default(),
         );
         let texts = enter_texts(decision);
         assert_eq!(
             texts[0],
-            "Time sampled while preparing turn 3, step 2: 1970-01-01 00:01:01 UTC\n\
+            "Time sampled while preparing turn 3, step 2: 2024-02-29 00:00:00 UTC\n\
              Elapsed since the preceding step context: 1m 1s."
         );
     }
 
     #[test]
-    fn positive_interval_skips_until_threshold() {
+    fn seq_event_time_elapsed_is_unavailable() {
         let mut session = session_with_turn(1);
-        session.append(plugin_user(1, 1_000)).unwrap();
+        session.append(human_user(1, 1)).unwrap();
+        let view = view_from_session(&session);
+        let mut last = HashMap::new();
+        let decision = apply_injection(
+            PreStepDecision::Enter {
+                messages: claimed(),
+            },
+            &view,
+            1_709_164_800_000,
+            &mut last,
+            &TimeContextConfig::default(),
+        );
+        let text = &enter_texts(decision)[0];
+        assert_eq!(
+            text,
+            "Time sampled while preparing turn 1, step 1: 2024-02-29 00:00:00 UTC\n\
+             Elapsed since the preceding model-visible message: unavailable."
+        );
+    }
+
+    #[test]
+    fn positive_interval_skips_second_step_at_same_wall_clock() {
+        let session = session_with_turn(1);
         let view = view_from_session(&session);
         let config = TimeContextConfig {
             time_zone: None,
-            refresh_interval_ms: Some(1_000),
+            refresh_interval_ms: Some(60_000),
         };
-        let skipped = apply_injection(
+        let now = 1_709_164_800_000u64;
+        let mut last = HashMap::new();
+        let first = apply_injection(
             PreStepDecision::Enter {
                 messages: claimed(),
             },
             &view,
-            1_999,
+            now,
+            &mut last,
             &config,
         );
-        assert_eq!(enter_texts(skipped).len(), 1);
-        let injected = apply_injection(
+        assert_eq!(enter_texts(first).len(), 2);
+        let second = apply_injection(
             PreStepDecision::Enter {
                 messages: claimed(),
             },
             &view,
-            2_000,
+            now,
+            &mut last,
             &config,
         );
-        assert_eq!(enter_texts(injected).len(), 2);
+        assert_eq!(enter_texts(second).len(), 1);
+        let later = apply_injection(
+            PreStepDecision::Enter {
+                messages: claimed(),
+            },
+            &view,
+            now + 60_000,
+            &mut last,
+            &config,
+        );
+        assert_eq!(enter_texts(later).len(), 2);
     }
 
     #[test]
