@@ -26,6 +26,10 @@ Do not re-record `notifications.expected.jsonl`, `result.expected.json`, or fixt
 
 Cite the rewrite note for keep-or-drop of Cordis, Landlock, `!!js`, and session format rather than restating those rows here.
 
+Phase 7 named web scenarios on the Rust `dsh` bin are `rust-host-smoke` and `cold-blank-session`. Remaining `test:web` files stay on the Node scaffold or jsdom. Full `pnpm run test:web` against Rust is the rewrite-program exit named in the [rewrite note](../architecture/2026-08-14-rust-rewrite.md), not the Phase 7 cutover.
+
+When `DSH_RUNTIME=rust`, those named web drivers spawn `target/debug/dsh` (or `DSH_RUNTIME_BIN`) with argv `web --port 0`. Unset `DSH_RUNTIME` keeps the in-process Cordis scaffold. `built-boot.snapshot.ts` stays jsdom/`FixtureApiClient` (no host).
+
 ## Phase 6 subset
 
 | Scenario | Driver | Bin | Fixture dir |
@@ -40,6 +44,14 @@ Cite the rewrite note for keep-or-drop of Cordis, Landlock, `!!js`, and session 
 | headless `subagent-settlement` | Vitest `headless.snapshot.ts` | Rust when `DSH_RUNTIME=rust`; Node otherwise | `examples/headless-agent/tests/snapshots/subagent-settlement/` |
 | headless pty/ralph/goal/advanced/headless-profile | existing Vitest | Node only | existing dirs |
 
+## Phase 7 subset
+
+| Scenario | Driver | Bin | Fixture dir |
+|---|---|---|---|
+| web `rust-host-smoke` | Vitest `apps/web/tests/rust-host-smoke.e2e.ts` | Rust when `DSH_RUNTIME=rust`; skipped otherwise | none |
+| web `cold-blank-session` | Vitest `cold-blank-session.e2e.ts` | Rust when `DSH_RUNTIME=rust`; Node scaffold otherwise | `apps/web/tests/snapshots/cold-blank-session/` |
+| remaining `test:web` files | existing Vitest | Node scaffold / jsdom | existing dirs |
+
 ## Alternatives considered
 
 **Rewrite snapshot drivers in Rust (`cargo test` spawning nothing, or a Rust NDJSON client).** Rejected: the product test is the assembled application transcript; a second suite against a different composition is the dual-run failure the rewrite note names. Vitest already owns normalization, `llm-replay` hydration, and expected-output comparison.
@@ -50,14 +62,19 @@ Cite the rewrite note for keep-or-drop of Cordis, Landlock, `!!js`, and session 
 
 **Spawn the Rust bin for every existing headless and jsonrpc scenario in Phase 5.** Rejected for pty/ralph/goal/advanced: those scenarios require Phase 8 capabilities. Phase 6 names four headless scenarios plus jsonrpc `subagent-spawn-in-process` as the cutover. Node remains the driver for the rest.
 
+**Spawn the Rust bin for every `test:web` file in Phase 7.** Rejected: named subset is `rust-host-smoke` and `cold-blank-session`. Remaining files stay Node. Full `pnpm run test:web` against Rust is the rewrite-program exit.
+
 ## Acceptance criteria
 
 - The rewrite note follow-up table links to this file instead of the placeholder ``proposed/testing/…-rust-snapshot-harness.md``.
 - `DSH_RUNTIME=rust` is documented as the Vitest launch switch; unset keeps Node.
 - Phase 6 names the four headless scenarios and jsonrpc `subagent-spawn-in-process` as the Rust subset.
 - Fixture directories are reused; the plan does not add parallel `*.rust.expected.jsonl` files.
+- Phase 7 names web `rust-host-smoke` and `cold-blank-session` as the Rust subset; remaining `test:web` files stay Node. This note does not claim full `pnpm run test:web` on Rust.
 - `docs/architecture.md` is not edited.
 
 ## Risks
 
 A reviewer may treat skipped Node `stream-json.expected.jsonl` and notification-JSONL equality on the Rust path as weakening the snapshot gate. The Node default still pins the full transcript; the Rust path pins scenario-specific durable facts, process exit 0, last assistant / stdout, and jsonrpc `finalResponse`, idle status, persist path, and `serverInfo.name`. Phase 6 composition does not match the Node event stream.
+
+A reviewer may treat the named web subset as full `pnpm run test:web` on Rust. Remaining web e2e stay Node.

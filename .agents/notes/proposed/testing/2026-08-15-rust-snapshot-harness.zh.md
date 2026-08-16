@@ -26,6 +26,10 @@ Rust `dsh` 二进制上的第 6 阶段 headless 场景是 `compaction-recovery`�
 
 Cordis、Landlock、`!!js` 与会话格式的保留或放弃引用重写笔记，不要在此复述那些行。
 
+第 7 阶段 Rust `dsh` 二进制上的具名 web 场景是 `rust-host-smoke` 与 `cold-blank-session`。其余 `test:web` 文件留在 Node scaffold 或 jsdom。对着 Rust 跑完整的 `pnpm run test:web` 是[重写笔记](../architecture/2026-08-14-rust-rewrite.md)中的重写计划退出条件，不是第 7 阶段的切换点。
+
+当 `DSH_RUNTIME=rust` 时，那些具名 web 驱动 spawn `target/debug/dsh`（若设置了 `DSH_RUNTIME_BIN` 则用该路径），argv 为 `web --port 0`。未设置 `DSH_RUNTIME` 时保持进程内 Cordis scaffold。`built-boot.snapshot.ts` 仍为 jsdom/`FixtureApiClient`（无宿主）。
+
 ## 第 6 阶段子集
 
 | 场景 | 驱动 | 二进制 | Fixture 目录 |
@@ -40,6 +44,14 @@ Cordis、Landlock、`!!js` 与会话格式的保留或放弃引用重写笔记�
 | headless `subagent-settlement` | Vitest `headless.snapshot.ts` | `DSH_RUNTIME=rust` 时为 Rust；否则为 Node | `examples/headless-agent/tests/snapshots/subagent-settlement/` |
 | headless pty/ralph/goal/advanced/headless-profile | 现有 Vitest | 仅 Node | 现有目录 |
 
+## 第 7 阶段子集
+
+| 场景 | 驱动 | 二进制 | Fixture 目录 |
+|---|---|---|---|
+| web `rust-host-smoke` | Vitest `apps/web/tests/rust-host-smoke.e2e.ts` | `DSH_RUNTIME=rust` 时为 Rust；否则跳过 | 无 |
+| web `cold-blank-session` | Vitest `cold-blank-session.e2e.ts` | `DSH_RUNTIME=rust` 时为 Rust；否则为 Node scaffold | `apps/web/tests/snapshots/cold-blank-session/` |
+| 其余 `test:web` 文件 | 现有 Vitest | Node scaffold / jsdom | 现有目录 |
+
 ## 曾考虑的替代方案
 
 **把快照驱动改写成 Rust（`cargo test` 不生成进程，或 Rust NDJSON 客户端）。** 否决：产品测试是组装后的应用转录；针对不同组合的第二套测试正是重写笔记所点名的双跑失败。Vitest 已经拥有归一化、`llm-replay` 灌入与期望输出比较。
@@ -50,14 +62,19 @@ Cordis、Landlock、`!!js` 与会话格式的保留或放弃引用重写笔记�
 
 **在第 5 阶段为每一个现有 headless 与 jsonrpc 场景生成 Rust 二进制。** 对 pty/ralph/goal/advanced 仍否决：那些场景需要第 8 阶段能力。第 6 阶段将四个 headless 场景外加 jsonrpc `subagent-spawn-in-process` 定为切换范围。其余场景仍由 Node 驱动。
 
+**在第 7 阶段为每一个 `test:web` 文件 spawn Rust 二进制。** 否决：具名子集是 `rust-host-smoke` 与 `cold-blank-session`。其余文件留在 Node。对着 Rust 跑完整的 `pnpm run test:web` 是重写计划的退出条件。
+
 ## 验收标准
 
 - 重写笔记的后续表链接到本文件，而不是占位符 ``proposed/testing/…-rust-snapshot-harness.md``。
 - `DSH_RUNTIME=rust` 被记录为 Vitest 启动开关；未设置时保持 Node。
 - 第 6 阶段将四个 headless 场景与 jsonrpc `subagent-spawn-in-process` 命名为 Rust 子集。
 - Fixture 目录被复用；计划不增加并行的 `*.rust.expected.jsonl` 文件。
+- 第 7 阶段将 web `rust-host-smoke` 与 `cold-blank-session` 命名为 Rust 子集；其余 `test:web` 文件留在 Node。本笔记不声称在 Rust 上跑完整的 `pnpm run test:web`。
 - 不编辑 `docs/architecture.md`。
 
 ## 风险
 
 评审者可能把 Rust 路径上跳过 Node 的 `stream-json.expected.jsonl` 与通知 JSONL 全量相等视为削弱快照门。Node 默认仍钉住完整转录；Rust 路径钉住场景特定的持久化事实、进程退出码 0、最后一段 assistant / stdout，以及 jsonrpc 的 `finalResponse`、idle 状态、持久化路径和 `serverInfo.name`。第 6 阶段组合并不匹配 Node 事件流。
+
+评审者可能把具名 web 子集当作在 Rust 上跑完整的 `pnpm run test:web`。其余 web e2e 留在 Node。

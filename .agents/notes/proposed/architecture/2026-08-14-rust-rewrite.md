@@ -411,7 +411,7 @@ Do **not** start from [docs/architecture.md](../../../../docs/architecture.md) o
 |---|---|
 | [2026-08-14-rust-tooling-and-gates.md](../process/2026-08-14-rust-tooling-and-gates.md) | Phase 0 pin, CI path filters, and coverage follow-up |
 | [2026-08-15-rust-snapshot-harness.md](../testing/2026-08-15-rust-snapshot-harness.md) | Phase 5 snapshot driver: Vitest stays; spawn the Rust bin for the Phase 5 subset |
-| `proposed/architecture/…-rust-gui-host-wire.md` | Phase 7, if the four-quadrant map needs a frozen IDL |
+| [2026-08-16-rust-gui-host-wire.md](2026-08-16-rust-gui-host-wire.md) | Phase 7 frozen four-quadrant HTTP/WS wire and named Vitest subset |
 | `proposed/architecture/…-dynamic-plugins.md` | Only if self-modification is reintroduced |
 
 This note partially answers [typed event schemas](2026-06-16-typed-event-schemas.md) for a Rust host: first-party events are a closed enum; `ignorable` covers unknowns; a composition-dependent runtime registry stays rejected for first-party readers. That proposal remains open for the TypeScript tree until the host cutover.

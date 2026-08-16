@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/proposed/architecture/2026-08-14-rust-rewrite.md
-2026-08-14-rust-rewrite.md: 0fb04a02df69b49dbbdad881a8a31e2cd03a2d1a
-2026-08-14-rust-rewrite.zh.md: bf33a3b0a0c3aa8a669f187c5b6a439fff00825e
+2026-08-14-rust-rewrite.md: 4abae75ca10370c7e388e0d2ce1e090fcc4878fb
+2026-08-14-rust-rewrite.zh.md: bb2988282bdff4f90794d88708e9b266d7757f38
