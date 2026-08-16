@@ -1,9 +1,10 @@
-//! Model-facing `read`, `write`, and `edit` filesystem tools for the DeepSeek Harness Rust host.
+//! Model-facing `read`, `write`, `edit`, `glob`, and `grep` filesystem tools for the DeepSeek Harness Rust host.
 
 mod args;
 mod edit;
 mod error;
 mod read;
+mod search;
 mod write;
 
 use std::sync::Arc;
@@ -14,6 +15,10 @@ use dsh_subprocess::LocalSubprocessRuntime;
 use dsh_tools::ToolRuntime;
 
 pub use error::remediate_fs_error;
+pub use search::{
+    GLOB_VCS_EXCLUDES, GlobInput, GrepInput, SearchCaps, build_glob_command, build_grep_command,
+    parse_glob_args, parse_grep_args, ripgrep_argv, run_ripgrep,
+};
 
 /// Shared state cloned into each filesystem tool body.
 #[derive(Clone)]
@@ -26,20 +31,23 @@ pub struct FsToolContext {
     pub owner: ObservationOwner,
     /// Standing sandbox policy stamped onto mutations; `None` when unfenced.
     pub sandbox: Option<SandboxExecutionPolicy>,
-    /// Subprocess runtime retained for `search` (not registered here).
+    /// Subprocess runtime used by `glob` and `grep` to spawn `rg`.
     pub subprocess: Arc<LocalSubprocessRuntime>,
-    /// `rg` executable name or path retained for `search`.
+    /// `rg` executable name or path used as argv[0]. Never taken from the environment.
     pub rg_binary: String,
 }
 
-/// Register model-facing `read`, `write`, and `edit` on `runtime`.
+/// Register model-facing `read`, `write`, `edit`, `glob`, and `grep` on `runtime`.
 ///
-/// Does not register `search`. Each body clones `ctx`. Read may overlap other
-/// parallel calls; write and edit are exclusive.
+/// Each body clones `ctx`. Read, glob, and grep may overlap other parallel
+/// calls; write and edit are exclusive. `glob` and `grep` spawn `rg` with
+/// `--no-config` as argv[1].
 pub fn register_fs_tools(runtime: &mut ToolRuntime, ctx: FsToolContext) {
     runtime.register(read::definition(ctx.clone()));
     runtime.register(write::definition(ctx.clone()));
-    runtime.register(edit::definition(ctx));
+    runtime.register(edit::definition(ctx.clone()));
+    runtime.register(search::glob_definition(ctx.clone()));
+    runtime.register(search::grep_definition(ctx));
 }
 
 #[cfg(test)]
