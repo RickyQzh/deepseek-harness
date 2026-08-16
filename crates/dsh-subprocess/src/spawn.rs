@@ -10,6 +10,8 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::{Mutex, Notify};
+#[cfg(unix)]
+use tokio::task::JoinSet;
 
 use crate::collect::OutputCollector;
 use crate::env::child_env;
@@ -232,8 +234,9 @@ fn spawn_unix(
         SubprocessOutput::Collect(_) => child.stderr.take(),
         _ => None,
     };
-    let (stdout, stdout_task) = start_collect(stdout_pipe, &stdout_mode, "stdout", spill_dir);
-    let (stderr, stderr_task) = start_collect(stderr_pipe, &stderr_mode, "stderr", spill_dir);
+    let mut drains = JoinSet::new();
+    let stdout = start_collect(stdout_pipe, &stdout_mode, "stdout", spill_dir, &mut drains);
+    let stderr = start_collect(stderr_pipe, &stderr_mode, "stderr", spill_dir, &mut drains);
 
     let inner = Arc::new(HandleInner {
         pid,
@@ -247,7 +250,7 @@ fn spawn_unix(
     let waiter_inner = Arc::clone(&inner);
     tokio::spawn(async move {
         let wait_result = child.wait().await;
-        join_collect_drains(stdout_task, stderr_task, waiter_inner.grace_ms).await;
+        join_collect_drains(&mut drains, waiter_inner.grace_ms).await;
         if let Some(collector) = &waiter_inner.stdout {
             collector.lock().await.seal();
         }
@@ -314,18 +317,14 @@ fn start_collect<R>(
     mode: &SubprocessOutput,
     label: &str,
     spill_dir: &Path,
-) -> (
-    Option<Arc<Mutex<OutputCollector>>>,
-    Option<tokio::task::JoinHandle<()>>,
-)
+    drains: &mut JoinSet<()>,
+) -> Option<Arc<Mutex<OutputCollector>>>
 where
     R: AsyncRead + Unpin + Send + 'static,
 {
     match mode {
         SubprocessOutput::Collect(collect) => {
-            let Some(reader) = reader else {
-                return (None, None);
-            };
+            let reader = reader?;
             let collector = Arc::new(Mutex::new(OutputCollector::new(
                 collect.max_bytes,
                 collect.spill_max_bytes,
@@ -333,62 +332,30 @@ where
                 spill_dir,
             )));
             let task_collector = Arc::clone(&collector);
-            let task = tokio::spawn(async move {
+            drains.spawn(async move {
                 drain_into(reader, task_collector).await;
             });
-            (Some(collector), Some(task))
+            Some(collector)
         }
-        _ => (None, None),
+        _ => None,
     }
 }
 
 /// Join collect drain tasks for at most `grace_ms`, then abort any still-running readers.
 ///
-/// Aborting drops `ChildStdout`/`ChildStderr` (the Rust equivalent of Node `destroy()`), so a
-/// descendant that inherited a collect-mode pipe cannot hold [`SubprocessHandle::done`] open.
-/// Pipe-mode streams are not passed here.
+/// Drain tasks live in a [`JoinSet`] so each is joined at most once: timeout around `join_next`,
+/// then `abort_all` and `join_next` until empty. Aborting drops `ChildStdout`/`ChildStderr` (the
+/// Rust equivalent of Node `destroy()`), so a descendant that inherited a collect-mode pipe cannot
+/// hold [`SubprocessHandle::done`] open. Pipe-mode streams are not passed here.
 #[cfg(unix)]
-async fn join_collect_drains(
-    mut stdout_task: Option<tokio::task::JoinHandle<()>>,
-    mut stderr_task: Option<tokio::task::JoinHandle<()>>,
-    grace_ms: u64,
-) {
-    let stdout_abort = stdout_task
-        .as_ref()
-        .map(tokio::task::JoinHandle::abort_handle);
-    let stderr_abort = stderr_task
-        .as_ref()
-        .map(tokio::task::JoinHandle::abort_handle);
-    let drains = async {
-        match (stdout_task.as_mut(), stderr_task.as_mut()) {
-            (Some(stdout), Some(stderr)) => {
-                let _ = tokio::join!(stdout, stderr);
-            }
-            (Some(stdout), None) => {
-                let _ = stdout.await;
-            }
-            (None, Some(stderr)) => {
-                let _ = stderr.await;
-            }
-            (None, None) => {}
-        }
-    };
-    if tokio::time::timeout(Duration::from_millis(grace_ms), drains)
+async fn join_collect_drains(drains: &mut JoinSet<()>, grace_ms: u64) {
+    let join_remaining = async { while drains.join_next().await.is_some() {} };
+    if tokio::time::timeout(Duration::from_millis(grace_ms), join_remaining)
         .await
         .is_err()
     {
-        if let Some(abort) = stdout_abort {
-            abort.abort();
-        }
-        if let Some(abort) = stderr_abort {
-            abort.abort();
-        }
-        if let Some(task) = stdout_task {
-            let _ = task.await;
-        }
-        if let Some(task) = stderr_task {
-            let _ = task.await;
-        }
+        drains.abort_all();
+        while drains.join_next().await.is_some() {}
     }
 }
 
@@ -582,10 +549,9 @@ mod tests {
         assert!(handle.wait_for_exit().await);
     }
 
-    #[tokio::test]
-    async fn bounds_inherited_pipe_draining_after_the_shell_exits() {
-        let spec = SubprocessSpawnSpec {
-            argv: vec!["/bin/sh".into(), "-c".into(), "sleep 30 &".into()],
+    fn background_sleep_spec(shell_command: &str) -> SubprocessSpawnSpec {
+        SubprocessSpawnSpec {
+            argv: vec!["/bin/sh".into(), "-c".into(), shell_command.into()],
             cwd: "/".into(),
             stdio: SubprocessStdio {
                 stdin: SubprocessStdin::Ignore,
@@ -601,13 +567,33 @@ mod tests {
             grace_ms: 200,
             signal: None,
             env: None,
-        };
-        let handle = spawn_subprocess(spec).unwrap();
+        }
+    }
+
+    async fn done_then_reap(handle: super::SubprocessHandle) {
         tokio::time::timeout(std::time::Duration::from_secs(5), handle.done())
             .await
             .expect("done")
             .unwrap();
         handle.terminate();
         assert!(handle.wait_for_exit().await);
+    }
+
+    #[tokio::test]
+    async fn bounds_inherited_pipe_draining_after_the_shell_exits() {
+        let handle = spawn_subprocess(background_sleep_spec("sleep 30 &")).unwrap();
+        done_then_reap(handle).await;
+    }
+
+    #[tokio::test]
+    async fn bounds_inherited_stderr_when_stdout_is_redirected() {
+        let handle = spawn_subprocess(background_sleep_spec("sleep 30 >/dev/null &")).unwrap();
+        done_then_reap(handle).await;
+    }
+
+    #[tokio::test]
+    async fn bounds_inherited_stdout_when_stderr_is_redirected() {
+        let handle = spawn_subprocess(background_sleep_spec("sleep 30 2>/dev/null &")).unwrap();
+        done_then_reap(handle).await;
     }
 }
