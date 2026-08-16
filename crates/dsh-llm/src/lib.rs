@@ -7,6 +7,8 @@ mod error;
 mod mock;
 pub mod plugin;
 pub mod replay;
+pub mod retry;
+pub mod retry_snapshot;
 mod types;
 
 pub use adapter::{LlmAdapter, LlmRuntime, PreparedLlmCall};
@@ -17,6 +19,7 @@ pub use error::{
     assert_usable_api_key, normalize_api_key,
 };
 pub use mock::{MockAdapter, MockScript, max_tokens_response, text_response, tool_call_response};
+pub use retry_snapshot::FailThenOk;
 pub use types::{
     GenerateOptions, LlmModelContext, LlmModelReasoningInfo, LlmProviderInfo, LlmPurpose,
     LlmReasoningEffortInfo, LlmResolvedModelInfo, ToolSchema,

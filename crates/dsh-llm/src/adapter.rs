@@ -9,6 +9,7 @@ use dsh_session::{FinishReason, LlmCallConfig, LlmCallConfigAdapterDefaults, Str
 use futures::Stream;
 
 use crate::error::{ABORTED_CODE, LlmError};
+use crate::retry::ResolvedRetryPolicy;
 use crate::types::{GenerateOptions, LlmModelContext, LlmProviderInfo, LlmResolvedModelInfo};
 
 /// Provider-wire adapter for the harness message and stream vocabulary.
@@ -41,6 +42,11 @@ pub trait LlmAdapter: Send + Sync {
         &self,
         options: GenerateOptions,
     ) -> Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send + '_>>;
+
+    /// Provider-owned retry policy for this adapter's route.
+    fn retry_policy(&self) -> ResolvedRetryPolicy {
+        ResolvedRetryPolicy::default()
+    }
 }
 
 /// One model call whose config and adapter registration were resolved together.
@@ -91,6 +97,15 @@ impl LlmRuntime {
     /// Register `adapter` for `provider`, replacing any previous adapter on that route.
     pub fn register_adapter(&mut self, provider: impl Into<String>, adapter: Arc<dyn LlmAdapter>) {
         self.adapters.insert(provider.into(), adapter);
+    }
+
+    /// Resolved retry policy for `provider`, or [`ResolvedRetryPolicy::default`] when unregistered.
+    #[must_use]
+    pub fn provider_retry_policy(&self, provider: &str) -> ResolvedRetryPolicy {
+        match self.adapters.get(provider) {
+            Some(adapter) => adapter.retry_policy(),
+            None => ResolvedRetryPolicy::default(),
+        }
     }
 
     /// Look up the adapter, resolve the model, and materialize omitted adapter defaults.

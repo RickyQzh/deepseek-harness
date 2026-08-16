@@ -4,6 +4,7 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 
 use dsh_kernel::{Context, Next};
+use dsh_llm::retry::RetryScope;
 use dsh_llm::{BlockAssembler, GenerateOptions, LlmRuntime};
 use dsh_session::{
     AssistantChunkData, AssistantMessageData, ContentBlock, EpochHeader, FinishReason, InboxTarget,
@@ -32,7 +33,9 @@ pub const DEFAULT_MAX_PARALLEL_TOOL_CALLS: usize = 10;
 /// Kernel waterfall name for pre-step admission.
 pub const EVENT_AGENT_PRE_STEP: &str = "agent/pre-step";
 /// Kernel waterfall name for model-request error recovery.
-pub const EVENT_AGENT_REQUEST_ERROR: &str = "agent/request-error";
+pub use dsh_llm::retry::EVENT_AGENT_REQUEST_ERROR;
+/// Recovery choice after a terminal model-request error or abort finish.
+pub use dsh_llm::retry::RequestErrorAction;
 
 type RequestListener = Box<dyn Fn(&LlmCallConfig) -> LlmCallConfig + Send + Sync>;
 
@@ -101,15 +104,6 @@ pub enum PreStepDecision {
     },
     /// End the turn as blocked without a step.
     Reject,
-}
-
-/// Recovery choice after a terminal model-request error or abort finish.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RequestErrorAction {
-    /// Repeat `build_request` and the adapter stream.
-    Retry,
-    /// End the turn as an error.
-    Fail,
 }
 
 /// Extra fields a pre-step listener may read. The waterfall value is [`PreStepDecision`].
@@ -1043,9 +1037,36 @@ async fn execute_step(
         let ingest = target.with(|agent| agent.ingest_chunks(turn, step, chunks))?;
         match ingest {
             StreamIngest::Failed(failure) => {
-                let action = ctx
-                    .waterfall(EVENT_AGENT_REQUEST_ERROR, RequestErrorAction::Fail)
+                let (policy, prior, abort) = target.with(|agent| {
+                    let policy = agent
+                        .llm
+                        .lock()
+                        .expect("llm")
+                        .provider_retry_policy(&provider);
+                    (
+                        policy,
+                        llm_retry_payloads(&agent.session),
+                        running_abort(agent),
+                    )
+                });
+                let scope = RetryScope::new(
+                    failure.clone(),
+                    turn,
+                    step,
+                    provider.clone(),
+                    policy,
+                    prior,
+                    abort,
+                );
+                let (action, audit) = scope
+                    .run(ctx.waterfall(EVENT_AGENT_REQUEST_ERROR, RequestErrorAction::Fail))
                     .await;
+                target.with(|agent| -> Result<(), LoopError> {
+                    for entry in audit {
+                        agent.push_event(|seq| entry.into_session_event(seq))?;
+                    }
+                    Ok(())
+                })?;
                 if target.with(|agent| agent.is_aborted()) {
                     return Ok(Some(TurnEndReason::Aborted {
                         reason: target.with(|agent| agent.cancel_reason_json()),
@@ -1148,6 +1169,24 @@ fn last_turn_from(session: &Session) -> u64 {
             _ => None,
         })
         .unwrap_or(0)
+}
+
+fn llm_retry_payloads(session: &Session) -> Vec<serde_json::Value> {
+    session
+        .events()
+        .iter()
+        .filter_map(|event| match event {
+            LogEvent::Known(SessionEvent::LlmRetry { data, .. }) => Some(data.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn running_abort(agent: &LoopAgent) -> AbortFlag {
+    match &agent.phase {
+        Phase::Running { abort, .. } | Phase::Maintenance { abort, .. } => abort.clone(),
+        Phase::Idle { .. } => AbortFlag::new(),
+    }
 }
 
 #[cfg(test)]
@@ -1835,6 +1874,64 @@ mod tests {
         agent.followup(user_text("hi", "hi")).unwrap();
         agent.run_until_idle().await.unwrap();
         assert_eq!(last_assistant_text(&agent), "recovered");
+    }
+
+    fn find_event(agent: &LoopAgent, event_type: &str) -> serde_json::Value {
+        agent
+            .session
+            .events()
+            .iter()
+            .find_map(|event| match event {
+                dsh_session::LogEvent::Known(dsh_session::SessionEvent::LlmRetry {
+                    data, ..
+                }) if event_type == "llm/retry" => Some(data.clone()),
+                dsh_session::LogEvent::Known(dsh_session::SessionEvent::LlmRetryStarted {
+                    data,
+                    ..
+                }) if event_type == "llm/retry-started" => Some(data.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing {event_type} event"))
+    }
+
+    #[tokio::test]
+    async fn retry_plugin_retries_rate_limit_once_and_logs_llm_retry() {
+        let ctx = dsh_kernel::Context::new();
+        let mut llm = LlmRuntime::new();
+        llm.register_adapter(
+            "deepseek-official",
+            Arc::new(dsh_llm::FailThenOk::rate_limit()),
+        );
+        ctx.provide("llm", std::sync::Mutex::new(llm)).unwrap();
+        dsh_llm::retry::install(&ctx);
+        let llm = ctx.get::<std::sync::Mutex<LlmRuntime>>("llm").expect("llm");
+        let mut agent = LoopAgent::new(
+            ctx,
+            Session::new(test_header("retry-plugin")),
+            LoopOptions {
+                provider: "deepseek-official".into(),
+                model: "mock".into(),
+                max_tokens: None,
+                max_parallel_tool_calls: 10,
+            },
+            Arc::new(std::sync::Mutex::new(ToolRuntime::new(
+                dsh_tools::ToolPresentationMode::Native,
+            ))),
+            SystemPrompt::new(SystemPromptConfig::default()).unwrap(),
+            llm,
+        )
+        .unwrap();
+        agent
+            .followup(user_text("retry", "retry the transient provider failure"))
+            .unwrap();
+        agent.run_until_idle().await.unwrap();
+        assert_eq!(last_assistant_text(&agent), "RETRY_OK");
+        let retry = find_event(&agent, "llm/retry");
+        assert_eq!(retry["failure"]["code"], "RATE_LIMIT");
+        assert_eq!(retry["maxRetries"], 1);
+        assert_eq!(retry["failure"]["status"], 429);
+        assert_eq!(retry["policyKey"], r#"["normal",1,["RATE_LIMIT"],1,1,0]"#);
+        assert_eq!(retry["delayMs"], 1);
     }
 
     mod reconstruction {

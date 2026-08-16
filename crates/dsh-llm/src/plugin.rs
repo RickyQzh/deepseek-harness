@@ -1,8 +1,8 @@
-//! Kernel plugins `@deepseek-ai/dsh-llm` and `@deepseek-ai/dsh-llm-mock`.
+//! Kernel plugins `@deepseek-ai/dsh-llm`, `@deepseek-ai/dsh-llm-mock`, and `@deepseek-ai/dsh-llm-retry`.
 
 use std::sync::{Arc, Mutex};
 
-use dsh_boot::{PLUGIN_LLM, PLUGIN_LLM_MOCK, PluginRegistry, PluginSetup};
+use dsh_boot::{PLUGIN_LLM, PLUGIN_LLM_MOCK, PLUGIN_LLM_RETRY, PluginRegistry, PluginSetup};
 use dsh_kernel::KernelError;
 use serde_json::Value;
 
@@ -47,4 +47,31 @@ pub fn register_mock(registry: &mut PluginRegistry) {
         })
     });
     registry.register(PLUGIN_LLM_MOCK, setup);
+}
+
+/// Register provider-routed retry. Config must be empty; providers own `retryPolicy`.
+pub fn register_retry(registry: &mut PluginRegistry) {
+    let setup: PluginSetup = Arc::new(|ctx, config: Value| {
+        Box::pin(async move {
+            reject_retry_config(&config)?;
+            crate::retry::install(&ctx);
+            Ok(())
+        })
+    });
+    registry.register(PLUGIN_LLM_RETRY, setup);
+}
+
+fn reject_retry_config(config: &Value) -> Result<(), KernelError> {
+    let Some(obj) = config.as_object() else {
+        return Ok(());
+    };
+    if obj.contains_key("retryPolicy") {
+        return Err(setup_err(
+            "llm-retry: retryPolicy belongs under each provider configuration",
+        ));
+    }
+    let Some(key) = obj.keys().next() else {
+        return Ok(());
+    };
+    Err(setup_err(format!("llm-retry: unknown key \"{key}\"")))
 }
