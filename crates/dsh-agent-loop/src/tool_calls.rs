@@ -3,8 +3,6 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::task::{Context as TaskContext, Poll, Wake, Waker};
-use std::thread::{self, Thread};
 
 use dsh_session::{
     CallId, ContentBlock, Message, MessageId, MessageRole, MessageSource, Session, SessionEvent,
@@ -29,9 +27,10 @@ type InFlightFuture =
 pub(crate) trait ToolCallHost {
     /// Run `f` with exclusive access to the session log.
     fn with_session<R>(&mut self, f: impl FnOnce(&mut Session) -> R) -> R;
-    /// Shared tool runtime. Callers lock around `prepare` / `finalize` and drop
-    /// the guard across `dispatch` `.await`.
-    fn tools(&self) -> &Mutex<ToolRuntime>;
+    /// Shared tool runtime. `prepare` / `finalize` take this mutex on the
+    /// blocking pool; `dispatch` clones the body future under a brief lock
+    /// then drops the guard before polling.
+    fn tools(&self) -> &Arc<Mutex<ToolRuntime>>;
 }
 
 /// Direct session and tools mutex, used by in-process [`crate::LoopAgent`] tests.
@@ -39,7 +38,7 @@ pub(crate) struct DirectHost<'a> {
     /// Session log that receives `tool/call` and `tool/result`.
     pub session: &'a mut Session,
     /// Shared tool runtime.
-    pub tools: &'a Mutex<ToolRuntime>,
+    pub tools: &'a Arc<Mutex<ToolRuntime>>,
 }
 
 impl ToolCallHost for DirectHost<'_> {
@@ -47,7 +46,7 @@ impl ToolCallHost for DirectHost<'_> {
         f(self.session)
     }
 
-    fn tools(&self) -> &Mutex<ToolRuntime> {
+    fn tools(&self) -> &Arc<Mutex<ToolRuntime>> {
         self.tools
     }
 }
@@ -77,9 +76,9 @@ struct GroupOutcome {
 /// Schedule one assistant step's tool-call blocks in model order.
 ///
 /// Exclusive calls are a barrier of one and run the full tool pipeline.
-/// Parallel-safe calls run [`ToolRuntime::prepare`] serially while the tools
-/// mutex is held, overlap [`ToolRuntime::dispatch`] bodies without that mutex,
-/// then [`ToolRuntime::finalize`]. A later sibling
+/// Parallel-safe calls run [`ToolRuntime::prepare`] serially (mutex held on
+/// Tokio's blocking pool), overlap [`ToolRuntime::dispatch`] bodies without
+/// that mutex, then [`ToolRuntime::finalize`]. A later sibling
 /// is reclassified before start, and an exclusive reclassification stops
 /// replenishing the pool. Abort stops new starts, drains in-flight bodies, and
 /// appends synthetic `ABORTED_BEFORE_DISPATCH` results for not-started calls.
@@ -217,7 +216,7 @@ async fn run_group<H: ToolCallHost>(
             started += 1;
             next_to_start += 1;
             if mode == ToolExecutionMode::Parallel {
-                match start_parallel(host.tools(), &group[index], signal) {
+                match start_parallel(host.tools(), &group[index], signal).await {
                     StartKind::InFlight { exec, body } => {
                         in_flight.push(Box::pin(async move { (index, exec, body.await) }));
                     }
@@ -252,7 +251,7 @@ async fn run_group<H: ToolCallHost>(
         let Some((index, exec, dispatched)) = in_flight.next().await else {
             break;
         };
-        slots[index] = Some(settle_dispatch(host.tools(), &exec, dispatched));
+        slots[index] = Some(settle_dispatch(host.tools(), &exec, dispatched).await);
         if signal.is_aborted() {
             aborted = true;
         }
@@ -297,96 +296,88 @@ enum StartKind {
     Ready(ToolExecutionResult),
 }
 
-fn start_parallel(tools: &Mutex<ToolRuntime>, call: &PlannedCall, signal: &AbortFlag) -> StartKind {
-    let prepared = prepare_locked(tools, planned_input(call, signal));
+async fn start_parallel(
+    tools: &Arc<Mutex<ToolRuntime>>,
+    call: &PlannedCall,
+    signal: &AbortFlag,
+) -> StartKind {
+    let prepared = prepare_locked(tools, planned_input(call, signal)).await;
     match prepared {
         ScheduledToolPreparation::Dispatch { exec } => {
             let body = dispatch_locked(tools, &exec);
             StartKind::InFlight { exec, body }
         }
-        ScheduledToolPreparation::PostResult { exec, result } => StartKind::Ready(settle_dispatch(
-            tools,
-            &exec,
-            ScheduledToolDispatch::PostResult { result },
-        )),
+        ScheduledToolPreparation::PostResult { exec, result } => StartKind::Ready(
+            settle_dispatch(tools, &exec, ScheduledToolDispatch::PostResult { result }).await,
+        ),
         ScheduledToolPreparation::FinalResult { result, .. } => StartKind::Ready(result),
     }
 }
 
 async fn execute_locked(
-    tools: &Mutex<ToolRuntime>,
+    tools: &Arc<Mutex<ToolRuntime>>,
     input: ToolExecutionInput,
 ) -> ToolExecutionResult {
-    let prepared = prepare_locked(tools, input);
+    let prepared = prepare_locked(tools, input).await;
     match prepared {
         ScheduledToolPreparation::Dispatch { exec } => {
             let body = dispatch_locked(tools, &exec);
             let dispatched = body.await;
-            settle_dispatch(tools, &exec, dispatched)
+            settle_dispatch(tools, &exec, dispatched).await
         }
         ScheduledToolPreparation::PostResult { exec, result } => {
-            settle_dispatch(tools, &exec, ScheduledToolDispatch::PostResult { result })
+            settle_dispatch(tools, &exec, ScheduledToolDispatch::PostResult { result }).await
         }
         ScheduledToolPreparation::FinalResult { result, .. } => result,
     }
 }
 
-fn settle_dispatch(
-    tools: &Mutex<ToolRuntime>,
+async fn settle_dispatch(
+    tools: &Arc<Mutex<ToolRuntime>>,
     exec: &ToolExecution,
     dispatched: ScheduledToolDispatch,
 ) -> ToolExecutionResult {
     match dispatched {
-        ScheduledToolDispatch::PostResult { result } => finalize_locked(tools, exec, result),
+        ScheduledToolDispatch::PostResult { result } => finalize_locked(tools, exec, result).await,
         ScheduledToolDispatch::FinalResult { result } => result,
     }
 }
 
-/// Lock `tools` for [`ToolRuntime::prepare`] and drop the guard before returning.
-///
-/// `std::sync::MutexGuard` is `!Send`, so the future is driven to completion
-/// here rather than `.await`ed in a `Send` task.
-fn prepare_locked(
-    tools: &Mutex<ToolRuntime>,
+/// Drive [`ToolRuntime::prepare`] on the blocking pool with the tools mutex held
+/// there so the Tokio worker stays free. `MutexGuard` is `!Send`.
+async fn prepare_locked(
+    tools: &Arc<Mutex<ToolRuntime>>,
     input: ToolExecutionInput,
 ) -> ScheduledToolPreparation {
-    let mut tools = tools.lock().expect("tools");
-    block_on(tools.prepare(input))
+    let tools = Arc::clone(tools);
+    tokio::task::spawn_blocking(move || {
+        let mut guard = tools.lock().expect("tools");
+        tokio::runtime::Handle::current().block_on(guard.prepare(input))
+    })
+    .await
+    .expect("prepare join")
 }
 
-fn dispatch_locked(tools: &Mutex<ToolRuntime>, exec: &ToolExecution) -> DispatchFuture {
+fn dispatch_locked(tools: &Arc<Mutex<ToolRuntime>>, exec: &ToolExecution) -> DispatchFuture {
     let tools = tools.lock().expect("tools");
     tools.dispatch(exec)
 }
 
-/// Lock `tools` for [`ToolRuntime::finalize`] and drop the guard before returning.
-fn finalize_locked(
-    tools: &Mutex<ToolRuntime>,
+/// Drive [`ToolRuntime::finalize`] on the blocking pool with the tools mutex held
+/// there so the Tokio worker stays free.
+async fn finalize_locked(
+    tools: &Arc<Mutex<ToolRuntime>>,
     exec: &ToolExecution,
     result: ToolExecutionResult,
 ) -> ToolExecutionResult {
-    let tools = tools.lock().expect("tools");
-    block_on(tools.finalize(exec, result))
-}
-
-struct ThreadWaker(Thread);
-
-impl Wake for ThreadWaker {
-    fn wake(self: Arc<Self>) {
-        self.0.unpark();
-    }
-}
-
-fn block_on<F: Future>(future: F) -> F::Output {
-    let waker = Waker::from(Arc::new(ThreadWaker(thread::current())));
-    let mut cx = TaskContext::from_waker(&waker);
-    let mut future = std::pin::pin!(future);
-    loop {
-        match future.as_mut().poll(&mut cx) {
-            Poll::Ready(output) => return output,
-            Poll::Pending => thread::park(),
-        }
-    }
+    let tools = Arc::clone(tools);
+    let exec = exec.clone();
+    tokio::task::spawn_blocking(move || {
+        let guard = tools.lock().expect("tools");
+        tokio::runtime::Handle::current().block_on(guard.finalize(&exec, result))
+    })
+    .await
+    .expect("finalize join")
 }
 
 async fn drain_in_flight(in_flight: &mut FuturesUnordered<InFlightFuture>) {
@@ -579,7 +570,7 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     fn tool_call(id: &str, name: &str, args: serde_json::Value) -> ContentBlock {
         ContentBlock::ToolCall {
@@ -640,7 +631,7 @@ mod tests {
             tool_call("c1", "slow", json!({"id": "a"})),
             tool_call("c2", "slow", json!({"id": "b"})),
         ];
-        let tools = Mutex::new(tools);
+        let tools = Arc::new(Mutex::new(tools));
         let mut extra = Vec::new();
         let outcome = execute_tool_calls(
             &mut DirectHost {
@@ -689,7 +680,7 @@ mod tests {
             tool_call("c1", "slow", json!({"id": "a"})),
             tool_call("c2", "slow", json!({"id": "b"})),
         ];
-        let tools = Mutex::new(tools);
+        let tools = Arc::new(Mutex::new(tools));
         let mut extra = Vec::new();
         let outcome = execute_tool_calls(
             &mut DirectHost {
@@ -744,7 +735,7 @@ mod tests {
             tool_call("c1", "par", json!({"id": "a"})),
             tool_call("c2", "par", json!({"id": "b"})),
         ];
-        let tools = Mutex::new(tools);
+        let tools = Arc::new(Mutex::new(tools));
         let mut extra = Vec::new();
         let outcome = execute_tool_calls(
             &mut DirectHost {
@@ -783,5 +774,85 @@ mod tests {
             .collect();
         assert_eq!(texts.len(), 2);
         assert!(texts.iter().all(|text| text == "Error: denied by policy"));
+    }
+
+    /// Current-thread `#[tokio::test]` parks the only worker if `prepare` uses
+    /// `thread::park` `block_on`; a sibling task that opens the pre-hook gate
+    /// would never run. A std-thread watchdog fails the process if that happens.
+    #[tokio::test(flavor = "current_thread")]
+    async fn yielding_prepare_does_not_park_the_runtime_worker() {
+        let finished = Arc::new(AtomicBool::new(false));
+        let watchdog_flag = Arc::clone(&finished);
+        std::thread::spawn(move || {
+            for _ in 0..40 {
+                if watchdog_flag.load(Ordering::SeqCst) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            if !watchdog_flag.load(Ordering::SeqCst) {
+                eprintln!(
+                    "yielding_prepare_does_not_park_the_runtime_worker hung: prepare parked the Tokio worker"
+                );
+                std::process::exit(101);
+            }
+        });
+        struct StopWatchdog(Arc<AtomicBool>);
+        impl Drop for StopWatchdog {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let _stop = StopWatchdog(finished);
+
+        let (gate_tx, gate_rx) = tokio::sync::oneshot::channel();
+        let gate_rx = Arc::new(Mutex::new(Some(gate_rx)));
+        let mut session = Session::new(test_header("yield-prep"));
+        let mut tools = ToolRuntime::new(ToolPresentationMode::Native);
+        let ran = Arc::new(AtomicUsize::new(0));
+        let ran_body = ran.clone();
+        tools.register(ToolDefinition {
+            name: "echo".into(),
+            description: "echo".into(),
+            parameters: json!({"type": "object"}),
+            execute: Box::new(move |args, _exec| {
+                ran_body.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move { Ok(args) })
+            }),
+            render: Box::new(|_, v| {
+                vec![ContentBlock::Text {
+                    text: v.to_string(),
+                }]
+            }),
+            is_concurrency_safe: None,
+        });
+        tools.on_pre(move |_exec, next| {
+            let rx = gate_rx.lock().expect("gate").take().expect("one prepare");
+            Box::pin(async move {
+                rx.await.expect("sibling released prepare");
+                next().await
+            })
+        });
+        tokio::spawn(async move {
+            gate_tx.send(()).expect("gate");
+        });
+        let tools = Arc::new(Mutex::new(tools));
+        let mut extra = Vec::new();
+        let outcome = execute_tool_calls(
+            &mut DirectHost {
+                session: &mut session,
+                tools: &tools,
+            },
+            1,
+            1,
+            &[tool_call("c1", "echo", json!({"id": "a"}))],
+            &AbortFlag::new(),
+            10,
+            &mut |message| extra.push(message),
+        )
+        .await
+        .unwrap();
+        assert!(!outcome.aborted);
+        assert_eq!(ran.load(Ordering::SeqCst), 1);
     }
 }

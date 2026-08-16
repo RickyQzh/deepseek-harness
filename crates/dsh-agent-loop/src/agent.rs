@@ -789,7 +789,7 @@ impl ToolCallHost for SharedHost<'_> {
         f(&mut agent.session)
     }
 
-    fn tools(&self) -> &Mutex<ToolRuntime> {
+    fn tools(&self) -> &Arc<Mutex<ToolRuntime>> {
         &self.tools
     }
 }
@@ -819,7 +819,7 @@ impl DriveTarget<'_> {
                 crate::tool_calls::execute_tool_calls(
                     &mut crate::tool_calls::DirectHost {
                         session: &mut agent.session,
-                        tools: agent.tools.as_ref(),
+                        tools: &agent.tools,
                     },
                     turn,
                     step,
