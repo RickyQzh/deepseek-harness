@@ -22,3 +22,4 @@ DeepSeek Harness 宿主进程的 Rust workspace 成员。布局、保留/放弃�
 | [`dsh-llm-deepseek`](dsh-llm-deepseek/README.md) | DeepSeek `POST /chat/completions` SSE（Server-Sent Events）适配器：序列化、翻译、按次密钥、空闲超时。 |
 | [`dsh-agent-loop`](dsh-agent-loop/README.md) | 脚本化循环：持久化 inbox、idle / maintenance / running、运行时上下文快照、请求重建、工具调用调度。 |
 | [`dsh-subprocess`](dsh-subprocess/README.md) | 完全指定的 argv 派发与凭据擦除后的子进程环境。 |
+| [`dsh-sandbox`](dsh-sandbox/README.md) | 失败即关闭的沙箱模式、可写根与提权。 |

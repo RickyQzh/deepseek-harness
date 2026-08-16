@@ -171,6 +171,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-sandbox"
+version = "0.1.0"
+dependencies = [
+ "dsh-session",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "dsh-schema"
 version = "0.1.0"
 dependencies = [
