@@ -252,6 +252,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-tool-bash"
+version = "0.1.0"
+dependencies = [
+ "dsh-agent-loop",
+ "dsh-fs",
+ "dsh-llm",
+ "dsh-sandbox",
+ "dsh-session",
+ "dsh-shell",
+ "dsh-subprocess",
+ "dsh-system-prompt",
+ "dsh-tool-fs",
+ "dsh-tools",
+ "libc",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "dsh-tool-fs"
 version = "0.1.0"
 dependencies = [

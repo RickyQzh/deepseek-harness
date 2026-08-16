@@ -25,4 +25,5 @@ Rust workspace members for the DeepSeek Harness host process. Layout, keep-or-dr
 | [`dsh-sandbox`](dsh-sandbox/README.md) | Fail-closed sandbox modes, writable roots, and escalation. |
 | [`dsh-fs`](dsh-fs/README.md) | Filesystem types and `FS_*` error codes. |
 | [`dsh-shell`](dsh-shell/README.md) | Shell request/spec types, POSIX bash executor, and exit-status parse. |
-| [`dsh-tool-fs`](dsh-tool-fs/README.md) | Model-facing read/write/edit filesystem tools. |
+| [`dsh-tool-fs`](dsh-tool-fs/README.md) | Model-facing read/write/edit/glob/grep filesystem tools. |
+| [`dsh-tool-bash`](dsh-tool-bash/README.md) | Model-facing bash tool. |
