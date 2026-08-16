@@ -13,6 +13,7 @@ Rust workspace members for the DeepSeek Harness host process. Layout, keep-or-dr
 | [`dsh-events`](dsh-events/README.md) | Re-export of the kernel event bus (`emit` / `serial` / `parallel` / `waterfall`). |
 | [`dsh-schema`](dsh-schema/README.md) | Plugin config schema + JSON Schema for Settings UI. |
 | [`dsh-compose`](dsh-compose/README.md) | Closed YAML dialect: interpolators, patches, layer order, disabled predicates. |
+| [`dsh-boot`](dsh-boot/README.md) | Closed YAML-name registry and compose mount into kernel fibers. |
 | [`dsh-session`](dsh-session/README.md) | Session ids, closed `SessionEvent` enum, surface, derive, repair, chunk rows. |
 | [`dsh-session-persist`](dsh-session-persist/README.md) | JSONL + zstd session codec (SQLite later). |
 | [`dsh-tools`](dsh-tools/README.md) | Tool execution types and lossless-JSON argument freeze. |
