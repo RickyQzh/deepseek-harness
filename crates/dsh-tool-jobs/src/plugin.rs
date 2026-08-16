@@ -10,7 +10,7 @@ use dsh_boot::{PLUGIN_TOOL_JOBS, PluginRegistry, PluginSetup};
 use dsh_jobs::{JobError, JobId, JobSnapshot, JobStatus, KillResult};
 use dsh_jobs_local::LocalJobRegistry;
 use dsh_kernel::KernelError;
-use dsh_session::{ContentBlock, Message, MessageId, MessageRole, MessageSource, SessionId};
+use dsh_session::{ContentBlock, Message, MessageId, MessageRole, MessageSource};
 use dsh_tools::{ToolDefinition, ToolError, ToolExecution, ToolRuntime};
 use serde_json::{Value, json};
 
@@ -235,11 +235,10 @@ fn job_list_definition(jobs: Arc<LocalJobRegistry>) -> ToolDefinition {
             "type": "object",
             "properties": {}
         }),
-        execute: Box::new(move |_args, _exec| {
+        execute: Box::new(move |_args, exec| {
             let jobs = Arc::clone(&jobs);
             Box::pin(async move {
-                let caller = caller_session();
-                let listed = jobs.list(caller.as_ref());
+                let listed = jobs.list(exec.session_id.as_ref());
                 Ok(json!(listed.iter().map(public_job).collect::<Vec<_>>()))
             })
         }),
@@ -275,15 +274,15 @@ fn job_kill_definition(jobs: Arc<LocalJobRegistry>) -> ToolDefinition {
             },
             "required": ["id"]
         }),
-        execute: Box::new(move |args, _exec| {
+        execute: Box::new(move |args, exec| {
             let jobs = Arc::clone(&jobs);
             Box::pin(async move {
                 let id = parse_job_id(&args)?;
-                let caller = caller_session();
+                let caller = exec.session_id.as_ref();
                 let result = jobs
-                    .kill(&id, caller.as_ref(), None)
+                    .kill(&id, caller, None)
                     .map_err(job_tool_error)?;
-                let snapshot = jobs.get(&id, caller.as_ref()).map_err(job_tool_error)?;
+                let snapshot = jobs.get(&id, caller).map_err(job_tool_error)?;
                 let outcome = match result {
                     KillResult::AlreadyFinished => "already-finished",
                     KillResult::Requested => "cancellation-requested",
@@ -328,7 +327,7 @@ async fn execute_job_output(
     exec: ToolExecution,
 ) -> Result<Value, ToolError> {
     let id = parse_job_id(&args)?;
-    let caller = caller_session();
+    let caller = exec.session_id.as_ref();
     if args.get("wait") == Some(&Value::Bool(true)) {
         let requested = args
             .get("timeout_ms")
@@ -336,13 +335,13 @@ async fn execute_job_output(
             .unwrap_or(config.wait_timeout_ms);
         let timeout = requested.min(config.max_wait_timeout_ms);
         tokio::select! {
-            result = jobs.wait(&id, timeout, caller.as_ref()) => {
+            result = jobs.wait(&id, timeout, caller) => {
                 result.map_err(job_tool_error)?;
             }
             () = exec.signal.cancelled() => {}
         }
     }
-    let read = jobs.read(&id, caller.as_ref()).map_err(job_tool_error)?;
+    let read = jobs.read(&id, caller).map_err(job_tool_error)?;
     Ok(json!({
         "text": read.text,
         "job": public_job(&read.snapshot),
@@ -378,10 +377,6 @@ fn json_positive_u64(value: &Value) -> Option<u64> {
 
 fn job_tool_error(error: JobError) -> ToolError {
     ToolError::Other(error.to_string())
-}
-
-fn caller_session() -> Option<SessionId> {
-    CompactionScope::try_current(|scope| scope.with_session(|session| session.id().clone()))
 }
 
 fn parse_status_token(token: &str) -> Option<JobStatus> {
@@ -541,13 +536,13 @@ mod tests {
     use super::register;
     use crate::status_line;
     use dsh_boot::{PluginRegistry, boot_yaml, process_interpolate_env};
-    use dsh_jobs::{JobHooks, JobKind, JobOutcome, JobStart, JobStatus};
+    use dsh_jobs::{JobHooks, JobKind, JobOutcome, JobSnapshot, JobStart, JobStatus};
     use dsh_jobs_local::LocalJobRegistry;
     use dsh_kernel::Context;
-    use dsh_session::CallId;
+    use dsh_session::{CallId, SessionId};
     use dsh_tools::{AbortFlag, ToolExecutionInput, ToolExecutionResult, ToolRuntime};
     use serde_json::json;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     async fn boot_jobs_tools() -> (
         Context,
@@ -607,12 +602,21 @@ mod tests {
     }
 
     fn execute_input(name: &str, arguments: serde_json::Value) -> ToolExecutionInput {
+        execute_input_with_session(name, arguments, None)
+    }
+
+    fn execute_input_with_session(
+        name: &str,
+        arguments: serde_json::Value,
+        session_id: Option<SessionId>,
+    ) -> ToolExecutionInput {
         ToolExecutionInput {
             call_id: CallId::new("c1"),
             root_call_id: None,
             name: name.into(),
             arguments,
             parent: None,
+            session_id,
             signal: AbortFlag::new(),
         }
     }
@@ -758,5 +762,132 @@ mod tests {
     #[test]
     fn status_line_matches_typescript() {
         assert_eq!(status_line(JobStatus::Running, None), "[status: running]");
+    }
+
+    #[tokio::test]
+    async fn owned_job_is_visible_to_matching_session_id() {
+        let (_ctx, jobs, tools) = boot_jobs_tools().await;
+        jobs.start(JobStart {
+            kind: JobKind::Bash,
+            label: "echo".into(),
+            owner_session: Some(SessionId::new("a")),
+            run: Box::new(|| JobHooks {
+                cancel: Box::new(|_| {}),
+                done: Box::pin(std::future::pending::<JobOutcome>()),
+                read_output: Some(Box::new(|| "owned\n".into())),
+            }),
+        })
+        .unwrap();
+        let list_a = tools
+            .lock()
+            .expect("tools")
+            .execute(execute_input_with_session(
+                "job_list",
+                json!({}),
+                Some(SessionId::new("a")),
+            ))
+            .await;
+        assert!(!list_a.is_error());
+        assert!(result_text(&list_a).contains("bash-1"));
+        let output_a = tools
+            .lock()
+            .expect("tools")
+            .execute(execute_input_with_session(
+                "job_output",
+                json!({ "id": "bash-1" }),
+                Some(SessionId::new("a")),
+            ))
+            .await;
+        assert!(!output_a.is_error());
+        assert!(result_text(&output_a).contains("owned"));
+        let list_b = tools
+            .lock()
+            .expect("tools")
+            .execute(execute_input_with_session(
+                "job_list",
+                json!({}),
+                Some(SessionId::new("b")),
+            ))
+            .await;
+        assert!(!list_b.is_error());
+        assert_eq!(result_text(&list_b), "(no background jobs)");
+        let output_b = tools
+            .lock()
+            .expect("tools")
+            .execute(execute_input_with_session(
+                "job_output",
+                json!({ "id": "bash-1" }),
+                Some(SessionId::new("b")),
+            ))
+            .await;
+        assert!(output_b.is_error());
+        match output_b {
+            ToolExecutionResult::Failure { error, .. } => {
+                assert!(error.message.contains("belongs to another session"));
+            }
+            ToolExecutionResult::Success { .. } => panic!("expected foreign get to fail"),
+        }
+    }
+
+    #[tokio::test]
+    async fn aborted_job_output_wait_does_not_suppress_on_job_done() {
+        let (_ctx, jobs, tools) = boot_jobs_tools().await;
+        let seen = Arc::new(Mutex::new(None::<JobSnapshot>));
+        let slot = Arc::clone(&seen);
+        jobs.on_job_done(move |snap| {
+            *slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(snap);
+        });
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        jobs.start(JobStart {
+            kind: JobKind::Bash,
+            label: "hang".into(),
+            owner_session: Some(SessionId::new("a")),
+            run: Box::new(move || JobHooks {
+                cancel: Box::new(|_| {}),
+                done: Box::pin(async move {
+                    let _ = rx.await;
+                    JobOutcome {
+                        status: JobStatus::Completed,
+                        detail: None,
+                        output: None,
+                    }
+                }),
+                read_output: None,
+            }),
+        })
+        .unwrap();
+        let signal = AbortFlag::new();
+        let mut input = execute_input_with_session(
+            "job_output",
+            json!({ "id": "bash-1", "wait": true, "timeout_ms": 60_000 }),
+            Some(SessionId::new("a")),
+        );
+        input.signal = signal.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+            signal.abort();
+        });
+        let _ = tools.lock().expect("tools").execute(input).await;
+        tx.send(()).expect("settle");
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if let Some(snap) = seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+            {
+                assert!(
+                    !snap.reported(),
+                    "aborted wait must not mark the job reported"
+                );
+                break;
+            }
+            if tokio::time::Instant::now() > deadline {
+                panic!("on_job_done did not fire after aborted tool wait");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
     }
 }

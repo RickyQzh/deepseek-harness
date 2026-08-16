@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use dsh_session::{CallId, ContentBlock, Message};
+use dsh_session::{CallId, ContentBlock, Message, SessionId};
 use tokio::sync::Notify;
 
 /// Tool name reserved for Code Mode `run_code`.
@@ -190,6 +190,8 @@ pub struct ToolExecutionInput {
     pub arguments: serde_json::Value,
     /// Parent execution when this call is nested.
     pub parent: Option<ToolExecutionToken>,
+    /// Calling session for owner-fenced tools. `None` when the caller has no session.
+    pub session_id: Option<SessionId>,
     /// Cancellation signal for this execution.
     pub signal: AbortFlag,
 }
@@ -209,6 +211,8 @@ pub struct ToolExecution {
     pub arguments: serde_json::Value,
     /// Parent execution when this call is nested.
     pub parent: Option<ToolExecutionToken>,
+    /// Calling session copied from [`ToolExecutionInput::session_id`].
+    pub session_id: Option<SessionId>,
     /// Cancellation signal for this execution.
     pub signal: AbortFlag,
 }

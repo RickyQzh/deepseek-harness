@@ -829,6 +829,7 @@ mod tests {
                 name: "glob".into(),
                 arguments: json!({}),
                 parent: None,
+                session_id: None,
                 signal: AbortFlag::new(),
             })
             .await;
@@ -848,6 +849,7 @@ mod tests {
                 name: "grep".into(),
                 arguments: json!({}),
                 parent: None,
+                session_id: None,
                 signal: AbortFlag::new(),
             })
             .await;

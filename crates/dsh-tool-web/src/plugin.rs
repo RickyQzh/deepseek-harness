@@ -251,6 +251,7 @@ mod tests {
                 name: "web_search".into(),
                 arguments: json!({ "query": "  " }),
                 parent: None,
+                session_id: None,
                 signal: AbortFlag::new(),
             })
             .await;
@@ -275,6 +276,7 @@ mod tests {
                 name: "web_search".into(),
                 arguments: json!({ "query": "rust" }),
                 parent: None,
+                session_id: None,
                 signal: AbortFlag::new(),
             })
             .await;

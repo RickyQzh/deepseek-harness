@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-面向模型的 `job_output`、`job_list` 与 `job_kill`，构建于 [`dsh-jobs-local`](../dsh-jobs-local/README.md) 之上。YAML 名称为 `@deepseek-ai/dsh-tool-jobs`。本 crate 不加入 `register_spine_plugins`，也不挂入 `base.cordis.yml`。若未提供 `agents`，则跳过完成通知，插件仍会加载。
+面向模型的 `job_output`、`job_list` 与 `job_kill`，构建于 [`dsh-jobs-local`](../dsh-jobs-local/README.md) 之上。YAML 名称为 `@deepseek-ai/dsh-tool-jobs`。本 crate 不加入 `register_spine_plugins`，也不挂入 `base.cordis.yml`。若未提供 `agents`，则跳过完成通知，插件仍会加载。工具用 `ToolExecution.session_id` 做授权；`None` 只看见无 owner 的任务。
 
 参数名是 `id`，不是 `job_id`。`job_output` 为 `{ id, wait?, timeout_ms? }`。`job_list` 为 `{}`。`job_kill` 为 `{ id }`。空 `id` 校验失败。未知 id 是包含 `unknown job` 的工具错误。读取结果渲染正文或 `(no new output)`，然后是 `[status: …]`。取消仍在运行的工作返回 `requested cancellation of job {id}`。取消已经终止的任务返回 already-finished 文本。`wait: true` 超时返回当前快照，不是工具错误。
 
@@ -29,7 +29,6 @@
 
 ## 已知限制与延后工作
 
-- `ToolExecution` 没有调用方 session；工具读取 `CompactionScope`（工具 body 期间未设置），因此除非后续阶段传入调用方，否则只能看见无 owner 的任务。
 - 在 `SystemPrompt` 支持提供之后再登记段落之前，省略 `tool:jobs` 系统提示词段落。
 - 未实现 isolate / preset 控制器分层。
 - 本阶段不把该插件挂入 `base.cordis.yml`。

@@ -384,6 +384,7 @@ mod tests {
                 name: "bash".into(),
                 arguments: json!({"command":"touch /etc/nologin","description":"probe denial"}),
                 parent: None,
+                session_id: None,
                 signal: AbortFlag::new(),
             })
             .await;

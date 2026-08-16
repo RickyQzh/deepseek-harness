@@ -4,7 +4,7 @@ English | [中文](README.zh.md)
 
 Background-job Service Definition for the DeepSeek Harness Rust host: branded [`JobId`](src/brand.rs), snapshots, and the [`JobRegistry`](src/types.rs) trait. This crate is not a YAML plugin name; loading `@deepseek-ai/dsh-jobs` fails as unknown. The process-local provider is [`dsh-jobs-local`](../dsh-jobs-local/README.md). This crate is not added to `register_spine_plugins` and is not mounted in `base.cordis.yml`.
 
-`JobId` is a local newtype around `dsh_brand::Branded<JobIdTag>` (`new` / `as_str`). `JobKind` is `Bash` or `Subagent`; id prefixes are `bash` and `subagent`. `JobStart.owner_session` is an optional `SessionId`, not a live agent. `dsh-jobs` does not depend on `dsh-agent`.
+`JobId` is a local newtype around `dsh_brand::Branded<JobIdTag>` (`new` / `as_str`). `JobKind` is `Bash` or `Subagent`; id prefixes are `bash` and `subagent`. `JobStart.owner_session` is an optional `SessionId`, not a live agent. `JobStart.run` is synchronous and must not re-enter the registry that is starting the job. `dsh-jobs` does not depend on `dsh-agent`.
 
 Owned access compares session ids. Ids such as `bash-1` are predictable, so this fence is the boundary. `list(Some(other))` is empty, not an error. `get` / `read` / `kill` of a foreign owner fail. `caller: None` sees unowned jobs. Unowned jobs (`owner_session: None`) are open to any caller.
 

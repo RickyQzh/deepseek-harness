@@ -2,7 +2,7 @@
 
 English | [中文](README.zh.md)
 
-Model-facing `job_output`, `job_list`, and `job_kill` over [`dsh-jobs-local`](../dsh-jobs-local/README.md). YAML name `@deepseek-ai/dsh-tool-jobs`. This crate is not added to `register_spine_plugins` and is not mounted in `base.cordis.yml`. If `agents` is not provided, completion notices are skipped and the plugin still loads.
+Model-facing `job_output`, `job_list`, and `job_kill` over [`dsh-jobs-local`](../dsh-jobs-local/README.md). YAML name `@deepseek-ai/dsh-tool-jobs`. This crate is not added to `register_spine_plugins` and is not mounted in `base.cordis.yml`. If `agents` is not provided, completion notices are skipped and the plugin still loads. Tools authorize with `ToolExecution.session_id`; `None` sees only unowned jobs.
 
 Argument names are `id`, not `job_id`. `job_output` is `{ id, wait?, timeout_ms? }`. `job_list` is `{}`. `job_kill` is `{ id }`. Empty `id` fails validation. Unknown id is a tool error containing `unknown job`. Reads render the body or `(no new output)`, then `[status: …]`. Kill of live work returns `requested cancellation of job {id}`. Kill of an already-terminal job returns already-finished text. A timed-out `wait: true` returns the current snapshot and is not a tool error.
 
@@ -29,7 +29,6 @@ Append-only tool results and notices after the reusable request prefix.
 
 ## Known Limitations and Deferred Work
 
-- `ToolExecution` has no calling session; tools read `CompactionScope` (unset during tool bodies) and therefore see unowned jobs unless a later phase threads the caller.
 - The `tool:jobs` system-prompt section is omitted until `SystemPrompt` accepts post-provide registration.
 - Isolate and preset controller layers are not implemented.
 - The plugin is not mounted in `base.cordis.yml` in this phase.

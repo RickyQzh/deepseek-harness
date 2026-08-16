@@ -104,6 +104,9 @@ pub struct JobStart {
     /// Owning session used for authorization. `None` is an unowned job, open to any caller.
     pub owner_session: Option<SessionId>,
     /// Start the work after admission and synchronously return its hooks. Called once.
+    ///
+    /// Must not re-enter the registry that is starting this job. The process-local
+    /// provider holds its mutex through `run()`.
     pub run: Box<dyn FnOnce() -> JobHooks + Send>,
 }
 
@@ -243,6 +246,8 @@ impl JobError {
 /// Abstract background job registry. The process-local provider is `dsh-jobs-local`.
 pub trait JobRegistry: Send + Sync {
     /// Admit, invoke `run`, and register the job. Returns the issued `<kind>-N` id.
+    ///
+    /// `run` is synchronous and must not re-enter this registry.
     ///
     /// # Errors
     ///

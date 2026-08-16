@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use dsh_session::{
     CallId, ContentBlock, LogEvent, Message, MessageId, MessageRole, MessageSource, Session,
-    SessionEvent, SurfaceOp, ToolCallData, ToolResultData, ToolResultError,
+    SessionEvent, SessionId, SurfaceOp, ToolCallData, ToolResultData, ToolResultError,
 };
 use dsh_tools::{
     AbortFlag, PrepareSnapshot, ScheduledToolDispatch, ScheduledToolPreparation,
@@ -111,7 +111,7 @@ pub(crate) async fn execute_tool_calls<H: ToolCallHost>(
     let mut next = 0;
     let mut concluded = false;
     while next < planned.len() {
-        let input = planned_input(&planned[next], signal);
+        let input = planned_input(host, &planned[next], signal);
         let mode = host.tools().lock().expect("tools").execution_mode(&input);
         let group_end = if mode == ToolExecutionMode::Parallel {
             planned.len()
@@ -166,13 +166,19 @@ fn plan_block(block: &ContentBlock) -> Option<PlannedCall> {
     })
 }
 
-fn planned_input(call: &PlannedCall, signal: &AbortFlag) -> ToolExecutionInput {
+fn planned_input<H: ToolCallHost>(
+    host: &mut H,
+    call: &PlannedCall,
+    signal: &AbortFlag,
+) -> ToolExecutionInput {
+    let session_id: Option<SessionId> = Some(host.with_session(|session| session.id().clone()));
     ToolExecutionInput {
         call_id: call.id.clone(),
         root_call_id: None,
         name: call.name.clone(),
         arguments: call.arguments.clone(),
         parent: None,
+        session_id,
         signal: signal.clone(),
     }
 }
@@ -205,7 +211,7 @@ async fn run_group<H: ToolCallHost>(
     loop {
         while !aborted && next_to_start < group.len() && in_flight.len() < pool_limit {
             if next_to_start > 0 && mode == ToolExecutionMode::Parallel {
-                let input = planned_input(&group[next_to_start], signal);
+                let input = planned_input(host, &group[next_to_start], signal);
                 if host.tools().lock().expect("tools").execution_mode(&input)
                     != ToolExecutionMode::Parallel
                 {
@@ -232,8 +238,8 @@ async fn run_group<H: ToolCallHost>(
                     StartKind::Ready(result) => slots[index] = Some(result),
                 }
             } else {
-                slots[index] =
-                    Some(execute_locked(host, planned_input(&group[index], signal)).await);
+                let input = planned_input(host, &group[index], signal);
+                slots[index] = Some(execute_locked(host, input).await);
             }
             if signal.is_aborted() {
                 aborted = true;
@@ -310,7 +316,8 @@ async fn start_parallel<H: ToolCallHost>(
     call: &PlannedCall,
     signal: &AbortFlag,
 ) -> StartKind {
-    let prepared = prepare_on_host(host, planned_input(call, signal)).await;
+    let input = planned_input(host, call, signal);
+    let prepared = prepare_on_host(host, input).await;
     match prepared {
         ScheduledToolPreparation::Dispatch { exec } => {
             let body = dispatch_locked(host.tools(), &exec);
@@ -735,6 +742,47 @@ mod tests {
         assert!(errors.iter().all(|error| {
             error.code == TOOL_ABORTED_BEFORE_DISPATCH && error.name == "AbortError"
         }));
+    }
+
+    #[tokio::test]
+    async fn execute_copies_host_session_id_onto_tool_execution() {
+        let mut session = Session::new(test_header("sess-a"));
+        let mut tools = ToolRuntime::new(ToolPresentationMode::Native);
+        let seen = Arc::new(Mutex::new(None));
+        let slot = Arc::clone(&seen);
+        tools.register(ToolDefinition {
+            name: "probe".into(),
+            description: "probe".into(),
+            parameters: json!({"type": "object"}),
+            execute: Box::new(move |args, exec| {
+                *slot.lock().expect("seen") = exec.session_id.clone();
+                Box::pin(async move { Ok(args) })
+            }),
+            render: Box::new(|_, v| {
+                vec![ContentBlock::Text {
+                    text: v.to_string(),
+                }]
+            }),
+            is_concurrency_safe: None,
+        });
+        let tools = Arc::new(Mutex::new(tools));
+        let outcome = execute_tool_calls(
+            &mut DirectHost {
+                session: &mut session,
+                tools: &tools,
+            },
+            1,
+            1,
+            &[tool_call("c1", "probe", json!({}))],
+            &AbortFlag::new(),
+            10,
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
+        assert!(!outcome.aborted);
+        let id = seen.lock().expect("seen");
+        assert_eq!(id.as_ref().map(|sid| sid.as_str()), Some("sess-a"));
     }
 
     #[tokio::test]

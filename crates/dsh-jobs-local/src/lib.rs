@@ -67,6 +67,9 @@ impl LocalJobRegistry {
 
     /// Bounded wait for settlement. Timeout returns the current snapshot and leaves a live job running.
     ///
+    /// Dropping the future uncounts the waiter so a cancelled wait cannot suppress
+    /// [`Self::on_job_done`].
+    ///
     /// # Errors
     ///
     /// [`JobError`] when `timeout_ms` is 0, the id is unknown, or the caller is fenced out.
@@ -102,6 +105,10 @@ impl LocalJobRegistry {
             job.wait_resolvers.push(tx);
             rx
         };
+        let _guard = WaiterGuard {
+            inner: Arc::clone(&self.inner),
+            id: id.clone(),
+        };
         tokio::select! {
             _ = rx => {}
             () = tokio::time::sleep(std::time::Duration::from_millis(timeout_ms)) => {}
@@ -111,8 +118,6 @@ impl LocalJobRegistry {
             .store
             .get_mut(id)
             .ok_or_else(|| JobError::new(format!("unknown job {id}")))?;
-        job.waiters = job.waiters.saturating_sub(1);
-        job.wait_resolvers.retain(|tx| !tx.is_closed());
         if job.status.is_terminal() {
             job.reported = true;
         }
@@ -204,6 +209,10 @@ impl JobRegistry for LocalJobRegistry {
 impl LocalJobRegistry {
     /// Admit, invoke `run`, issue `<kind>-N`, and spawn settlement.
     ///
+    /// Holds the registry mutex through the active-count check, `run()`, and insert
+    /// so concurrent `start`s cannot exceed `max_concurrent_per_owner`. `run` must
+    /// not call back into this registry.
+    ///
     /// # Errors
     ///
     /// Empty label or per-owner active limit. `run` is called only after admission.
@@ -213,21 +222,18 @@ impl LocalJobRegistry {
                 "invalid job label: expected a non-empty string",
             ));
         }
-        {
-            let inner = self.lock();
-            let active = active_count(&inner, spec.owner_session.as_ref());
-            if active >= self.max_concurrent_per_owner {
-                return Err(JobError::new(format!(
-                    "background job limit reached for this owner (limit: {}); use job_kill to stop an unneeded job, wait for it to finish, then retry",
-                    self.max_concurrent_per_owner
-                )));
-            }
+        let mut inner = self.lock();
+        let active = active_count(&inner, spec.owner_session.as_ref());
+        if active >= self.max_concurrent_per_owner {
+            return Err(JobError::new(format!(
+                "background job limit reached for this owner (limit: {}); use job_kill to stop an unneeded job, wait for it to finish, then retry",
+                self.max_concurrent_per_owner
+            )));
         }
         let kind = spec.kind;
         let label = spec.label;
         let owner_session = spec.owner_session;
         let hooks: JobHooks = (spec.run)();
-        let mut inner = self.lock();
         let count = inner.counters.entry(kind).or_insert(0);
         *count = count.saturating_add(1);
         let n = *count;
@@ -459,6 +465,24 @@ fn panic_cancel(
         .map_err(|payload| panic_message(payload.as_ref()))
 }
 
+/// Decrements `waiters` and drops a closed resolver when a `wait` future is
+/// cancelled, times out, or returns.
+struct WaiterGuard {
+    inner: Arc<Mutex<Inner>>,
+    id: JobId,
+}
+
+impl Drop for WaiterGuard {
+    fn drop(&mut self) {
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(job) = inner.store.get_mut(&self.id) else {
+            return;
+        };
+        job.waiters = job.waiters.saturating_sub(1);
+        job.wait_resolvers.retain(|tx| !tx.is_closed());
+    }
+}
+
 fn settle_on(inner: &Arc<Mutex<Inner>>, id: &JobId, outcome: JobOutcome) {
     let mut guard = inner.lock().unwrap_or_else(PoisonError::into_inner);
     let Some(job) = guard.store.get_mut(id) else {
@@ -494,8 +518,9 @@ pub use plugin::register;
 #[cfg(test)]
 mod tests {
     use super::LocalJobRegistry;
-    use dsh_jobs::{JobHooks, JobKind, JobOutcome, JobStart, JobStatus};
+    use dsh_jobs::{JobHooks, JobKind, JobOutcome, JobStart, JobStatus, KillResult};
     use dsh_session::SessionId;
+    use std::sync::{Arc, Mutex};
 
     fn immediate_job(kind: JobKind, label: &str, owner: Option<SessionId>) -> JobStart {
         JobStart {
@@ -622,5 +647,206 @@ mod tests {
         jobs.cancel_live("test drop");
         let status = jobs.get(&id, None).unwrap().status();
         assert!(matches!(status, JobStatus::Stopping | JobStatus::Killed));
+    }
+
+    #[tokio::test]
+    async fn on_job_done_sees_a_terminal_snapshot() {
+        let jobs = LocalJobRegistry::new(10);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let tx = Mutex::new(Some(tx));
+        jobs.on_job_done(move |snap| {
+            if let Some(sender) = tx
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+            {
+                let _ = sender.send(snap);
+            }
+        });
+        let id = jobs
+            .start(immediate_job(JobKind::Bash, "echo", None))
+            .unwrap();
+        let snap = tokio::time::timeout(std::time::Duration::from_secs(2), rx)
+            .await
+            .expect("on_job_done")
+            .expect("listener");
+        assert_eq!(snap.id(), &id);
+        assert!(snap.status().is_terminal());
+        assert!(snap.finished_at().is_some());
+    }
+
+    #[tokio::test]
+    async fn kill_after_completion_is_already_finished() {
+        let jobs = LocalJobRegistry::new(10);
+        let id = jobs
+            .start(immediate_job(JobKind::Bash, "echo", None))
+            .unwrap();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if jobs.get(&id, None).unwrap().status().is_terminal() {
+                break;
+            }
+            if tokio::time::Instant::now() > deadline {
+                panic!("job did not settle");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            jobs.kill(&id, None, Some("late".into())).unwrap(),
+            KillResult::AlreadyFinished
+        );
+        assert_eq!(jobs.get(&id, None).unwrap().status(), JobStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn first_terminal_settlement_wins_against_later_producer() {
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let jobs = LocalJobRegistry::new(10);
+        let id = jobs
+            .start(JobStart {
+                kind: JobKind::Bash,
+                label: "panic-cancel".into(),
+                owner_session: None,
+                run: Box::new(move || JobHooks {
+                    cancel: Box::new(|_| panic!("cancel boom")),
+                    done: Box::pin(async move {
+                        let _ = rx.await;
+                        JobOutcome {
+                            status: JobStatus::Completed,
+                            detail: None,
+                            output: None,
+                        }
+                    }),
+                    read_output: None,
+                }),
+            })
+            .unwrap();
+        jobs.cancel_live("teardown");
+        assert_eq!(jobs.get(&id, None).unwrap().status(), JobStatus::Failed);
+        let _ = tx.send(());
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        assert_eq!(jobs.get(&id, None).unwrap().status(), JobStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn aborted_wait_does_not_suppress_on_job_done() {
+        let jobs = Arc::new(LocalJobRegistry::new(10));
+        let seen = Arc::new(Mutex::new(None));
+        let slot = Arc::clone(&seen);
+        jobs.on_job_done(move |snap| {
+            *slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(snap);
+        });
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let owner = SessionId::new("a");
+        let id = jobs
+            .start(JobStart {
+                kind: JobKind::Bash,
+                label: "hang".into(),
+                owner_session: Some(owner.clone()),
+                run: Box::new(move || JobHooks {
+                    cancel: Box::new(|_| {}),
+                    done: Box::pin(async move {
+                        let _ = rx.await;
+                        JobOutcome {
+                            status: JobStatus::Completed,
+                            detail: None,
+                            output: None,
+                        }
+                    }),
+                    read_output: None,
+                }),
+            })
+            .unwrap();
+        let wait_jobs = Arc::clone(&jobs);
+        let wait_id = id.clone();
+        let wait_owner = owner.clone();
+        let wait =
+            tokio::spawn(async move { wait_jobs.wait(&wait_id, 60_000, Some(&wait_owner)).await });
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        wait.abort();
+        let _ = wait.await;
+        tx.send(()).expect("settle");
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if let Some(snap) = seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+            {
+                assert!(
+                    !snap.reported(),
+                    "aborted wait must not mark the job reported"
+                );
+                assert_eq!(snap.status(), JobStatus::Completed);
+                break;
+            }
+            if tokio::time::Instant::now() > deadline {
+                panic!("on_job_done did not fire after aborted wait");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(!jobs.get(&id, Some(&owner)).unwrap().reported());
+    }
+
+    #[tokio::test]
+    async fn second_start_hits_per_owner_cap() {
+        let jobs = LocalJobRegistry::new(1);
+        jobs.start(hanging_job()).unwrap();
+        let err = jobs.start(hanging_job()).unwrap_err();
+        assert!(err.to_string().contains("limit: 1"));
+        assert_eq!(jobs.list(None).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_start_respects_per_owner_cap() {
+        let jobs = Arc::new(LocalJobRegistry::new(1));
+        let first = Arc::clone(&jobs);
+        let second = Arc::clone(&jobs);
+        let t1 = tokio::task::spawn_blocking(move || first.start(delayed_hanging_job()));
+        let t2 = tokio::task::spawn_blocking(move || second.start(delayed_hanging_job()));
+        let r1 = t1.await.expect("t1");
+        let r2 = t2.await.expect("t2");
+        let ok = r1.is_ok() as u8 + r2.is_ok() as u8;
+        let err = r1.is_err() as u8 + r2.is_err() as u8;
+        assert_eq!(ok, 1, "exactly one start must admit: {r1:?} {r2:?}");
+        assert_eq!(err, 1, "the other start must hit the cap: {r1:?} {r2:?}");
+        assert_eq!(jobs.list(None).len(), 1);
+        let err_text = r1.err().or(r2.err()).expect("limit error");
+        assert!(err_text.to_string().contains("limit: 1"));
+    }
+
+    fn delayed_hanging_job() -> JobStart {
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let tx = std::sync::Mutex::new(Some(tx));
+        JobStart {
+            kind: JobKind::Bash,
+            label: "hang".into(),
+            owner_session: None,
+            run: Box::new(move || {
+                std::thread::sleep(std::time::Duration::from_millis(80));
+                JobHooks {
+                    cancel: Box::new(move |_| {
+                        if let Some(sender) = tx
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .take()
+                        {
+                            let _ = sender.send(());
+                        }
+                    }),
+                    done: Box::pin(async move {
+                        let _ = rx.await;
+                        JobOutcome {
+                            status: JobStatus::Killed,
+                            detail: None,
+                            output: None,
+                        }
+                    }),
+                    read_output: None,
+                }
+            }),
+        }
     }
 }

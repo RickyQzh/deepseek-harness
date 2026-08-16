@@ -294,6 +294,7 @@ mod tests {
                 name: "skill".into(),
                 arguments: json!({ "name": name }),
                 parent: None,
+                session_id: None,
                 signal: AbortFlag::new(),
             })
             .await

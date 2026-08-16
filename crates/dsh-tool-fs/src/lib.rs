@@ -96,6 +96,7 @@ mod tests {
             name: name.into(),
             arguments: args,
             parent: None,
+            session_id: None,
             signal: AbortFlag::new(),
         }
     }

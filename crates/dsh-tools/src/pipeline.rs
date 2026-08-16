@@ -413,6 +413,7 @@ impl ToolRuntime {
                     name: input.name,
                     arguments: input.arguments,
                     parent: input.parent,
+                    session_id: input.session_id,
                     signal: input.signal,
                 };
                 return PrepareSnapshot::early(ScheduledToolPreparation::FinalResult {
@@ -428,6 +429,7 @@ impl ToolRuntime {
             name: input.name,
             arguments,
             parent: input.parent,
+            session_id: input.session_id,
             signal: input.signal,
         };
         let visible = self.tools.contains_key(&exec.name);
@@ -900,6 +902,7 @@ mod tests {
             name: name.into(),
             arguments: args,
             parent: None,
+            session_id: None,
             signal,
         }
     }
