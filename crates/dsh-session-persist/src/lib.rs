@@ -3,6 +3,7 @@
 mod error;
 mod header_line;
 mod jsonl;
+pub mod plugin;
 mod store;
 mod zstd;
 

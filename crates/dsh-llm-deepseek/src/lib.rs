@@ -1,6 +1,7 @@
 //! DeepSeek `POST /chat/completions` SSE adapter.
 
 mod adapter;
+pub mod plugin;
 mod serialize;
 mod sse;
 mod translate;

@@ -3,6 +3,7 @@
 mod assemble;
 mod error;
 mod interpolate;
+pub mod plugin;
 
 pub use assemble::{
     AssembleContext, AssembledContext, AssembledSection, CONTEXT_SNAPSHOT_PREFIX,

@@ -5,6 +5,8 @@ mod assembler;
 mod attribution;
 mod error;
 mod mock;
+pub mod plugin;
+pub mod replay;
 mod types;
 
 pub use adapter::{LlmAdapter, LlmRuntime, PreparedLlmCall};

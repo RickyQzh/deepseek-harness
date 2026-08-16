@@ -3,6 +3,7 @@
 mod error;
 mod freeze;
 mod pipeline;
+pub mod plugin;
 mod types;
 
 pub use error::{TOOL_ABORTED, TOOL_ABORTED_BEFORE_DISPATCH, ToolError};

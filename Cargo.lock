@@ -92,8 +92,13 @@ name = "dsh-agent"
 version = "0.1.0"
 dependencies = [
  "dsh-agent-loop",
+ "dsh-boot",
+ "dsh-credentials",
+ "dsh-kernel",
  "dsh-llm",
+ "dsh-llm-deepseek",
  "dsh-session",
+ "dsh-session-persist",
  "dsh-system-prompt",
  "dsh-tools",
  "thiserror",
@@ -144,7 +149,10 @@ dependencies = [
 name = "dsh-credentials"
 version = "0.1.0"
 dependencies = [
+ "dsh-boot",
  "dsh-brand",
+ "dsh-kernel",
+ "serde_json",
  "serde_yaml",
  "thiserror",
 ]
@@ -180,7 +188,10 @@ dependencies = [
 name = "dsh-llm"
 version = "0.1.0"
 dependencies = [
+ "dsh-boot",
+ "dsh-kernel",
  "dsh-session",
+ "dsh-session-persist",
  "dsh-tools",
  "futures",
  "serde",
@@ -193,7 +204,9 @@ dependencies = [
 name = "dsh-llm-deepseek"
 version = "0.1.0"
 dependencies = [
+ "dsh-boot",
  "dsh-credentials",
+ "dsh-kernel",
  "dsh-llm",
  "dsh-session",
  "dsh-tools",
@@ -248,6 +261,8 @@ dependencies = [
 name = "dsh-session-persist"
 version = "0.1.0"
 dependencies = [
+ "dsh-boot",
+ "dsh-kernel",
  "dsh-session",
  "serde",
  "serde_json",
@@ -280,6 +295,8 @@ dependencies = [
 name = "dsh-system-prompt"
 version = "0.1.0"
 dependencies = [
+ "dsh-boot",
+ "dsh-kernel",
  "dsh-llm",
  "dsh-session",
  "serde_json",
@@ -323,6 +340,8 @@ dependencies = [
 name = "dsh-tools"
 version = "0.1.0"
 dependencies = [
+ "dsh-boot",
+ "dsh-kernel",
  "dsh-session",
  "serde",
  "serde_json",

@@ -6,6 +6,8 @@
 
 Harness 身份是顺序为 −100 的 `harness:identity` 段落。部署 persona 是顺序为 0 的 `deployment:persona`。`TOOL_ORDER_REST`（`<unlisted-tools>`）标记未列出的工具按字典序插入的位置。快照同一性（渲染文本未变化时跳过新的用户消息）由 `dsh-agent-loop` 应用，而不是本 crate。
 
+`plugin::register` 根据 YAML 的 `persona`、`includeHarnessIdentity`（默认 true）和 `includeRuntimeContext`（默认 false）提供 `systemPrompt`。
+
 ## 已知限制与暂缓事项
 
 - 作用域段落/变量遮蔽以及 Cordis `system-prompt/assemble` waterfall 插件属于第 5 阶段。本 crate 是带进程内监听器列表的库。

@@ -9,7 +9,10 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
+dsh-boot = { path = "../dsh-boot" }
+dsh-kernel = { path = "../dsh-kernel" }
 dsh-session = { path = "../dsh-session" }
+dsh-session-persist = { path = "../dsh-session-persist" }
 dsh-tools = { path = "../dsh-tools" }
 futures = { workspace = true }
 serde = { workspace = true }

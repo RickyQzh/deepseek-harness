@@ -6,6 +6,8 @@ Resolves POSIX-named credential references per call. Consumers must not cache th
 
 Layers are process environment, then an optional YAML string map, then memory. An empty stored value is absent at every layer. This crate does not watch files, enforce `chmod 600`, or persist writes.
 
+`plugin::register` mounts YAML `@deepseek-ai/dsh-credentials` and provides the `credentials` service.
+
 ## Known Limitations and Deferred Work
 
 - The TypeScript local provider's chokidar watcher, home-directory `.credentials.yaml`, and project `.env` files are a later crate. Phase 3 needs env + memory + an injectable YAML map so DeepSeek tests can swap a key without a real `DEEPSEEK_API_KEY`.

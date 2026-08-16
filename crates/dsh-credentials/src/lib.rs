@@ -1,5 +1,7 @@
 //! Per-request credential references. Consumers re-resolve on every operation.
 
+pub mod plugin;
+
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 

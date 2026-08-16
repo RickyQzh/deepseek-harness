@@ -6,6 +6,8 @@ Provider-neutral LLM stream contract for the Rust host. Adapters emit `usage` be
 
 `StreamChunk`, `FinishReason`, `TokenUsage`, and `Message` are the Phase 2 `dsh-session` types. `ToolSchema` is declared here because it rides on `GenerateOptions`. `BlockAssembler` is the loop's chunk-to-message fold, including the max-tokens rule that drops tool-call blocks.
 
+`plugin::register_llm` provides `llm`. `plugin::register_mock` registers `MockAdapter` on config `provider` (default `mock`). `replay::register` serves `assistant/chunk` runs from `DSH_SNAPSHOT_FILE` on each config `providers[].id`.
+
 ## Known Limitations and Deferred Work
 
 - Adapter registry replace/dispose, configurable-provider directory, model discovery, and `dsh-llm-retry` are later phases. Phase 3 is a `HashMap` of adapters plus `prepare_call` default materialization.

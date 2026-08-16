@@ -10,8 +10,13 @@ repository.workspace = true
 
 [dependencies]
 dsh-agent-loop = { path = "../dsh-agent-loop" }
+dsh-boot = { path = "../dsh-boot" }
+dsh-credentials = { path = "../dsh-credentials" }
+dsh-kernel = { path = "../dsh-kernel" }
 dsh-llm = { path = "../dsh-llm" }
+dsh-llm-deepseek = { path = "../dsh-llm-deepseek" }
 dsh-session = { path = "../dsh-session" }
+dsh-session-persist = { path = "../dsh-session-persist" }
 dsh-system-prompt = { path = "../dsh-system-prompt" }
 dsh-tools = { path = "../dsh-tools" }
 thiserror = { workspace = true }

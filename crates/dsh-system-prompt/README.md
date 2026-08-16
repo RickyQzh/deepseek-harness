@@ -6,6 +6,8 @@ Assembles ordered system-prompt sections, dynamic runtime-context snapshots, too
 
 Harness identity is the order-−100 section `harness:identity`. The deployment persona is `deployment:persona` at order 0. `TOOL_ORDER_REST` (`<unlisted-tools>`) marks where unlisted tools are inserted lexicographically. Snapshot identity (skip a new user message when the rendered text is unchanged) is applied by `dsh-agent-loop`, not this crate.
 
+`plugin::register` provides `systemPrompt` from YAML `persona`, `includeHarnessIdentity` (default true), and `includeRuntimeContext` (default false).
+
 ## Known Limitations and Deferred Work
 
 - Scoped section/variable shadowing and the Cordis `system-prompt/assemble` waterfall plugin are Phase 5. This crate is a library with an in-process listener list.
