@@ -27,6 +27,10 @@ pub const PLUGIN_LLM_RETRY: &str = "@deepseek-ai/dsh-llm-retry";
 pub const PLUGIN_RETRY_SNAPSHOT_BACKEND: &str = "retry-snapshot-backend";
 /// YAML `name` for `@deepseek-ai/dsh-token-meter`.
 pub const PLUGIN_TOKEN_METER: &str = "@deepseek-ai/dsh-token-meter";
+/// YAML `name` for `@deepseek-ai/dsh-compaction-basic`.
+pub const PLUGIN_COMPACTION_BASIC: &str = "@deepseek-ai/dsh-compaction-basic";
+/// YAML `name` for `@deepseek-ai/dsh-compaction-tool-result-pruner`.
+pub const PLUGIN_TOOL_RESULT_PRUNER: &str = "@deepseek-ai/dsh-compaction-tool-result-pruner";
 /// YAML `name` for `@deepseek-ai/dsh-tools`.
 pub const PLUGIN_TOOLS: &str = "@deepseek-ai/dsh-tools";
 /// YAML `name` for `@deepseek-ai/dsh-user-approval`.

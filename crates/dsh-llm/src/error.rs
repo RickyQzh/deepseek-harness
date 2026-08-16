@@ -8,6 +8,8 @@ pub const INVALID_CREDENTIAL_CODE: &str = "INVALID_CREDENTIAL";
 pub const EMPTY_RESPONSE_CODE: &str = "EMPTY_RESPONSE";
 /// Canonical provider-neutral code for a request cancelled by the caller.
 pub const ABORTED_CODE: &str = "ABORTED";
+/// Canonical provider-neutral code for a request that exceeded the model context window.
+pub const CONTEXT_WINDOW_EXCEEDED_CODE: &str = "CONTEXT_WINDOW_EXCEEDED";
 
 /// Why a supplied API key cannot be used as an HTTP header value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

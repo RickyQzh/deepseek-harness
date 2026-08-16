@@ -212,6 +212,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-compaction-basic"
+version = "0.1.0"
+dependencies = [
+ "dsh-agent-loop",
+ "dsh-boot",
+ "dsh-compaction",
+ "dsh-kernel",
+ "dsh-llm",
+ "dsh-session",
+ "dsh-system-prompt",
+ "dsh-token-meter",
+ "dsh-tools",
+ "futures",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "dsh-compose"
 version = "0.1.0"
 dependencies = [

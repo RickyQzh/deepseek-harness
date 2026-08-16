@@ -171,13 +171,14 @@ pub trait CompactionEngine: Send + Sync {
     /// # Returns
     ///
     /// The compaction result, or `None` if no compaction was needed.
-    fn compact_if_needed(
-        &self,
-        session: &mut Session,
-        options: &LoopOptions,
+    /// The returned future borrows `self`, `session`, `options`, and `signal`.
+    fn compact_if_needed<'a>(
+        &'a self,
+        session: &'a mut Session,
+        options: &'a LoopOptions,
         trigger: CompactionTrigger,
-        signal: &AbortFlag,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<CompactionResult>, CompactionError>> + Send + '_>>;
+        signal: &'a AbortFlag,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<CompactionResult>, CompactionError>> + Send + 'a>>;
 
     /// Forcibly compact an inclusive surface-position span into one summary node.
     ///
@@ -195,12 +196,13 @@ pub trait CompactionEngine: Send + Sync {
     /// # Returns
     ///
     /// The appended event seqs, summary, replaced range, and token accounting.
-    fn compact_region(
-        &self,
+    /// The returned future borrows `self`, `session`, `options`, and `signal`.
+    fn compact_region<'a>(
+        &'a self,
         start: u64,
         end: u64,
-        session: &mut Session,
-        options: &LoopOptions,
-        signal: &AbortFlag,
-    ) -> Pin<Box<dyn Future<Output = Result<CompactionResult, CompactionError>> + Send + '_>>;
+        session: &'a mut Session,
+        options: &'a LoopOptions,
+        signal: &'a AbortFlag,
+    ) -> Pin<Box<dyn Future<Output = Result<CompactionResult, CompactionError>> + Send + 'a>>;
 }

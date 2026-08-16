@@ -25,6 +25,7 @@ Rust workspace members for the DeepSeek Harness host process. Layout, keep-or-dr
 | [`dsh-llm-deepseek`](dsh-llm-deepseek/README.md) | DeepSeek `POST /chat/completions` SSE adapter: serialize, translate, per-request key, idle timeout. |
 | [`dsh-token-meter`](dsh-token-meter/README.md) | Replay token meter: fixed 4-chars-per-token heuristic, surface fold, provider-usage anchors. |
 | [`dsh-compaction`](dsh-compaction/README.md) | Compaction engine types, checkpoint source, and tool-pairing cut helpers. |
+| [`dsh-compaction-basic`](dsh-compaction-basic/README.md) | Log-only compaction lock, surface replace, and overflow retry. |
 | [`dsh-agent`](dsh-agent/README.md) | Live LoopAgent registry keyed by session id; Session append-sink factory. |
 | [`dsh-agent-loop`](dsh-agent-loop/README.md) | Scripted loop: durable inbox, idle / maintenance / running, runtime-context snapshots, request reconstruction, tool-call scheduler. |
 | [`dsh-subprocess`](dsh-subprocess/README.md) | Fully specified argv spawn and credential-scrubbed child env. |

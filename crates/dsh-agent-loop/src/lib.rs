@@ -1,6 +1,7 @@
 //! Scripted agent loop: inbox, phase machine, reconstruction, and tool scheduling for the Rust host.
 
 mod agent;
+mod compaction_scope;
 mod error;
 mod inbox;
 mod runtime_context;
@@ -14,6 +15,7 @@ pub use agent::{
     EVENT_AGENT_REQUEST_ERROR, LoopAgent, LoopOptions, Phase, PreStepDecision, PreStepPayload,
     RequestErrorAction, RequestErrorPayload,
 };
+pub use compaction_scope::CompactionScope;
 pub use error::LoopError;
 pub use inbox::Inbox;
 pub use runtime_context::{

@@ -190,6 +190,34 @@ impl RetryScope {
             })
             .await
     }
+
+    /// Apply `f` to the task-local retry scope when one is entered.
+    pub fn try_with<F, R>(f: F) -> Option<R>
+    where
+        F: FnOnce(&Self) -> R,
+    {
+        RETRY_SCOPE
+            .try_with(|slot| f(&slot.lock().expect("retry scope")))
+            .ok()
+    }
+
+    /// Terminal failure for the in-flight request.
+    #[must_use]
+    pub fn failure(&self) -> &LlmFailure {
+        &self.failure
+    }
+
+    /// Cancellation flag for the in-flight request.
+    #[must_use]
+    pub fn abort(&self) -> &AbortFlag {
+        &self.abort
+    }
+
+    /// Turn of the failed request.
+    #[must_use]
+    pub fn turn(&self) -> u64 {
+        self.turn
+    }
 }
 
 struct Schedule {

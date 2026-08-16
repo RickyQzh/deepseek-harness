@@ -19,6 +19,7 @@ use dsh_system_prompt::{
 use dsh_tools::{AbortFlag, ToolRuntime};
 use futures::StreamExt;
 
+use crate::compaction_scope::CompactionScope;
 use crate::error::LoopError;
 use crate::inbox::Inbox;
 use crate::runtime_context::RuntimeContextProjection;
@@ -799,6 +800,24 @@ impl DriveTarget<'_> {
         }
     }
 
+    fn compaction_scope(&mut self) -> CompactionScope {
+        match self {
+            DriveTarget::Exclusive(agent) => {
+                let abort = running_abort(agent);
+                let options = agent.options.clone();
+                CompactionScope::exclusive(&mut agent.session, abort, options)
+            }
+            DriveTarget::Shared(state) => {
+                let state: &Mutex<LoopAgent> = state;
+                let (abort, options) = {
+                    let agent = state.lock().expect("loop agent state");
+                    (running_abort(&agent), agent.options.clone())
+                };
+                CompactionScope::shared(state, abort, options)
+            }
+        }
+    }
+
     async fn execute_tools(
         &mut self,
         turn: u64,
@@ -953,7 +972,12 @@ async fn run_turn_steps(
             ));
         }
         let (ctx, seed, assembly) = target.with(|agent| agent.claim_pre_step(inbox_target))?;
-        let decision = ctx.waterfall(EVENT_AGENT_PRE_STEP, seed).await;
+        let decision = {
+            let compaction = target.compaction_scope();
+            compaction
+                .run(ctx.waterfall(EVENT_AGENT_PRE_STEP, seed))
+                .await
+        };
         match decision {
             PreStepDecision::Reject => {
                 *turn_ends = Some(TurnEndReason::Blocked);
@@ -1058,9 +1082,14 @@ async fn execute_step(
                     prior,
                     abort,
                 );
-                let (action, audit) = scope
-                    .run(ctx.waterfall(EVENT_AGENT_REQUEST_ERROR, RequestErrorAction::Fail))
-                    .await;
+                let (action, audit) = {
+                    let compaction = target.compaction_scope();
+                    compaction
+                        .run(scope.run(
+                            ctx.waterfall(EVENT_AGENT_REQUEST_ERROR, RequestErrorAction::Fail),
+                        ))
+                        .await
+                };
                 target.with(|agent| -> Result<(), LoopError> {
                     for entry in audit {
                         agent.push_event(|seq| entry.into_session_event(seq))?;
