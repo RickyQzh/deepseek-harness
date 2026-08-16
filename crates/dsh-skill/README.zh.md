@@ -4,7 +4,7 @@
 
 面向 DeepSeek Harness Rust 宿主的 skill（技能）提供方注册表、本地文件系统提供方，以及面向模型的 `skill` 工具。一个 crate 注册三个 YAML 名称：`@deepseek-ai/dsh-skill`、`@deepseek-ai/dsh-skill-filesystem` 与 `@deepseek-ai/dsh-tool-skill`。本 crate 不加入 `register_spine_plugins`，也不挂入 `base.cordis.yml`。
 
-`register_skill` 以 `SkillRegistry` 提供 `skills`。`inject::<SkillRegistry>()` 得到 `Arc<SkillRegistry>`，因此 `register_provider`、`list` 与 `get` 在内部 mutex 上取 `&self`。重复的提供方名称会失败。同名 skill 先按更低 rank 再按提供方注册顺序取胜；`list` 返回按名称排序的获胜摘要。本阶段只有一层全局层（没有 isolate realm）。skill 名称匹配 `/^[a-z0-9]+(?:-[a-z0-9]+)*$/`。
+`register_skill` 以 `SkillRegistry` 提供 `skills`。`inject::<SkillRegistry>()` 得到 `Arc<SkillRegistry>`，因此 `register_provider`、`list` 与 `get` 在内部 mutex 上取 `&self`。重复的提供方名称会失败。同名 skill 先按更低 rank 再按提供方注册顺序取胜；`list` 返回按名称排序的获胜摘要。`get` 把该获胜摘要（含发现来源 `source`）覆盖到已加载正文上。本阶段只有一层全局层（没有 isolate realm）。skill 名称匹配 `/^[a-z0-9]+(?:-[a-z0-9]+)*$/`。
 
 `register_skill_filesystem` 在该注册表上登记 `FilesystemSkillProvider`。默认根目录为项目 `.dsh/skills`（rank 100）、项目 `.agents/skills`（200）、用户 `$DSH_HOME/skills` 或 `~/.dsh/skills`（400，跳过 `.system`）、用户 `$DSH_AGENTS_HOME/skills` 或 `~/.agents/skills`（500），以及 rank 为 `BUNDLED_SKILL_RANK`（600）的 `$DSH_BUNDLED_SKILL_DIR`。布局为 `<name>/SKILL.md` 或 `<name>.md`，带 YAML frontmatter（必填 `name` 与 `description`）。缺失的根目录和格式错误的文件会警告并跳过。不实现文件监视。
 

@@ -489,8 +489,9 @@ fn is_absent(error: &io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::FilesystemSkillProvider;
-    use crate::{FilesystemSkillConfig, SkillProvider};
+    use crate::{FilesystemSkillConfig, SkillProvider, SkillRegistry};
     use dsh_fs::LocalFileSystem;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_DIR_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -537,5 +538,37 @@ mod tests {
         );
         let def = provider_get_demo(&provider).unwrap();
         assert_eq!(def.content.trim(), "Body here");
+    }
+
+    #[test]
+    fn get_preserves_winning_list_discovery_source() {
+        let root = test_temp_dir("skills-source");
+        let dir = root.join(".dsh/skills/demo-skill");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: demo-skill\ndescription: Demo.\n---\nBody here\n",
+        )
+        .unwrap();
+        let fs = LocalFileSystem::new(root.clone());
+        let provider = FilesystemSkillProvider::new(
+            fs,
+            FilesystemSkillConfig {
+                include_default_roots: true,
+                ..Default::default()
+            },
+        );
+        let registry = SkillRegistry::new();
+        registry.register_provider(Arc::new(provider)).unwrap();
+        let cwd = root.to_string_lossy();
+        let list_source = registry
+            .list(Some(cwd.as_ref()))
+            .into_iter()
+            .find(|summary| summary.name == "demo-skill")
+            .expect("demo-skill listed")
+            .source;
+        assert_ne!(list_source, "filesystem");
+        let definition = registry.get("demo-skill", Some(cwd.as_ref())).unwrap();
+        assert_eq!(definition.summary.source, list_source);
     }
 }

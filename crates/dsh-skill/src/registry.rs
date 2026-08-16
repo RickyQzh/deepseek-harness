@@ -193,6 +193,9 @@ impl SkillRegistry {
 
     /// Load the winning definition for `name`.
     ///
+    /// The returned summary is the winning [`Self::list`] entry, including discovery
+    /// `source`. Provider `get` receives only a locator and may stamp a different source.
+    ///
     /// # Errors
     ///
     /// [`SkillError::InvalidName`], [`SkillError::Unknown`], or a provider load failure.
@@ -205,7 +208,11 @@ impl SkillRegistry {
             .into_iter()
             .find(|entry| entry.candidate.summary.name == name);
         match winner {
-            Some(entry) => entry.provider.get(&entry.candidate.locator),
+            Some(entry) => {
+                let mut definition = entry.provider.get(&entry.candidate.locator)?;
+                definition.summary = entry.candidate.summary;
+                Ok(definition)
+            }
             None => Err(SkillError::unknown(name)),
         }
     }
