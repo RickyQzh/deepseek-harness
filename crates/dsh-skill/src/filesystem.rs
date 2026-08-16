@@ -433,7 +433,7 @@ fn frontmatter_boolean(data: &Value, key: &str) -> Result<Option<bool>, String> 
 }
 
 fn mapping_get<'a>(data: &'a Value, key: &str) -> Option<&'a Value> {
-    data.as_mapping()?.get(&Value::String(key.to_string()))
+    data.as_mapping()?.get(Value::String(key.to_string()))
 }
 
 fn mapping_has(data: &Value, key: &str) -> bool {

@@ -849,10 +849,7 @@ impl DriveTarget<'_> {
                     Arc::clone(&agent.tools)
                 };
                 crate::tool_calls::execute_tool_calls(
-                    &mut SharedHost {
-                        state: *state,
-                        tools,
-                    },
+                    &mut SharedHost { state, tools },
                     turn,
                     step,
                     tool_calls,

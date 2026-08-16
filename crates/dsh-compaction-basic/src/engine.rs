@@ -155,8 +155,7 @@ impl BasicCompactionEngine {
         let Some(options) = CompactionScope::try_current(|scope| scope.options().clone()) else {
             return Ok(None);
         };
-        let abort = CompactionScope::try_current(|scope| scope.abort().clone())
-            .unwrap_or_else(AbortFlag::new);
+        let abort = CompactionScope::try_current(|scope| scope.abort().clone()).unwrap_or_default();
         match trigger {
             CompactionTrigger::Pressure => self.compact_pressure_scoped(&options, &abort).await,
             CompactionTrigger::ContextOverflow => {
@@ -176,13 +175,10 @@ impl BasicCompactionEngine {
         if header.config.provider.is_empty() || header.config.model.is_empty() {
             return Ok(None);
         }
-        if let Err(error) = with_session(|session| {
+        with_session(|session| {
             assert_no_active_compaction(session, "automatic pressure compaction")
         })
-        .unwrap_or(Ok(()))
-        {
-            return Err(error);
-        }
+        .unwrap_or(Ok(()))?;
         let policy =
             resolve_target_policy(&self.config, &header.config.provider, &header.config.model);
         let context = self

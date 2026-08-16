@@ -362,7 +362,12 @@ impl AgentRegistry {
     /// Live handles in unspecified order.
     #[must_use]
     pub fn list(&self) -> Vec<AgentHandle> {
-        self.agents.lock().expect("agents").values().cloned().collect()
+        self.agents
+            .lock()
+            .expect("agents")
+            .values()
+            .cloned()
+            .collect()
     }
 
     /// Queue `message` on next-turn. Does not start a driver.

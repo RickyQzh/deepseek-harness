@@ -140,6 +140,8 @@ fn optional_positive_u64(value: Option<&Value>, key: &str) -> Result<Option<u64>
 }
 
 #[cfg(test)]
+// `execute` borrows `&mut ToolRuntime` for the future; these test mutexes have no other waiters.
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::register;
     use crate::WEB_SEARCH_MAX_RESULTS;

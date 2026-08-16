@@ -4,7 +4,7 @@
 
 面向模型的 `subagent`、`subagent_fork`、`send_message`、`list_agents` 与 `report`，构建于 [`dsh-subagent`](../dsh-subagent/README.md) 之上。四个 YAML 名称：`@deepseek-ai/dsh-tool-subagent`、`@deepseek-ai/dsh-tool-subagent-control`、`@deepseek-ai/dsh-tool-subagent-list` 与 `@deepseek-ai/dsh-tool-subagent-report`。本 crate 不加入 `register_spine_plugins`，也不挂入 `base.cordis.yml`。
 
-一行 `@deepseek-ai/dsh-tool-subagent` 把一个 `provider` 绑定到一个 `toolName`。`backgroundMode: continuable` 且 `run_in_background` 默认为 true 时调用 `start_continuable_background`，并立即返回 `{ kind: "continuable", subagentId }`。`backgroundMode: one-shot`（默认）等待 `SubagentRuntime::start`；`run_in_background: true` 在接入 jobs 之前是工具错误。Fork 保持一次性：配置 `{ provider: fork, toolName: subagent_fork, backgroundMode: one-shot }`。调用方身份是 `ToolExecution.session_id`。
+一行 `@deepseek-ai/dsh-tool-subagent` 把一个 `provider` 绑定到一个 `toolName`。setup 会等到 `subagents` 上出现该提供方（有界 yield），因为 `boot_yaml` 并发运行插件 fiber；有界次数用尽后仍为空时，仍然失败并报告 `tool-subagent: unknown provider`。`backgroundMode: continuable` 且 `run_in_background` 默认为 true 时调用 `start_continuable_background`，并立即返回 `{ kind: "continuable", subagentId }`。`backgroundMode: one-shot`（默认）等待 `SubagentRuntime::start`；`run_in_background: true` 在接入 jobs 之前是工具错误。Fork 保持一次性：配置 `{ provider: fork, toolName: subagent_fork, backgroundMode: one-shot }`。调用方身份是 `ToolExecution.session_id`。
 
 `report` 只通过 `SubagentRuntime::register_continuable_setup` 注册到克隆出的子 `ToolRuntime`。它从不注册到父级共享运行时，因此一次性 fork 子 agent 看不见 `report`。`{ output }` 以用户角色的 `MessageSource::SubagentReport` 经 `followup`（`wakeup`）或 `inject`（`quiet`）投递，并返回 `{ messageId }`。`send_message` `{ subagent_id, message }` 用 `MessageSource::Coordinator` 调用 `followup_child`，并在子 agent 空闲时驱动它。`list_agents` 只列出可继续子 agent；一次性 fork 运行不会出现。`report` 的呈现为 generic。
 

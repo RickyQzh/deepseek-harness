@@ -532,6 +532,8 @@ fn completion_message(snapshot: &JobSnapshot) -> Message {
 }
 
 #[cfg(test)]
+// `execute` borrows `&mut ToolRuntime` for the future; these test mutexes have no other waiters.
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::register;
     use crate::status_line;

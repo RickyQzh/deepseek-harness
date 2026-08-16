@@ -45,6 +45,29 @@ async fn run(
     }
 }
 
+/// Bounded polls of `list`. Empty after the last attempt is `no LLM provider registered`.
+///
+/// `headless-runner` setup `tokio::spawn`s `run` before sibling adapters call `register_adapter`.
+async fn wait_until_providers(
+    mut list: impl FnMut() -> Vec<String>,
+) -> Result<Vec<String>, HeadlessError> {
+    const ATTEMPTS: u32 = 64;
+    for attempt in 0..ATTEMPTS {
+        let providers = list();
+        if !providers.is_empty() {
+            return Ok(providers);
+        }
+        if attempt + 1 == ATTEMPTS {
+            break;
+        }
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    Err(HeadlessError::Kernel(KernelError::SetupFailed(
+        "no LLM provider registered".into(),
+    )))
+}
+
 async fn run_inner(
     task: String,
     resume_session_id: Option<String>,
@@ -52,12 +75,11 @@ async fn run_inner(
     sessions: Arc<JsonlSessionStore>,
     io: &HeadlessIo,
 ) -> Result<i32, HeadlessError> {
-    let providers = agents.list_providers();
-    let provider = providers.first().cloned().ok_or_else(|| {
-        HeadlessError::Kernel(KernelError::SetupFailed(
-            "no LLM provider registered".into(),
-        ))
-    })?;
+    let providers = wait_until_providers(|| agents.list_providers()).await?;
+    let provider = providers
+        .into_iter()
+        .next()
+        .expect("wait_until_providers returns non-empty");
     let model = if provider == "deepseek-official" {
         "deepseek-v4-flash".to_string()
     } else {
@@ -157,6 +179,8 @@ pub fn register(registry: &mut PluginRegistry) {
 }
 
 #[cfg(test)]
+// `SESSION_ROOT_LOCK` serializes `DSH_SESSION_ROOT` across tests that `boot_yaml` and await.
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use crate::{
         AppExit, BASE_YAML, CmdlineArgs, HeadlessIo, MINIMAL_YAML, register_headless_plugins,
@@ -170,6 +194,35 @@ mod tests {
     use std::sync::Mutex;
 
     static SESSION_ROOT_LOCK: Mutex<()> = Mutex::new(());
+
+    #[tokio::test]
+    async fn wait_until_providers_sees_ids_after_empty_polls() {
+        let polls = std::cell::Cell::new(0u32);
+        let providers = super::wait_until_providers(|| {
+            let n = polls.get() + 1;
+            polls.set(n);
+            if n < 5 {
+                Vec::new()
+            } else {
+                vec!["mock".into()]
+            }
+        })
+        .await
+        .expect("providers");
+        assert_eq!(providers, vec!["mock".to_string()]);
+        assert!(polls.get() >= 5, "polls={}", polls.get());
+    }
+
+    #[tokio::test]
+    async fn wait_until_providers_fails_when_empty_after_bound() {
+        let err = super::wait_until_providers(Vec::new)
+            .await
+            .expect_err("empty");
+        assert!(
+            err.to_string().contains("no LLM provider registered"),
+            "{err}"
+        );
+    }
 
     fn test_temp_dir(prefix: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(

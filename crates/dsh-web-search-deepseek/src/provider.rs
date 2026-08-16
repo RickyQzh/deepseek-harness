@@ -7,11 +7,11 @@ use std::sync::Arc;
 
 use dsh_tools::AbortFlag;
 use dsh_web::{
-    WebError, WebSearchProvider, WebSearchRequest, WebSearchResult, WebSearchSource, WEB_ABORTED,
-    WEB_PROVIDER_CREDENTIAL_MISSING, WEB_PROVIDER_ERROR,
+    WEB_ABORTED, WEB_PROVIDER_CREDENTIAL_MISSING, WEB_PROVIDER_ERROR, WebError, WebSearchProvider,
+    WebSearchRequest, WebSearchResult, WebSearchSource,
 };
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
-use serde_json::{json, Value};
+use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
+use serde_json::{Value, json};
 
 /// Stable id this provider registers under.
 pub const DEEPSEEK_PROVIDER_ID: &str = "deepseek-official";
@@ -30,6 +30,7 @@ const USER_AGENT: &str = "deepseek-harness/0.0.1";
 const SEARCH_BASE_URL_ENV: &str = "DEEPSEEK_SEARCH_BASE_URL";
 
 /// Options for the next search. The plugin supplies a thunk so each call snapshots current config.
+#[allow(clippy::type_complexity)]
 pub struct DeepSeekSearchProviderOptions {
     /// Literal API key; when non-empty it wins over [`Self::resolve_api_key`].
     pub api_key: Option<String>,
@@ -427,13 +428,13 @@ pub fn search_base_url_from_env() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        citation_snippets, deepseek_search_body, map_anthropic_response, resolve_base_url,
-        DeepSeekSearchProvider, DeepSeekSearchProviderOptions, DEEPSEEK_DEFAULT_API_VERSION,
-        DEEPSEEK_DEFAULT_BASE_URL, DEEPSEEK_DEFAULT_MAX_TOKENS, DEEPSEEK_DEFAULT_MAX_USES,
-        DEEPSEEK_DEFAULT_MODEL, DEEPSEEK_PROVIDER_ID,
+        DEEPSEEK_DEFAULT_API_VERSION, DEEPSEEK_DEFAULT_BASE_URL, DEEPSEEK_DEFAULT_MAX_TOKENS,
+        DEEPSEEK_DEFAULT_MAX_USES, DEEPSEEK_DEFAULT_MODEL, DEEPSEEK_PROVIDER_ID,
+        DeepSeekSearchProvider, DeepSeekSearchProviderOptions, citation_snippets,
+        deepseek_search_body, map_anthropic_response, resolve_base_url,
     };
     use dsh_tools::AbortFlag;
-    use dsh_web::{WebSearchProvider, WebSearchRequest, WEB_PROVIDER_ERROR};
+    use dsh_web::{WEB_PROVIDER_ERROR, WebSearchProvider, WebSearchRequest};
     use serde_json::json;
 
     fn options_with_key() -> DeepSeekSearchProviderOptions {

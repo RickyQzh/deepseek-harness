@@ -32,6 +32,7 @@ fn register_delegate(registry: &mut PluginRegistry) {
             let tools = ctx.inject::<Mutex<ToolRuntime>>("tools").await?;
             let subagents = ctx.inject::<SubagentRuntime>("subagents").await?;
             let agents = ctx.inject::<AgentRegistry>("agents").await?;
+            wait_until_named_provider(&subagents, &resolved.provider).await?;
             register_delegate_tool(
                 &mut tools.lock().unwrap_or_else(PoisonError::into_inner),
                 subagents,
@@ -42,6 +43,36 @@ fn register_delegate(registry: &mut PluginRegistry) {
         })
     });
     registry.register(PLUGIN_TOOL_SUBAGENT, setup);
+}
+
+/// Poll until `ready`, then true; false after 64 yield-plus-1ms attempts.
+async fn wait_until(mut ready: impl FnMut() -> bool) -> bool {
+    const ATTEMPTS: u32 = 64;
+    for attempt in 0..ATTEMPTS {
+        if ready() {
+            return true;
+        }
+        if attempt + 1 == ATTEMPTS {
+            break;
+        }
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    false
+}
+
+/// `boot_yaml` runs plugin fibers concurrently, so spawn/fork `register_provider` may land after this row starts.
+async fn wait_until_named_provider(
+    subagents: &SubagentRuntime,
+    name: &str,
+) -> Result<(), dsh_kernel::KernelError> {
+    if wait_until(|| subagents.get_provider(name).is_some()).await {
+        Ok(())
+    } else {
+        Err(setup_err(format!(
+            "tool-subagent: unknown provider \"{name}\""
+        )))
+    }
 }
 
 fn register_control(registry: &mut PluginRegistry) {
@@ -116,5 +147,31 @@ mod tests {
         .map(|_| ())
         .unwrap_err();
         assert!(err.to_string().contains("unknown key"));
+    }
+
+    #[tokio::test]
+    async fn wait_until_sees_ready_after_empty_polls() {
+        let polls = std::cell::Cell::new(0u32);
+        assert!(
+            super::wait_until(|| {
+                let n = polls.get() + 1;
+                polls.set(n);
+                n >= 5
+            })
+            .await
+        );
+        assert!(polls.get() >= 5, "polls={}", polls.get());
+    }
+
+    #[tokio::test]
+    async fn wait_until_named_provider_fails_when_missing_after_bound() {
+        let rt = dsh_subagent::SubagentRuntime::new(dsh_kernel::Context::new());
+        let err = super::wait_until_named_provider(&rt, "spawn")
+            .await
+            .expect_err("missing");
+        assert!(
+            err.to_string().contains("unknown provider \"spawn\""),
+            "{err}"
+        );
     }
 }

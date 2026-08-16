@@ -254,6 +254,8 @@ fn mint_message_id() -> MessageId {
 }
 
 #[cfg(test)]
+// `execute` borrows `&mut ToolRuntime` for the future; these test mutexes have no other waiters.
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use dsh_boot::{PluginRegistry, boot_yaml, process_interpolate_env};
     use dsh_kernel::Context;
