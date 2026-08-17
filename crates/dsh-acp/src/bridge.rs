@@ -21,8 +21,8 @@ use crate::codec::{
 use crate::error::{AcpError, internal_error, invalid_params, method_not_found};
 use crate::rpc::{AcpNdjsonTransport, AcpTransportError, serialize_result};
 use crate::types::{
-    AuthenticateRequest, InitializeRequest, InitializeResult, NewSessionRequest, NewSessionResult,
-    PromptRequest, PromptResult, SessionUpdateParams,
+    AuthenticateRequest, CancelRequest, InitializeRequest, InitializeResult, NewSessionRequest,
+    NewSessionResult, PromptRequest, PromptResult, SessionUpdateParams,
 };
 
 struct InFlight {
@@ -208,7 +208,7 @@ impl AcpBridgeInner {
             "session/new" => self.session_new(params).await,
             "session/prompt" => self.session_prompt(params).await,
             "session/cancel" => {
-                let _map = self.sessions.lock().expect("sessions");
+                self.session_cancel(params);
                 Ok(serialize_result(&json!({})))
             }
             _ => Err(method_not_found(method)),
@@ -354,6 +354,28 @@ impl AcpBridgeInner {
             Err(_) => Err(internal_error("prompt settlement dropped")),
         }
     }
+
+    /// Unknown session ids are ignored. Known sessions settle any in-flight prompt as
+    /// `cancelled` before [`AgentHandle::cancel`] waits for the driver permit.
+    fn session_cancel(&self, params: Value) {
+        let request = serde_json::from_value::<CancelRequest>(params).unwrap_or_default();
+        let handle = {
+            let mut sessions = self.sessions.lock().expect("sessions");
+            let record = match sessions.get_mut(request.session_id()) {
+                Some(record) => record,
+                None => return,
+            };
+            if let Some(slot) = record.inflight.take() {
+                if let Some(tx) = slot.tx.lock().expect("inflight tx").take() {
+                    let _ = tx.send(Ok(StopReason::Cancelled));
+                }
+            }
+            record.handle.clone()
+        };
+        tokio::spawn(async move {
+            let _ = handle.cancel().await;
+        });
+    }
 }
 
 impl AcpBridge {
@@ -424,16 +446,21 @@ impl AcpBridge {
                 let inner = Arc::clone(&inner);
                 Box::pin(async move { inner.dispatch(&method, params).await })
             }));
+        let inner = Arc::clone(&self.inner);
         self.inner
             .transport
-            .on_notification(Arc::new(|_method, _params| {}));
+            .on_notification(Arc::new(move |method, params| {
+                if method == "session/cancel" {
+                    inner.session_cancel(params);
+                }
+            }));
     }
 
     /// Read NDJSON until EOF by delegating to the transport.
     ///
     /// # Errors
     ///
-    /// Transport read/write failure.
+    /// Transport read failure, or `serve` already running.
     ///
     /// # Returns
     ///
@@ -613,6 +640,29 @@ mod tests {
             }
         })
         .to_string()
+    }
+
+    fn cancel_notification(session_id: &str) -> String {
+        json!({
+            "jsonrpc": "2.0",
+            "method": "session/cancel",
+            "params": { "sessionId": session_id }
+        })
+        .to_string()
+    }
+
+    async fn wait_until_adapter_sees_request(adapter: &MockAdapter) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if !adapter.requests.lock().expect("requests").is_empty() {
+                return;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                panic!("timed out waiting for the model request");
+            }
+            tokio::task::yield_now().await;
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
     }
 
     fn last_model_user_text(adapter: &MockAdapter) -> String {
@@ -1073,6 +1123,106 @@ mod tests {
         );
         assert_eq!(update["params"]["update"]["content"]["text"], json!("done"));
         assert_eq!(response["result"]["stopReason"], json!("end_turn"));
+        writer.shutdown().await.unwrap();
+        let _ = serve.await;
+        restore_session_root(previous);
+    }
+
+    #[tokio::test]
+    async fn unknown_cancel_is_noop() {
+        let (_lock, previous) = pin_session_root();
+        let (mut writer, mut lines, serve, _registry) = start_bridge().await;
+        handshake(&mut writer, &mut lines).await;
+        let session_id = create_session(&mut writer, &mut lines).await;
+        write_line(&mut writer, &cancel_notification("missing")).await;
+        write_line(
+            &mut writer,
+            &prompt_request(3, &session_id, json!([{"type":"text","text":"go"}])),
+        )
+        .await;
+        loop {
+            let line = lines.next_line().await.unwrap().expect("rpc line");
+            let value: Value = serde_json::from_str(&line).unwrap();
+            if value.get("error").is_some() {
+                panic!("cancel must not emit a jsonrpc error: {line}");
+            }
+            if value.get("id") == Some(&json!(3)) {
+                assert_eq!(value["result"]["stopReason"], json!("end_turn"));
+                break;
+            }
+        }
+        writer.shutdown().await.unwrap();
+        let _ = serve.await;
+        restore_session_root(previous);
+    }
+
+    #[tokio::test]
+    async fn cancel_settles_inflight_as_cancelled() {
+        let (_lock, previous) = pin_session_root();
+        let (registry, adapter) = registry_with_scripts(vec![MockScript::Hang], |_| {});
+        let (mut writer, mut lines, serve, _registry) =
+            start_bridge_with(Arc::new(registry), None).await;
+        handshake(&mut writer, &mut lines).await;
+        let session_id = create_session(&mut writer, &mut lines).await;
+        write_line(
+            &mut writer,
+            &prompt_request(3, &session_id, json!([{"type":"text","text":"go"}])),
+        )
+        .await;
+        wait_until_adapter_sees_request(&adapter).await;
+        write_line(&mut writer, &cancel_notification(&session_id)).await;
+        let (_updates, response) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            read_until_id(&mut lines, 3),
+        )
+        .await
+        .expect("cancelled prompt should settle");
+        assert_eq!(response["result"], json!({"stopReason": "cancelled"}));
+        writer.shutdown().await.unwrap();
+        let _ = serve.await;
+        restore_session_root(previous);
+    }
+
+    #[tokio::test]
+    async fn overlapping_prompt_is_invalid_params() {
+        let (_lock, previous) = pin_session_root();
+        let (registry, adapter) = registry_with_scripts(vec![MockScript::Hang], |_| {});
+        let (mut writer, mut lines, serve, _registry) =
+            start_bridge_with(Arc::new(registry), None).await;
+        handshake(&mut writer, &mut lines).await;
+        let session_id = create_session(&mut writer, &mut lines).await;
+        write_line(
+            &mut writer,
+            &prompt_request(3, &session_id, json!([{"type":"text","text":"one"}])),
+        )
+        .await;
+        wait_until_adapter_sees_request(&adapter).await;
+        write_line(
+            &mut writer,
+            &prompt_request(4, &session_id, json!([{"type":"text","text":"two"}])),
+        )
+        .await;
+        let (_updates, response) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            read_until_id(&mut lines, 4),
+        )
+        .await
+        .expect("overlapping prompt should be rejected");
+        assert_eq!(response["id"], json!(4));
+        assert_eq!(response["error"]["code"], json!(-32602));
+        assert_eq!(
+            response["error"]["message"],
+            json!("Invalid params: a prompt is already in flight for this session")
+        );
+        assert!(response["error"].get("data").is_none());
+        write_line(&mut writer, &cancel_notification(&session_id)).await;
+        let (_updates, cancelled) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            read_until_id(&mut lines, 3),
+        )
+        .await
+        .expect("hanging prompt should settle after cancel");
+        assert_eq!(cancelled["result"]["stopReason"], json!("cancelled"));
         writer.shutdown().await.unwrap();
         let _ = serve.await;
         restore_session_root(previous);

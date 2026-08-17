@@ -1,4 +1,4 @@
-//! ACP handshake, `session/new`, `session/prompt`, and `session/update` wire types. [`InitializeResult`] field order is `protocolVersion`, `agentInfo`, `agentCapabilities`, `authMethods`.
+//! ACP handshake, `session/new`, `session/prompt`, `session/cancel`, and `session/update` wire types. [`InitializeResult`] field order is `protocolVersion`, `agentInfo`, `agentCapabilities`, `authMethods`.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -175,6 +175,21 @@ impl PromptResult {
     #[must_use]
     pub(crate) fn new(stop_reason: StopReason) -> Self {
         Self { stop_reason }
+    }
+}
+
+/// Inbound `session/cancel` params. Unknown keys are ignored.
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CancelRequest {
+    #[serde(default)]
+    session_id: String,
+}
+
+impl CancelRequest {
+    /// Session id to cancel, or `""` when missing.
+    pub(crate) fn session_id(&self) -> &str {
+        &self.session_id
     }
 }
 

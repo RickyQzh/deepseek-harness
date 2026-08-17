@@ -268,10 +268,11 @@ impl AcpNdjsonTransport {
     }
 
     /// Read NDJSON until EOF. Empty and whitespace-only lines are skipped. Malformed lines are ignored.
+    /// Each inbound request is spawned so the reader stays live while a handler awaits.
     ///
     /// # Errors
     ///
-    /// Transport read/write failure.
+    /// Transport read failure, or `serve` already running.
     pub async fn serve(&self) -> Result<(), AcpTransportError> {
         let mut reader = self
             .reader
@@ -295,7 +296,10 @@ impl AcpNdjsonTransport {
             };
             match frame {
                 DecodedFrame::Request { id, method, params } => {
-                    self.handle_request(id, method, params).await?;
+                    let transport = self.clone();
+                    tokio::spawn(async move {
+                        let _ = transport.handle_request(id, method, params).await;
+                    });
                 }
                 DecodedFrame::Response { id, result, error } => {
                     self.handle_response(id, result, error).await;
