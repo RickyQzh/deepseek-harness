@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use dsh_subprocess::{
-    SubprocessError, SubprocessOutcome, SubprocessTerminalHandle, SubprocessTerminalSignal,
+    SubprocessError, SubprocessOutcome, SubprocessTerminalForeground, SubprocessTerminalHandle,
+    SubprocessTerminalSignal,
 };
 use dsh_terminal::{
     TerminalBackendSession, TerminalError, TerminalErrorCode, TerminalReadRequest,
@@ -108,6 +109,33 @@ struct ActiveSend {
     interrupting: bool,
     writing: bool,
     finished: bool,
+    started_at: Instant,
+    initial_foreground_pgid: Option<i32>,
+    initial_foreground_left_wait: bool,
+}
+
+impl ActiveSend {
+    fn set_initial_foreground(&mut self, foreground: Option<&SubprocessTerminalForeground>) {
+        self.initial_foreground_pgid =
+            foreground.map(SubprocessTerminalForeground::process_group_id);
+        self.initial_foreground_left_wait = match foreground {
+            Some(fg) => !fg.input_waiting(),
+            None => true,
+        };
+    }
+
+    fn accepts_stdin_wait(&mut self, pgid: i32, waiting: bool) -> bool {
+        // The same group may still expose the wait that existed before write.
+        // Observe every poll so a departure before the exact-settlement threshold
+        // still makes a later return to that wait post-write evidence.
+        if Some(pgid) != self.initial_foreground_pgid {
+            return waiting;
+        }
+        if !waiting {
+            self.initial_foreground_left_wait = true;
+        }
+        waiting && self.initial_foreground_left_wait
+    }
 }
 
 struct Inner {
@@ -118,10 +146,8 @@ struct Inner {
     status: TerminalSessionStatus,
     active: Option<ActiveSend>,
     prompt_seen: bool,
-    #[allow(dead_code)]
     prompt_text_seen: bool,
     prompt_tail: String,
-    #[allow(dead_code)]
     shell_pgid: Option<i32>,
     initializing: bool,
     last_output_at: Instant,
@@ -385,9 +411,43 @@ impl LocalPtySession {
             }
         }
         let idle_for = inner.last_output_at.elapsed();
+        let poll_interval = Duration::from_millis(inner.config.poll_interval_ms);
+        let fg_pgid = foreground
+            .as_ref()
+            .map(SubprocessTerminalForeground::process_group_id);
+        if inner.prompt_seen && inner.prompt_text_seen && idle_for >= poll_interval {
+            match (fg_pgid, inner.shell_pgid) {
+                (Some(fg), Some(shell)) if fg == shell => {
+                    drop(inner);
+                    self.settle(send_id, TerminalWaitReason::StdinRead, false);
+                    return false;
+                }
+                _ => {}
+            }
+        }
+        let elapsed = match inner.active.as_ref() {
+            Some(active) if active.id == send_id => active.started_at.elapsed(),
+            _ => Duration::ZERO,
+        };
+        let startup_has_output = !inner.initializing || !inner.scrollback.is_empty();
+        let accepts_stdin_wait = if startup_has_output {
+            match (foreground.as_ref(), inner.active.as_mut()) {
+                (Some(fg), Some(active)) if active.id == send_id => {
+                    active.accepts_stdin_wait(fg.process_group_id(), fg.input_waiting())
+                }
+                _ => false,
+            }
+        } else {
+            false
+        };
+        let exact_after = Duration::from_millis(inner.config.exact_probe_after_ms);
+        if elapsed >= exact_after && accepts_stdin_wait {
+            drop(inner);
+            self.settle(send_id, TerminalWaitReason::StdinRead, false);
+            return false;
+        }
         let idle_silence = Duration::from_millis(inner.config.idle_silence_ms);
         let handoff = Duration::from_millis(inner.config.handoff_grace_ms);
-        let startup_has_output = !inner.initializing || !inner.scrollback.is_empty();
         let handoff_grace = if inner.prompt_seen {
             handoff
         } else {
@@ -438,26 +498,45 @@ impl LocalPtySession {
 
     async fn begin_send(&self, send_id: u64, text: String, submit: bool) {
         let terminal = self.lock().terminal.clone();
-        if terminal.inspect_foreground().await.is_err() {
-            let interrupting = self
-                .lock()
-                .active
-                .as_ref()
-                .map(|active| active.id == send_id && active.interrupting)
-                .unwrap_or(false);
-            if !interrupting {
-                self.settle(send_id, TerminalWaitReason::SessionExit, false);
+        let foreground = match terminal.inspect_foreground().await {
+            Ok(value) => value,
+            Err(_) => {
+                let interrupting = self
+                    .lock()
+                    .active
+                    .as_ref()
+                    .map(|active| active.id == send_id && active.interrupting)
+                    .unwrap_or(false);
+                if !interrupting {
+                    self.settle(send_id, TerminalWaitReason::SessionExit, false);
+                }
+                return;
             }
-            return;
-        }
+        };
         let cancel = self
             .lock()
             .active
             .as_ref()
-            .map(|active| active.id != send_id || active.cancel_requested || active.finished)
+            .map(|active| {
+                active.id != send_id
+                    || active.cancel_requested
+                    || active.finished
+                    || active.interrupting
+            })
             .unwrap_or(true);
         if cancel {
             return;
+        }
+        {
+            let mut inner = self.lock();
+            if inner.closing {
+                return;
+            }
+            if let Some(active) = inner.active.as_mut() {
+                if active.id == send_id {
+                    active.set_initial_foreground(foreground.as_ref());
+                }
+            }
         }
         let input = if submit { format!("{text}\r") } else { text };
         if !input.is_empty() {
@@ -672,6 +751,9 @@ impl TerminalBackendSession for LocalPtySession {
                 interrupting: false,
                 writing: false,
                 finished: false,
+                started_at: Instant::now(),
+                initial_foreground_pgid: None,
+                initial_foreground_left_wait: true,
             });
             Self::reset_readiness_evidence(&mut inner);
         }
@@ -792,4 +874,159 @@ fn ready_operation(
         Box::new(|| TerminalSendRead::new(String::new(), false)),
         Box::new(|| false),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LocalPtySession;
+    use crate::config::parse_config;
+    use dsh_subprocess::{
+        ProcessIdentity, ProcessInspector, SubprocessTerminalHandle, SubprocessTerminalSignal,
+        TermKill,
+    };
+    use dsh_terminal::{TerminalBackendSession, TerminalSendRequest, TerminalWaitReason};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex, PoisonError};
+    use std::time::Duration;
+
+    struct ScriptedInspector {
+        pgid: Mutex<Option<i32>>,
+        waiting: AtomicBool,
+    }
+
+    impl ScriptedInspector {
+        fn new(pgid: Option<i32>, waiting: bool) -> Arc<Self> {
+            Arc::new(Self {
+                pgid: Mutex::new(pgid),
+                waiting: AtomicBool::new(waiting),
+            })
+        }
+
+        fn set_pgid(&self, pgid: Option<i32>) {
+            *self.pgid.lock().unwrap_or_else(PoisonError::into_inner) = pgid;
+        }
+
+        fn set_waiting(&self, waiting: bool) {
+            self.waiting.store(waiting, Ordering::SeqCst);
+        }
+    }
+
+    impl ProcessInspector for ScriptedInspector {
+        fn foreground_pgid(&self, _shell_pid: i32) -> Option<i32> {
+            *self.pgid.lock().unwrap_or_else(PoisonError::into_inner)
+        }
+
+        fn is_stdin_waiting(&self, _pgid: i32) -> bool {
+            self.waiting.load(Ordering::SeqCst)
+        }
+
+        fn process_tree(&self, root_pid: i32) -> Vec<ProcessIdentity> {
+            vec![ProcessIdentity::new(root_pid, "shell")]
+        }
+
+        fn process_session(&self, _session_id: i32) -> Vec<ProcessIdentity> {
+            Vec::new()
+        }
+
+        fn is_alive(&self, _identity: &ProcessIdentity) -> bool {
+            false
+        }
+
+        fn signal_group(&self, _pgid: i32, _signal: SubprocessTerminalSignal) {}
+
+        fn signal_process(&self, _identity: &ProcessIdentity, _signal: TermKill) {}
+    }
+
+    fn test_config() -> crate::config::ResolvedConfig {
+        parse_config(&serde_json::json!({
+            "pollIntervalMs": 10,
+            "exactProbeAfterMs": 20,
+            "idleSilenceMs": 2000,
+            "handoffGraceMs": 20,
+            "timeoutMs": 800,
+        }))
+        .expect("config")
+    }
+
+    fn make_session(
+        inspector: Arc<ScriptedInspector>,
+    ) -> (LocalPtySession, SubprocessTerminalHandle) {
+        let handle = SubprocessTerminalHandle::injected(
+            123,
+            Arc::clone(&inspector) as Arc<dyn ProcessInspector>,
+            20,
+        );
+        let session = LocalPtySession::new(handle.clone(), test_config());
+        (session, handle)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn tier1_stdin_wait_is_stdin_read() {
+        let inspector = ScriptedInspector::new(Some(456), true);
+        let (session, _handle) = make_session(Arc::clone(&inspector));
+        let operation = session.start_send(TerminalSendRequest::new("cat", true));
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let _ = tx.send(operation.done().await);
+        });
+
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ),
+            "same-PGID wait that existed before write must not settle stdin_read"
+        );
+
+        inspector.set_waiting(false);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ),
+            "leaving wait is not stdin_read by itself"
+        );
+
+        inspector.set_waiting(true);
+        let result = tokio::time::timeout(Duration::from_millis(400), rx)
+            .await
+            .expect("stdin_read after leave-then-reenter")
+            .expect("send result");
+        assert_eq!(result.wait_reason(), TerminalWaitReason::StdinRead);
+
+        let unknown = ScriptedInspector::new(Some(456), true);
+        unknown.set_pgid(None);
+        let (session2, _) = make_session(Arc::clone(&unknown));
+        let operation2 = session2.start_send(TerminalSendRequest::new("cat", true));
+        if let Ok(result) =
+            tokio::time::timeout(Duration::from_millis(400), operation2.done()).await
+        {
+            assert_ne!(
+                result.wait_reason(),
+                TerminalWaitReason::StdinRead,
+                "unknown foreground is never stdin_read"
+            );
+        }
+
+        let _ = session.close("test").await;
+        let _ = session2.close("test").await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn tier1_stdin_wait_prompt_same_shell_pgid_is_stdin_read() {
+        let inspector = ScriptedInspector::new(Some(456), false);
+        let (session, handle) = make_session(Arc::clone(&inspector));
+        let operation = session.start_send(TerminalSendRequest::new("true", true));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        handle.emit_output("\x1b]133;D;0\x07dsh> ");
+        let result = tokio::time::timeout(Duration::from_millis(200), operation.done())
+            .await
+            .expect("prompt+shell_pgid stdin_read");
+        assert_eq!(result.wait_reason(), TerminalWaitReason::StdinRead);
+        let _ = session.close("test").await;
+    }
 }

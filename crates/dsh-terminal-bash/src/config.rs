@@ -33,8 +33,7 @@ pub(crate) struct ResolvedConfig {
     pub(crate) scrollback_max_bytes: usize,
     pub(crate) max_read_bytes: usize,
     pub(crate) poll_interval_ms: u64,
-    /// Delay before Linux exact syscall probes; stdin_read attribution is not in this crate yet.
-    #[allow(dead_code)]
+    /// Delay after send start before `input_waiting` may settle `stdin_read`.
     pub(crate) exact_probe_after_ms: u64,
     pub(crate) idle_silence_ms: u64,
     pub(crate) handoff_grace_ms: u64,

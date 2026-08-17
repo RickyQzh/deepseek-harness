@@ -8,7 +8,7 @@ Unknown config keys fail load (`TerminalBashConfig: unknown key "{key}"`). Defau
 
 Child env overlays after the subprocess scrubbed parent: `TERM=dumb`, `PAGER=cat`, `GIT_PAGER=cat`, `PS1=dsh> ` (trailing space), `PROMPT_COMMAND` OSC `133;D;` with the last exit status, `BASH_SILENCE_DEPRECATION_WARNING=1`, `DSH_SHELL=1`, `DSH_SESSION_ID=<owner>`, `DSH_PTY_SESSION_ID=<id>`. Default cwd is the sandbox policy workspace root when spawn omits `cwd`.
 
-Readiness uses a private OSC `133;D;` marker then a printable tail equal to `dsh> `, discards pre-write evidence at each send (including initialize's empty write), and does not accept zero-output silence while unpublished. Settlement reasons are `inferred_idle`, `timeout`, and `session_exit`. Timeout rejects spawn with `PTY shell did not reach readiness before startup timeout`. Session exit during initialize is `PTY shell exited during startup`. Cancel delivers `SIGINT` to the foreground process group and never writes `\x03`.
+Readiness uses a private OSC `133;D;` marker then a printable tail equal to `dsh> `, discards pre-write evidence at each send (including initialize's empty write), and does not accept zero-output silence while unpublished. After `exactProbeAfterMs`, `inspect_foreground` `input_waiting` may settle `stdin_read` when unpublished startup already has output. The same foreground PGID must leave a pre-write wait and re-enter it; a different PGID may use the current wait. Unknown foreground is never `stdin_read`. Prompt-marker plus `dsh> ` with idle of at least `pollIntervalMs` and the captured `shellPgid` also settles `stdin_read`. Other settlement reasons are `inferred_idle`, `timeout`, and `session_exit`. Timeout rejects spawn with `PTY shell did not reach readiness before startup timeout`. Session exit during initialize is `PTY shell exited during startup`. Cancel delivers `SIGINT` to the foreground process group and never writes `\x03`.
 
 ## Model Experience
 
@@ -20,6 +20,5 @@ No direct invalidation.
 
 ## Known Limitations and Deferred Work
 
-- Linux `stdin_read` wait-reason attribution is not implemented; readiness settles as `inferred_idle`, `timeout`, or `session_exit`.
 - Spawn does not wrap argv through sandbox confine.
 - Model-facing `terminal_*` tools live in `dsh-tool-terminal`.

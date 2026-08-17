@@ -242,11 +242,11 @@ struct HandleInner {
     reader: Mutex<Option<std::thread::JoinHandle<()>>>,
     #[cfg(unix)]
     waiter: Mutex<Option<std::thread::JoinHandle<()>>>,
-    #[cfg(all(unix, test))]
+    #[cfg(unix)]
     test_shell: Option<TestShell>,
 }
 
-#[cfg(all(unix, test))]
+#[cfg(unix)]
 struct TestShell {
     kills: Mutex<Vec<String>>,
     auto_exit_on_kill: AtomicBool,
@@ -293,7 +293,6 @@ impl SubprocessTerminalHandle {
             if self.inner.exited.load(Ordering::SeqCst) {
                 return Err(SubprocessError::TerminalExited);
             }
-            #[cfg(test)]
             if self.inner.test_shell.is_some() {
                 let _ = data;
                 return Ok(());
@@ -363,6 +362,20 @@ impl SubprocessTerminalHandle {
             }
             notified.await;
         }
+    }
+
+    /// Publish one UTF-8 chunk as if the PTY master produced it.
+    ///
+    /// # Parameters
+    ///
+    /// * `chunk` - Text delivered to [`Self::output`] subscribers.
+    ///
+    /// # Returns
+    ///
+    /// None.
+    #[doc(hidden)]
+    pub fn emit_output(&self, chunk: &str) {
+        let _ = self.inner.sender.send(chunk.to_string());
     }
 
     /// Inspect the current foreground process group and stdin-wait state.
@@ -493,8 +506,25 @@ impl SubprocessTerminalHandle {
         }
     }
 
-    #[cfg(all(test, unix))]
-    fn injected(pid: i32, inspector: Arc<dyn ProcessInspector>, grace_ms: u64) -> Self {
+    /// Build a handle that does not allocate a PTY and routes inspect, signal, and terminate
+    /// through `inspector`.
+    ///
+    /// Writes are no-ops. Drop does not signal `pid`. Intended for tests that must not open
+    /// `/proc/<pid>/mem`.
+    ///
+    /// # Parameters
+    ///
+    /// * `pid` - Synthetic shell pid used as the inspect root.
+    /// * `inspector` - Process-table operations for inspect, signal, and terminate.
+    /// * `grace_ms` - TERM-to-KILL grace for [`Self::terminate`].
+    ///
+    /// # Returns
+    ///
+    /// A handle sharing `inspector` for the session lifetime.
+    #[doc(hidden)]
+    #[cfg(unix)]
+    #[must_use]
+    pub fn injected(pid: i32, inspector: Arc<dyn ProcessInspector>, grace_ms: u64) -> Self {
         let root_identity = inspector
             .process_tree(pid)
             .into_iter()
@@ -716,7 +746,6 @@ fn spawn_unix(
         master: Mutex::new(Some(master)),
         reader: Mutex::new(Some(reader_thread)),
         waiter: Mutex::new(None),
-        #[cfg(test)]
         test_shell: None,
     });
 
@@ -878,7 +907,6 @@ async fn stop_descendants(inner: &HandleInner) -> Vec<ProcessIdentity> {
 
 #[cfg(unix)]
 fn kill_shell(inner: &HandleInner, signal: TermKill) {
-    #[cfg(test)]
     if let Some(shell) = &inner.test_shell {
         let name = match signal {
             TermKill::Sigterm => "SIGTERM",
@@ -995,10 +1023,9 @@ fn take_mutex<T>(mutex: &Mutex<Option<T>>) -> Option<T> {
 #[cfg(unix)]
 impl Drop for HandleInner {
     fn drop(&mut self) {
-        let skip_kill =
-            self.exited.load(Ordering::SeqCst) || self.terminate_started.load(Ordering::SeqCst);
-        #[cfg(test)]
-        let skip_kill = skip_kill || self.test_shell.is_some();
+        let skip_kill = self.exited.load(Ordering::SeqCst)
+            || self.terminate_started.load(Ordering::SeqCst)
+            || self.test_shell.is_some();
         if !skip_kill && self.pid > 0 {
             // SAFETY: pid is this PTY child's pid; ESRCH/EPERM are ignored so Drop stays idempotent.
             unsafe {

@@ -8,7 +8,7 @@
 
 在 subprocess 已清洗的父进程环境之后叠加的子进程环境为：`TERM=dumb`、`PAGER=cat`、`GIT_PAGER=cat`、`PS1=dsh> `（含尾随空格）、带上次退出码的 `PROMPT_COMMAND` OSC `133;D;`、`BASH_SILENCE_DEPRECATION_WARNING=1`、`DSH_SHELL=1`、`DSH_SESSION_ID=<owner>`、`DSH_PTY_SESSION_ID=<id>`。spawn 省略 `cwd` 时，默认工作目录是沙箱策略的 workspace root。
 
-就绪检测使用私有 OSC `133;D;` 标记，随后可打印尾部须等于 `dsh> `；每次 send（包括 initialize 的空写入）都会丢弃写入前的证据；尚未发布的启动过程不接受零输出静默。结算原因为 `inferred_idle`、`timeout` 和 `session_exit`。超时拒绝 spawn，文案为 `PTY shell did not reach readiness before startup timeout`。initialize 期间会话退出则为 `PTY shell exited during startup`。取消向前台进程组投递 `SIGINT`，从不写入 `\x03`。
+就绪检测使用私有 OSC `133;D;` 标记，随后可打印尾部须等于 `dsh> `；每次 send（包括 initialize 的空写入）都会丢弃写入前的证据；尚未发布的启动过程不接受零输出静默。在 `exactProbeAfterMs` 之后，当尚未发布的启动过程已有输出时，`inspect_foreground` 的 `input_waiting` 可以结算为 `stdin_read`。同一前台 PGID 必须先离开写入前的等待再重新进入；不同 PGID 可以使用当前等待。未知前台绝不是 `stdin_read`。提示符标记加上 `dsh> `、空闲至少 `pollIntervalMs`、且前台等于已捕获的 `shellPgid` 时，也会结算为 `stdin_read`。其他结算原因是 `inferred_idle`、`timeout` 和 `session_exit`。超时拒绝 spawn，文案为 `PTY shell did not reach readiness before startup timeout`。initialize 期间会话退出则为 `PTY shell exited during startup`。取消向前台进程组投递 `SIGINT`，从不写入 `\x03`。
 
 ## 模型体验
 
@@ -20,6 +20,5 @@
 
 ## 已知限制与延后工作
 
-- 尚未实现 Linux `stdin_read` 等待原因归属；就绪结算为 `inferred_idle`、`timeout` 或 `session_exit`。
 - Spawn 不会通过 sandbox confine 包装 argv。
 - 面向模型的 `terminal_*` 工具在 `dsh-tool-terminal`。
