@@ -67,6 +67,10 @@ Cordis、Landlock、`!!js` 与会话格式的保留或放弃引用重写笔记�
 
 `DSH_RUNTIME=rust` 不得从表中丢掉场景（orphan-dir 守卫），并且必须跳过非子集的 **运行**。本笔记不声称在 Rust 上跑完整的 `pnpm run test:snapshot`。
 
+## 第 8 阶段 MCP 子集
+
+第 8 阶段第 2 项不增加具名 Vitest 快照场景。TypeScript `@deepseek-ai/dsh-mcp-client` 已经选择单元/e2e 覆盖且不做快照，因为一条 MCP 配置项会改动钉住的系统提示词 fixture，并 spawn 外部服务器。Rust 覆盖是对着 crate 内 Content-Length stdio fixture 跑 `cargo test -p dsh-mcp-client`。`DSH_RUNTIME=rust` 快照驱动不得挂载 `@deepseek-ai/dsh-mcp-client`。
+
 ## 曾考虑的替代方案
 
 **把快照驱动改写成 Rust（`cargo test` 不生成进程，或 Rust NDJSON 客户端）。** 否决：产品测试是组装后的应用转录；针对不同组合的第二套测试正是重写笔记所点名的双跑失败。Vitest 已经拥有归一化、`llm-replay` 灌入与期望输出比较。

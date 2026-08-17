@@ -67,6 +67,10 @@ When `DSH_RUNTIME=rust`, those named ACP drivers spawn `target/debug/dsh` (or `D
 
 `DSH_RUNTIME=rust` must not drop scenarios from the table (orphan-dir guard) and must skip non-subset **runs**. This note does not claim full `pnpm run test:snapshot` on Rust.
 
+## Phase 8 MCP subset
+
+Phase 8 item 2 does not add named Vitest snapshot scenarios. TypeScript `@deepseek-ai/dsh-mcp-client` already chose unit/e2e coverage and no snapshots, because an MCP row would mutate pinned system-prompt fixtures and spawn an external server. Rust coverage is `cargo test -p dsh-mcp-client` against an in-crate Content-Length stdio fixture. `DSH_RUNTIME=rust` snapshot drivers must not mount `@deepseek-ai/dsh-mcp-client`.
+
 ## Alternatives considered
 
 **Rewrite snapshot drivers in Rust (`cargo test` spawning nothing, or a Rust NDJSON client).** Rejected: the product test is the assembled application transcript; a second suite against a different composition is the dual-run failure the rewrite note names. Vitest already owns normalization, `llm-replay` hydration, and expected-output comparison.

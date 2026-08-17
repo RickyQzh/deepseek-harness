@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/proposed/testing/2026-08-15-rust-snapshot-harness.md
-2026-08-15-rust-snapshot-harness.md: ac9a78add93b889c59f4a639eb061d75cc8dba36
-2026-08-15-rust-snapshot-harness.zh.md: fccb269632134995c612e386bbe82f8ebe96d325
+2026-08-15-rust-snapshot-harness.md: fc5a3c23aa9c5993076ec5882aa2e5acafee9f14
+2026-08-15-rust-snapshot-harness.zh.md: f9aefd0a4d046253431ab210720c000257dfd4ea
