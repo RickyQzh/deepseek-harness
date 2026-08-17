@@ -7,6 +7,9 @@ mod service;
 #[cfg(test)]
 mod phase6_exit;
 
+#[cfg(test)]
+mod phase8_exit;
+
 pub use dsh_tools::ApprovalOutcome;
 pub use service::{
     ApprovalError, ApprovalPolicy, ApprovalQuestion, ApprovalRequest, ApprovalService,

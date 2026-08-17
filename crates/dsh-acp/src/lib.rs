@@ -7,6 +7,9 @@ mod plugin;
 mod rpc;
 mod types;
 
+#[cfg(test)]
+mod phase8_exit;
+
 pub use bridge::AcpBridge;
 pub use codec::{
     AcpContentBlock, StopReason, acp_prompt_to_text, prompt_has_unsupported_content,
