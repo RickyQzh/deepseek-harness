@@ -1287,6 +1287,36 @@ describe('launchAcpTestAgent rust runtime', () => {
     }
   })
 
+  it('spawns dsh --profile acp with DSH_CORDIS_CONFIG next to agent.configPath when overlay configPath is unset', { timeout: 20_000 }, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'acp-snap-rust-shared-'))
+    tempDirs.push(dir)
+    const rustYaml = join(dir, 'rust.snapshot.cordis.yml')
+    await writeFile(rustYaml, '# rust snapshot yaml\n')
+
+    const previousRuntime = process.env.DSH_RUNTIME
+    const previousBin = process.env.DSH_RUNTIME_BIN
+    rustSpawn.last = undefined
+    let launched: ReturnType<typeof launchAcpTestAgent> | undefined
+    try {
+      process.env.DSH_RUNTIME = 'rust'
+      process.env.DSH_RUNTIME_BIN = process.execPath
+      launched = launchAcpTestAgent({
+        agent: { ...AGENT, configPath: join(dir, 'cordis.yml') },
+        cwd: dir,
+      })
+    } finally {
+      restoreProcessEnv('DSH_RUNTIME', previousRuntime)
+      restoreProcessEnv('DSH_RUNTIME_BIN', previousBin)
+    }
+    if (launched === undefined) throw new Error('expected rust spawn to return a handle')
+    try {
+      await launched.spawned
+      expect(rustSpawn.last?.env?.DSH_CORDIS_CONFIG).toBe(rustYaml)
+    } finally {
+      await launched.close()
+    }
+  })
+
   it('spawns dsh --profile acp with DSH_CORDIS_CONFIG next to agent.configPath', { timeout: 20_000 }, async () => {
     const dir = await mkdtemp(join(tmpdir(), 'acp-snap-rust-spawn-'))
     tempDirs.push(dir)
@@ -1327,6 +1357,42 @@ describe('launchAcpTestAgent rust runtime', () => {
       expect(captured?.env?.DSH_CORDIS_CONFIG).toBe(rustYaml)
       expect(captured?.env?.DSH_CORDIS_CONFIG).not.toBe(shouldNotWin)
       expect(dirname(rustYaml)).toBe(dir)
+    } finally {
+      await launched.close()
+    }
+  })
+
+  it('selects sibling rust.pty.snapshot.cordis.yml for overlay configPath pty.cordis.yml', { timeout: 20_000 }, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'acp-snap-rust-pty-overlay-'))
+    tempDirs.push(dir)
+    const sharedYaml = join(dir, 'rust.snapshot.cordis.yml')
+    const overlayYaml = join(dir, 'rust.pty.snapshot.cordis.yml')
+    await writeFile(sharedYaml, '# rust snapshot yaml\n')
+    await writeFile(overlayYaml, '# rust pty overlay yaml\n')
+
+    const previousRuntime = process.env.DSH_RUNTIME
+    const previousBin = process.env.DSH_RUNTIME_BIN
+    rustSpawn.last = undefined
+    let launched: ReturnType<typeof launchAcpTestAgent> | undefined
+    try {
+      process.env.DSH_RUNTIME = 'rust'
+      process.env.DSH_RUNTIME_BIN = process.execPath
+      launched = launchAcpTestAgent({
+        agent: { ...AGENT, configPath: join(dir, 'cordis.yml') },
+        cwd: dir,
+        configPath: join(dir, 'pty.cordis.yml'),
+      })
+    } finally {
+      restoreProcessEnv('DSH_RUNTIME', previousRuntime)
+      restoreProcessEnv('DSH_RUNTIME_BIN', previousBin)
+    }
+    if (launched === undefined) throw new Error('expected rust spawn to return a handle')
+    try {
+      await launched.spawned
+      const captured = rustSpawn.last
+      expect(captured).toBeDefined()
+      expect(captured?.env?.DSH_CORDIS_CONFIG).toBe(overlayYaml)
+      expect(captured?.env?.DSH_CORDIS_CONFIG).not.toBe(sharedYaml)
     } finally {
       await launched.close()
     }

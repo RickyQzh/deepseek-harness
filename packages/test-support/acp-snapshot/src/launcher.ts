@@ -9,7 +9,7 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import {
   ClientSideConnection,
@@ -89,7 +89,7 @@ export function launchAcpTestAgent(options: AcpTestLaunchOptions): LaunchedAcpTe
     if (!existsSync(rustBin)) {
       throw new Error(`DSH_RUNTIME=rust but ${rustBin} is missing; run cargo build -p dsh-cli`)
     }
-    const rustYaml = join(dirname(agent.configPath), 'rust.snapshot.cordis.yml')
+    const rustYaml = rustSnapshotYaml(agent, options.configPath)
     command = rustBin
     args = ['--profile', 'acp']
     env = {
@@ -303,6 +303,25 @@ export function launchAcpTestAgent(options: AcpTestLaunchOptions): LaunchedAcpTe
       return propagateFailureAfterDrain()
     },
   }
+}
+
+/**
+ * Resolve the rust ACP composition YAML.
+ *
+ * When `overlayConfigPath` is set, prefer sibling `rust.${stem}.snapshot.cordis.yml`
+ * if that file exists (`stem` is the overlay basename with `.cordis.yml` removed).
+ * Otherwise use `rust.snapshot.cordis.yml` next to `agent.configPath`.
+ *
+ * @param agent The agent under test whose leaf config locates the shared rust YAML.
+ * @param overlayConfigPath Scenario overlay path (`options.configPath`), or unset.
+ * @returns Absolute path assigned to `DSH_CORDIS_CONFIG`.
+ */
+function rustSnapshotYaml(agent: AgentUnderTest, overlayConfigPath: string | undefined): string {
+  const shared = join(dirname(agent.configPath), 'rust.snapshot.cordis.yml')
+  if (overlayConfigPath === undefined) return shared
+  const stem = basename(overlayConfigPath).replace(/\.cordis\.yml$/, '')
+  const candidate = join(dirname(overlayConfigPath), `rust.${stem}.snapshot.cordis.yml`)
+  return existsSync(candidate) ? candidate : shared
 }
 
 /** Resolve once a running child exits. */

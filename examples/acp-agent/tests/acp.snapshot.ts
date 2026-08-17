@@ -615,7 +615,9 @@ const hasPwsh = spawnSync(resolvePwshPath(), ['-NoLogo', '-NoProfile', '-NonInte
 const rustRuntime = process.env.DSH_RUNTIME === 'rust'
 const scenarios = rustRuntime
   ? SCENARIOS.map((scenario) =>
-      scenario.name === 'text-turn' ? { ...scenario, comparesLog: false } : scenario,
+      scenario.name === 'text-turn' || scenario.name === 'pty-tools'
+        ? { ...scenario, comparesLog: false }
+        : scenario,
     )
   : SCENARIOS
 
@@ -624,15 +626,18 @@ defineAcpSnapshotSuite({
   snapshotsDir: SNAPSHOTS_DIR,
   scenarios,
   mode: snapshotModeFromEnv(process.env.DSH_SNAPSHOT),
-  rustSubset: ['handshake', 'reject-extra-dirs', 'text-turn'],
+  rustSubset: ['handshake', 'reject-extra-dirs', 'text-turn', 'pty-tools'],
   hasPwsh,
 })
 
-it('rust snapshot yaml has no js tag', () => {
-  const p = fileURLToPath(new URL('../rust.snapshot.cordis.yml', import.meta.url))
-  if (!existsSync(p)) return
-  expect(readFileSync(p, 'utf8')).not.toContain('!!js')
-})
+it.each(['rust.snapshot.cordis.yml', 'rust.pty.snapshot.cordis.yml'] as const)(
+  'rust snapshot yaml %s has no js tag',
+  (name) => {
+    const p = fileURLToPath(new URL(`../${name}`, import.meta.url))
+    if (!existsSync(p)) return
+    expect(readFileSync(p, 'utf8')).not.toContain('!!js')
+  },
+)
 
 it('packed ACP fixture retains every chunk row kind without changing the logical session', () => {
   const source = fixtureRecords(PACKED_CHUNKS_SOURCE)
