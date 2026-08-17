@@ -36,5 +36,5 @@ Use a terminal session only when work needs persistent terminal state or interac
 
 ## 已知限制与延后工作
 
-- `register` 不会从 `register_base_plugins` 调用。
+- `register` 由 `register_base_plugins` 调用；默认 YAML 仍省略 PTY 行。
 - 尚未组装具名 ACP `pty-tools`。

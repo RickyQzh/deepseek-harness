@@ -5,9 +5,11 @@ use dsh_boot::PluginRegistry;
 /// Register Phase 6 product plugins by YAML name.
 ///
 /// Does not register spine, execution, headless, or `sdk-jsonrpc-server` plugins.
-/// Time-context, the tool-result pruner, and `@deepseek-ai/dsh-mcp-client` are
+/// Time-context, the tool-result pruner, `@deepseek-ai/dsh-mcp-client`, and the
+/// PTY plugin names (`@deepseek-ai/dsh-terminal`, `pty-snapshot-backend`,
+/// `@deepseek-ai/dsh-terminal-bash`, `@deepseek-ai/dsh-tool-terminal`) are
 /// registered so a later `--patch` can mount them; default base YAML omits those
-/// rows.
+/// rows and does not allocate a PTY.
 pub fn register_base_plugins(registry: &mut PluginRegistry) {
     dsh_user_approval::plugin::register(registry);
     dsh_user_approval::plugin::register_auto_approve(registry);
@@ -32,6 +34,9 @@ pub fn register_base_plugins(registry: &mut PluginRegistry) {
     dsh_subagent_in_process::plugin::register_fork(registry);
     dsh_tool_subagent::plugin::register(registry);
     dsh_mcp_client::register_mcp_plugins(registry);
+    dsh_terminal::register_terminal_plugins(registry);
+    dsh_terminal_bash::register(registry);
+    dsh_tool_terminal::register(registry);
 }
 
 #[cfg(test)]
@@ -149,6 +154,13 @@ mod tests {
         assert!(err.to_string().contains("@deepseek-ai/dsh-not-a-plugin"));
     }
 
+    fn yaml_omits_pty_plugin_names(yaml: &str) {
+        assert!(!yaml.contains("@deepseek-ai/dsh-terminal"));
+        assert!(!yaml.contains("dsh-terminal-bash"));
+        assert!(!yaml.contains("dsh-tool-terminal"));
+        assert!(!yaml.contains("pty-snapshot-backend"));
+    }
+
     #[tokio::test]
     async fn register_base_plugins_resolves_mcp_client_yaml_name() {
         let yaml = "\
@@ -170,6 +182,49 @@ mod tests {
         let result = boot_yaml(&ctx, yaml, &[], &registry, &process_interpolate_env()).await;
         ctx.dispose().await;
         result.expect("mcp-client yaml name must resolve");
+    }
+
+    #[tokio::test]
+    async fn register_base_plugins_installs_terminal_yaml_names() {
+        let yaml = "\
+- name: '@deepseek-ai/dsh-tools'
+- name: '@deepseek-ai/dsh-system-prompt'
+- name: '@deepseek-ai/dsh-subprocess-local'
+- name: '@deepseek-ai/dsh-terminal'
+- name: pty-snapshot-backend
+- name: '@deepseek-ai/dsh-terminal-bash'
+  config:
+    backendType: bash
+- name: '@deepseek-ai/dsh-tool-terminal'
+";
+        assert!(!yaml.contains("!!js"));
+        yaml_omits_pty_plugin_names(include_str!("../../dsh-headless/minimal.cordis.yml"));
+        yaml_omits_pty_plugin_names(include_str!("../../dsh-headless/base.cordis.yml"));
+        yaml_omits_pty_plugin_names(include_str!("../../dsh-acp/acp.cordis.yml"));
+        yaml_omits_pty_plugin_names(include_str!("../../dsh-host/web.cordis.yml"));
+        yaml_omits_pty_plugin_names(include_str!("../../dsh-sdk-jsonrpc-server/base.cordis.yml"));
+        yaml_omits_pty_plugin_names(include_str!(
+            "../../../examples/jsonrpc-agent/rust.snapshot.cordis.yml"
+        ));
+        yaml_omits_pty_plugin_names(include_str!(
+            "../../../examples/acp-agent/rust.snapshot.cordis.yml"
+        ));
+        let ctx = Context::new();
+        ctx.provide(
+            "sandboxPolicy",
+            dsh_sandbox::SandboxPolicyResolver::new(
+                dsh_sandbox::SandboxMode::DangerFullAccess,
+                std::env::temp_dir().to_string_lossy().into_owned(),
+            ),
+        )
+        .expect("provide sandboxPolicy");
+        let mut registry = PluginRegistry::new();
+        register_spine_plugins(&mut registry);
+        register_execution_plugins(&mut registry);
+        register_base_plugins(&mut registry);
+        let result = boot_yaml(&ctx, yaml, &[], &registry, &process_interpolate_env()).await;
+        ctx.dispose().await;
+        result.expect("terminal yaml names must resolve");
     }
 
     #[test]

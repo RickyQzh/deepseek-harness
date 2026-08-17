@@ -36,5 +36,5 @@ Prefix-stable guidance plus append-only tool results after the reusable request 
 
 ## Known Limitations and Deferred Work
 
-- `register` is not called from `register_base_plugins`.
+- `register` is called from `register_base_plugins`; default YAML still omits the PTY rows.
 - Named ACP `pty-tools` is not assembled.

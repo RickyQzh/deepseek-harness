@@ -19,10 +19,13 @@ dsh-permission-presets = { path = "../dsh-permission-presets" }
 dsh-skill = { path = "../dsh-skill" }
 dsh-subagent = { path = "../dsh-subagent" }
 dsh-subagent-in-process = { path = "../dsh-subagent-in-process" }
+dsh-terminal = { path = "../dsh-terminal" }
+dsh-terminal-bash = { path = "../dsh-terminal-bash" }
 dsh-time-context = { path = "../dsh-time-context" }
 dsh-token-meter = { path = "../dsh-token-meter" }
 dsh-tool-jobs = { path = "../dsh-tool-jobs" }
 dsh-tool-subagent = { path = "../dsh-tool-subagent" }
+dsh-tool-terminal = { path = "../dsh-tool-terminal" }
 dsh-tool-web = { path = "../dsh-tool-web" }
 dsh-user-approval = { path = "../dsh-user-approval" }
 dsh-web = { path = "../dsh-web" }
@@ -31,6 +34,7 @@ dsh-web-search-deepseek = { path = "../dsh-web-search-deepseek" }
 [dev-dependencies]
 dsh-agent = { path = "../dsh-agent" }
 dsh-kernel = { path = "../dsh-kernel" }
+dsh-sandbox = { path = "../dsh-sandbox" }
 dsh-tools = { path = "../dsh-tools" }
 tokio = { workspace = true }
 
