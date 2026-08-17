@@ -568,6 +568,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-mcp-client"
+version = "0.1.0"
+dependencies = [
+ "dsh-boot",
+ "dsh-kernel",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
 name = "dsh-permission-presets"
 version = "0.1.0"
 dependencies = [

@@ -100,6 +100,8 @@ pub const PLUGIN_HEADLESS_AUTO_APPROVE: &str = "headless-auto-approve";
 pub const PLUGIN_SDK_JSONRPC: &str = "sdk-jsonrpc-server";
 /// YAML `name` for `@deepseek-ai/dsh-acp`.
 pub const PLUGIN_ACP: &str = "@deepseek-ai/dsh-acp";
+/// YAML `name` for `@deepseek-ai/dsh-mcp-client`.
+pub const PLUGIN_MCP_CLIENT: &str = "@deepseek-ai/dsh-mcp-client";
 /// YAML `name` for `@deepseek-ai/dsh-host-webserver`.
 pub const PLUGIN_HOST_WEBSERVER: &str = "@deepseek-ai/dsh-host-webserver";
 /// YAML `name` for `@deepseek-ai/dsh-host-frontend-static`.
