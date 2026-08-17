@@ -16,5 +16,8 @@ libc = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+portable-pty = "0.9"
+
 [lints]
 workspace = true

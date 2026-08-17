@@ -6,11 +6,13 @@ use std::sync::{Arc, Mutex};
 use crate::env::{EnvEntry, child_env};
 use crate::error::SubprocessError;
 use crate::spawn::{SubprocessHandle, spawn_subprocess};
+use crate::terminal::{SubprocessTerminalHandle, SubprocessTerminalSpawnSpec};
 use crate::types::SubprocessSpawnSpec;
 
 /// Host-local subprocess runtime: PATH lookup plus a live set of spawned trees.
 pub struct LocalSubprocessRuntime {
     live: Arc<Mutex<Vec<SubprocessHandle>>>,
+    terminals: Arc<Mutex<Vec<SubprocessTerminalHandle>>>,
 }
 
 impl LocalSubprocessRuntime {
@@ -19,6 +21,7 @@ impl LocalSubprocessRuntime {
     pub fn new() -> Self {
         Self {
             live: Arc::new(Mutex::new(Vec::new())),
+            terminals: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -60,7 +63,47 @@ impl LocalSubprocessRuntime {
         Ok(handle)
     }
 
-    /// Terminate every live tree and wait until each process group is gone.
+    /// Spawn one POSIX PTY child and retain a clone until [`Self::dispose`].
+    ///
+    /// Inspect, signal, and terminate are omitted. `dispose` drops tracked clones and does not
+    /// wait for PTY children. Last-handle drop closes the PTY master and signals the child.
+    ///
+    /// # Parameters
+    ///
+    /// * `spec` - Fully specified PTY spawn request from [`SubprocessTerminalSpawnSpec::new`].
+    ///
+    /// # Returns
+    ///
+    /// A handle sharing the tracked session.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::spawn_terminal`] errors.
+    pub fn spawn_terminal(
+        &self,
+        spec: SubprocessTerminalSpawnSpec,
+    ) -> Result<SubprocessTerminalHandle, SubprocessError> {
+        let handle = crate::terminal::spawn_terminal(spec)?;
+        self.terminals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(handle.clone());
+        Ok(handle)
+    }
+
+    /// Terminate every live pipe tree and drop tracked PTY handle clones.
+    ///
+    /// Pipe trees receive SIGTERM then SIGKILL after `grace_ms`, then `wait_for_exit`. PTY
+    /// inspect/signal/terminate are omitted, so this method does not wait for PTY children.
+    /// Dropping the last handle closes the PTY master and signals the child.
+    ///
+    /// # Parameters
+    ///
+    /// None.
+    ///
+    /// # Returns
+    ///
+    /// Nothing.
     pub async fn dispose(&self) {
         let handles: Vec<SubprocessHandle> = {
             let mut live = self
@@ -75,6 +118,14 @@ impl LocalSubprocessRuntime {
         for handle in &handles {
             let _ = handle.wait_for_exit().await;
         }
+        let terminals: Vec<SubprocessTerminalHandle> = {
+            let mut live = self
+                .terminals
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::mem::take(&mut *live)
+        };
+        drop(terminals);
     }
 }
 

@@ -8,10 +8,13 @@ Child env is scrubbed then overlay-merged: `child_env` starts from `scrubbed_par
 
 `spawn_subprocess` starts a POSIX process-group leader (`process_group(0)`), collects bounded tails with optional spill files, and terminates with SIGTERM to `-pid` then SIGKILL after `grace_ms`. After the direct child exits, collect-mode `done()` waits at most `grace_ms` for pipe EOF, then drops the collect readers so an inherited descriptor cannot hang the outcome. `LocalSubprocessRuntime` resolves bare names on the scrubbed `PATH` and disposes live trees by terminating each group and awaiting `wait_for_exit`.
 
+`spawn_terminal` opens a POSIX PTY with `portable-pty` (`PtySize` rows/cols, pixel sizes 0), spawns `argv` with cwd and `child_env` after `env_clear`, writes bytes to the master, and publishes UTF-8 lossy `String` chunks on a `tokio::sync::broadcast` channel. `done` resolves when the top-level PTY child exits. Last-handle drop closes the master and signals the child. `LocalSubprocessRuntime::spawn_terminal` retains clones until `dispose` drops them; `dispose` does not wait for PTY children.
+
 `plugin::register` mounts YAML `@deepseek-ai/dsh-subprocess-local` and provides `subprocess` as `LocalSubprocessRuntime`.
 
 ## Known Limitations and Deferred Work
 
-- PTY allocation is out of this crate.
+- Windows ConPTY is out; non-unix `spawn_terminal` returns `UnsupportedPlatform`.
+- PTY inspect, signal, and terminate are not implemented; `dispose` does not wait for PTY children.
 - Windows `taskkill /T` tree kill is deferred; non-unix `spawn_subprocess` returns `UnsupportedPlatform`.
 - `argv` is never a shell string.
