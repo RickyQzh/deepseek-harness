@@ -30,7 +30,7 @@ Cordis、Landlock、`!!js` 与会话格式的保留或放弃引用重写笔记�
 
 当 `DSH_RUNTIME=rust` 时，那些具名 web 驱动 spawn `target/debug/dsh`（若设置了 `DSH_RUNTIME_BIN` 则用该路径），argv 为 `web --port 0 --dist <dir>`。未设置 `DSH_RUNTIME` 时保持进程内 Cordis scaffold。`built-boot.snapshot.ts` 仍为 jsdom/`FixtureApiClient`（无宿主）。
 
-第 8 阶段第 1 项在 Rust `dsh` 二进制上的具名 ACP（Agent Client Protocol）场景是 `handshake`、`reject-extra-dirs` 与 `text-turn`。其余 `examples/acp-agent` 场景留在 Node `dsh-acp-demo` 二进制上。对着 Rust 跑完整的 `pnpm run test:snapshot` 不是第 8 阶段第 1 项的退出条件。
+第 8 阶段第 1 项在 Rust `dsh` 二进制上的具名 ACP（Agent Client Protocol）场景是 `handshake`、`reject-extra-dirs` 与 `text-turn`。对着 Rust 跑完整的 `pnpm run test:snapshot` 不是第 8 阶段第 1 项的退出条件。
 
 当 `DSH_RUNTIME=rust` 时，那些具名 ACP 驱动 spawn `target/debug/dsh`（若设置了 `DSH_RUNTIME_BIN` 则用该路径），并带上 `--profile acp`。未设置 `DSH_RUNTIME` 时保持 Node `dsh-acp-demo` 二进制。
 
@@ -63,13 +63,18 @@ Cordis、Landlock、`!!js` 与会话格式的保留或放弃引用重写笔记�
 | ACP `handshake` | Vitest `examples/acp-agent/tests/acp.snapshot.ts` | `DSH_RUNTIME=rust` 时为 Rust；否则为 Node | `examples/acp-agent/tests/snapshots/handshake/` |
 | ACP `reject-extra-dirs` | 同上 | `DSH_RUNTIME=rust` 时为 Rust；否则为 Node | `examples/acp-agent/tests/snapshots/reject-extra-dirs/` |
 | ACP `text-turn` | 同上 | `DSH_RUNTIME=rust` 时为 Rust；否则为 Node | `examples/acp-agent/tests/snapshots/text-turn/` |
+| ACP `pty-tools` | 同上 | `DSH_RUNTIME=rust` 时为 Rust；否则为 Node | `examples/acp-agent/tests/snapshots/pty-tools/` |
 | 其余 ACP 场景 | 同一套件 | 仅 Node | 现有目录 |
 
-`DSH_RUNTIME=rust` 不得从表中丢掉场景（orphan-dir 守卫），并且必须跳过非子集的 **运行**。本笔记不声称在 Rust 上跑完整的 `pnpm run test:snapshot`。
+`DSH_RUNTIME=rust` 不得从表中丢掉场景（orphan-dir 守卫），并且必须跳过非子集的 **运行**。其余 ACP 场景是本表中未列为 Rust 的每一个名称。本笔记不声称在 Rust 上跑完整的 `pnpm run test:snapshot`。
 
 ## 第 8 阶段 MCP 子集
 
 第 8 阶段第 2 项不增加具名 Vitest 快照场景。TypeScript `@deepseek-ai/dsh-mcp-client` 已经选择单元/e2e 覆盖且不做快照，因为一条 MCP 配置项会改动钉住的系统提示词 fixture，并 spawn 外部服务器。Rust 覆盖是对着 crate 内 Content-Length stdio fixture 跑 `cargo test -p dsh-mcp-client`。`DSH_RUNTIME=rust` 快照驱动不得挂载 `@deepseek-ai/dsh-mcp-client`。
+
+## 第 8 阶段 PTY 子集
+
+第 8 阶段第 3 项在 `DSH_RUNTIME=rust` 时把 ACP `pty-tools` 命名为 Rust 场景。当 Node overlay 的 basename 是 `pty.cordis.yml` 时，Rust ACP 启动器加载 `examples/acp-agent/rust.pty.snapshot.cordis.yml`（同级 `rust.<stem>.snapshot.cordis.yml`）。共享的 `rust.snapshot.cordis.yml` 不包含 PTY 配置项，以使 handshake 与 `text-turn` 的 schema 保持稳定。真实 bash PTY 与 Linux `stdin_read` 的覆盖是 `cargo test`。Headless `pty-tools` 与 jsonrpc `persistent-tools` 留在 Node 二进制上。
 
 ## 曾考虑的替代方案
 
@@ -85,6 +90,8 @@ Cordis、Landlock、`!!js` 与会话格式的保留或放弃引用重写笔记�
 
 **在第 8 阶段第 1 项为每一个 `examples/acp-agent` 场景 spawn Rust 二进制。** 否决：具名子集是 `handshake`、`reject-extra-dirs` 与 `text-turn`。其余 ACP 场景留在 Node。对着 Rust 跑完整的 `pnpm run test:snapshot` 不是第 8 阶段第 1 项的退出条件。
 
+**把 PTY 工具放到共享的 `rust.snapshot.cordis.yml` 上。** 否决：handshake 与 `text-turn` 钉住的 schema 会多出六个工具。
+
 ## 验收标准
 
 - 重写笔记的后续表链接到本文件，而不是占位符 ``proposed/testing/…-rust-snapshot-harness.md``。
@@ -92,7 +99,8 @@ Cordis、Landlock、`!!js` 与会话格式的保留或放弃引用重写笔记�
 - 第 6 阶段将四个 headless 场景与 jsonrpc `subagent-spawn-in-process` 命名为 Rust 子集。
 - Fixture 目录被复用；计划不增加并行的 `*.rust.expected.jsonl` 文件。
 - 第 7 阶段将 web `rust-host-smoke` 与 `cold-blank-session` 命名为 Rust 子集；其余 `test:web` 文件留在 Node。本笔记不声称在 Rust 上跑完整的 `pnpm run test:web`。
-- 第 8 阶段第 1 项将 ACP `handshake`、`reject-extra-dirs` 与 `text-turn` 命名为 Rust 子集；其余 ACP 场景留在 Node。本笔记不声称在 Rust 上跑完整的 `pnpm run test:snapshot`。
+- 第 8 阶段第 1 项将 ACP `handshake`、`reject-extra-dirs` 与 `text-turn` 命名为 Rust 子集。本笔记不声称在 Rust 上跑完整的 `pnpm run test:snapshot`。
+- 第 8 阶段第 3 项在 `DSH_RUNTIME=rust` 时把 ACP `pty-tools` 命名为 Rust 场景；其余 ACP 场景留在 Node；共享的 rust ACP YAML 不含 PTY 配置项；headless pty-tools 与 jsonrpc persistent-tools 留在 Node。
 - 不编辑 `docs/architecture.md`。
 
 ## 风险

@@ -30,7 +30,7 @@ Phase 7 named web scenarios on the Rust `dsh` bin are `rust-host-smoke` and `col
 
 When `DSH_RUNTIME=rust`, those named web drivers spawn `target/debug/dsh` (or `DSH_RUNTIME_BIN`) with argv `web --port 0 --dist <dir>`. Unset `DSH_RUNTIME` keeps the in-process Cordis scaffold. `built-boot.snapshot.ts` stays jsdom/`FixtureApiClient` (no host).
 
-Phase 8 item 1 named ACP scenarios on the Rust `dsh` bin are `handshake`, `reject-extra-dirs`, and `text-turn`. Remaining `examples/acp-agent` scenarios stay on the Node `dsh-acp-demo` bin. Full `pnpm run test:snapshot` against Rust is not Phase 8 item 1's exit.
+Phase 8 item 1 named ACP scenarios on the Rust `dsh` bin are `handshake`, `reject-extra-dirs`, and `text-turn`. Full `pnpm run test:snapshot` against Rust is not Phase 8 item 1's exit.
 
 When `DSH_RUNTIME=rust`, those named ACP drivers spawn `target/debug/dsh` (or `DSH_RUNTIME_BIN`) with `--profile acp`. Unset `DSH_RUNTIME` keeps the Node `dsh-acp-demo` bin.
 
@@ -63,13 +63,18 @@ When `DSH_RUNTIME=rust`, those named ACP drivers spawn `target/debug/dsh` (or `D
 | ACP `handshake` | Vitest `examples/acp-agent/tests/acp.snapshot.ts` | Rust when `DSH_RUNTIME=rust`; Node otherwise | `examples/acp-agent/tests/snapshots/handshake/` |
 | ACP `reject-extra-dirs` | same | Rust when `DSH_RUNTIME=rust`; Node otherwise | `examples/acp-agent/tests/snapshots/reject-extra-dirs/` |
 | ACP `text-turn` | same | Rust when `DSH_RUNTIME=rust`; Node otherwise | `examples/acp-agent/tests/snapshots/text-turn/` |
+| ACP `pty-tools` | same | Rust when `DSH_RUNTIME=rust`; Node otherwise | `examples/acp-agent/tests/snapshots/pty-tools/` |
 | remaining ACP scenarios | same suite | Node only | existing dirs |
 
-`DSH_RUNTIME=rust` must not drop scenarios from the table (orphan-dir guard) and must skip non-subset **runs**. This note does not claim full `pnpm run test:snapshot` on Rust.
+`DSH_RUNTIME=rust` must not drop scenarios from the table (orphan-dir guard) and must skip non-subset **runs**. Remaining ACP scenarios are every name not listed as Rust in this table. This note does not claim full `pnpm run test:snapshot` on Rust.
 
 ## Phase 8 MCP subset
 
 Phase 8 item 2 does not add named Vitest snapshot scenarios. TypeScript `@deepseek-ai/dsh-mcp-client` already chose unit/e2e coverage and no snapshots, because an MCP row would mutate pinned system-prompt fixtures and spawn an external server. Rust coverage is `cargo test -p dsh-mcp-client` against an in-crate Content-Length stdio fixture. `DSH_RUNTIME=rust` snapshot drivers must not mount `@deepseek-ai/dsh-mcp-client`.
+
+## Phase 8 PTY subset
+
+Phase 8 item 3 names ACP `pty-tools` as a Rust scenario when `DSH_RUNTIME=rust`. The rust ACP launcher loads `examples/acp-agent/rust.pty.snapshot.cordis.yml` when the Node overlay basename is `pty.cordis.yml` (sibling `rust.<stem>.snapshot.cordis.yml`). Shared `rust.snapshot.cordis.yml` stays without PTY rows so handshake and `text-turn` schemas stay stable. Coverage for real bash PTY and Linux `stdin_read` is `cargo test`. Headless `pty-tools` and jsonrpc `persistent-tools` stay on the Node bin.
 
 ## Alternatives considered
 
@@ -85,6 +90,8 @@ Phase 8 item 2 does not add named Vitest snapshot scenarios. TypeScript `@deepse
 
 **Spawn the Rust bin for every `examples/acp-agent` scenario in Phase 8 item 1.** Rejected: named subset is `handshake`, `reject-extra-dirs`, and `text-turn`. Remaining ACP scenarios stay Node. Full `pnpm run test:snapshot` against Rust is not Phase 8 item 1's exit.
 
+**Put PTY tools on shared `rust.snapshot.cordis.yml`.** Rejected: handshake and `text-turn` schema pins would gain six tools.
+
 ## Acceptance criteria
 
 - The rewrite note follow-up table links to this file instead of the placeholder ``proposed/testing/…-rust-snapshot-harness.md``.
@@ -92,7 +99,8 @@ Phase 8 item 2 does not add named Vitest snapshot scenarios. TypeScript `@deepse
 - Phase 6 names the four headless scenarios and jsonrpc `subagent-spawn-in-process` as the Rust subset.
 - Fixture directories are reused; the plan does not add parallel `*.rust.expected.jsonl` files.
 - Phase 7 names web `rust-host-smoke` and `cold-blank-session` as the Rust subset; remaining `test:web` files stay Node. This note does not claim full `pnpm run test:web` on Rust.
-- Phase 8 item 1 names ACP `handshake`, `reject-extra-dirs`, and `text-turn` as the Rust subset; remaining ACP scenarios stay Node. This note does not claim full `pnpm run test:snapshot` on Rust.
+- Phase 8 item 1 names ACP `handshake`, `reject-extra-dirs`, and `text-turn` as the Rust subset. This note does not claim full `pnpm run test:snapshot` on Rust.
+- Phase 8 item 3 names ACP `pty-tools` as a Rust scenario when `DSH_RUNTIME=rust`; remaining ACP scenarios stay Node; shared rust ACP YAML stays without PTY rows; headless pty-tools and jsonrpc persistent-tools stay Node.
 - `docs/architecture.md` is not edited.
 
 ## Risks
