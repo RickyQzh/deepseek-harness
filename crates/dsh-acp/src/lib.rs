@@ -17,6 +17,10 @@ pub use error::{
     ERR_PARSE, internal_error, invalid_params, method_not_found,
 };
 pub use plugin::{ACP_SERVER_SERVICE, register, register_acp_plugins};
+
+/// Bundled Phase 8 ACP composition (`acp.cordis.yml`). Mock text is `acp-ok`, approval is `ask`, and the file contains no `!!js`.
+pub const ACP_YAML: &str = include_str!("../acp.cordis.yml");
+
 pub use rpc::{
     AcpNdjsonTransport, AcpTransportError, JSONRPC_VERSION, JsonRpcId, NotificationHandler,
     RequestHandler,
