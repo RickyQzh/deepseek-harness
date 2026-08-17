@@ -116,11 +116,11 @@ fn object_params(params: Option<&Value>) -> Value {
 }
 
 #[derive(Serialize)]
-struct RequestFrame<'a> {
+struct RequestFrame<'a, T> {
     jsonrpc: &'static str,
     id: &'a JsonRpcId,
     method: &'a str,
-    params: &'a Value,
+    params: &'a T,
 }
 
 #[derive(Serialize)]
@@ -150,7 +150,7 @@ fn frame_line<T: Serialize>(value: &T) -> String {
     line
 }
 
-fn encode_request(id: &JsonRpcId, method: &str, params: &Value) -> String {
+fn encode_request<T: Serialize>(id: &JsonRpcId, method: &str, params: &T) -> String {
     frame_line(&RequestFrame {
         jsonrpc: JSONRPC_VERSION,
         id,
@@ -368,11 +368,12 @@ impl AcpNdjsonTransport {
     }
 
     /// Send a request with id `req_{n}` starting at 1 and await its response.
+    /// `params` is serialized in struct field order when `T` is a struct.
     ///
     /// # Errors
     ///
     /// Peer JSON-RPC error, or a transport failure as `-32603`.
-    pub async fn request(&self, method: &str, params: Value) -> Result<Value, AcpError> {
+    pub async fn request<T: Serialize>(&self, method: &str, params: &T) -> Result<Value, AcpError> {
         let id = {
             let mut next = self.inner.next_id.lock().await;
             let n = *next;
@@ -381,7 +382,7 @@ impl AcpNdjsonTransport {
         };
         let (tx, rx) = oneshot::channel();
         self.inner.pending.lock().await.insert(id.clone(), tx);
-        self.write_frame(encode_request(&id, method, &params))
+        self.write_frame(encode_request(&id, method, params))
             .await
             .map_err(|error| internal_error(&error.to_string()))?;
         rx.await
@@ -455,7 +456,7 @@ mod tests {
         let transport = AcpNdjsonTransport::new(BufReader::new(server_read), server_write);
         let pending = tokio::spawn({
             let transport = transport.clone();
-            async move { transport.request("initialize", json!({"cwd": "/"})).await }
+            async move { transport.request("initialize", &json!({"cwd": "/"})).await }
         });
         let mut line = String::new();
         BufReader::new(client_read)

@@ -240,6 +240,7 @@ dependencies = [
  "dsh-session-persist",
  "dsh-system-prompt",
  "dsh-tools",
+ "dsh-user-approval",
  "serde",
  "serde_json",
  "thiserror",

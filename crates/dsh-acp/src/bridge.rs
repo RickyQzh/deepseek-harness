@@ -6,11 +6,13 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use dsh_agent::{AgentHandle, AgentRegistry, CreateAgentOptions};
+use dsh_kernel::{Context, KernelError};
 use dsh_session::{
-    ContentBlock, LogEvent, Message, MessageId, MessageRole, MessageSource, SessionEvent,
+    CallId, ContentBlock, LogEvent, Message, MessageId, MessageRole, MessageSource, SessionEvent,
     SessionId, TurnEndReason,
 };
 use dsh_session_persist::JsonlSessionStore;
+use dsh_user_approval::{ApprovalOutcome, ApprovalQuestion, EVENT_APPROVAL_REQUEST};
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
@@ -22,7 +24,7 @@ use crate::error::{AcpError, internal_error, invalid_params, method_not_found};
 use crate::rpc::{AcpNdjsonTransport, AcpTransportError, serialize_result};
 use crate::types::{
     AuthenticateRequest, CancelRequest, InitializeRequest, InitializeResult, NewSessionRequest,
-    NewSessionResult, PromptRequest, PromptResult, SessionUpdateParams,
+    NewSessionResult, PromptRequest, PromptResult, RequestPermissionParams, SessionUpdateParams,
 };
 
 struct InFlight {
@@ -124,6 +126,19 @@ fn emit_assistant_chunks(inner: &AcpBridgeInner, session_id: &str, blocks: &[Con
             _ => {}
         }
     }
+}
+
+fn map_permission_result(result: &Value) -> ApprovalOutcome {
+    let Some(outcome) = result.get("outcome") else {
+        return ApprovalOutcome::Rejected;
+    };
+    if outcome.get("outcome").and_then(Value::as_str) == Some("cancelled") {
+        return ApprovalOutcome::Cancelled;
+    }
+    if outcome.get("optionId").and_then(Value::as_str) == Some("allow-once") {
+        return ApprovalOutcome::AllowedOnce;
+    }
+    ApprovalOutcome::Rejected
 }
 
 fn notify_agent_message(inner: &AcpBridgeInner, session_id: &str, text: String) {
@@ -456,6 +471,66 @@ impl AcpBridge {
             }));
     }
 
+    /// Listen for `approval/request` and answer owned sessions with one-shot `session/request_permission`.
+    ///
+    /// Missing `call_id` or a session absent from this bridge's map delegates with `next()`. Handled questions short-circuit. Transport errors become [`ApprovalOutcome::Unavailable`]. Unknown option ids become [`ApprovalOutcome::Rejected`]. No durable grant is recorded.
+    ///
+    /// # Parameters
+    ///
+    /// * `ctx` - shared kernel context used by [`dsh_user_approval::ApprovalService`].
+    ///
+    /// # Errors
+    ///
+    /// [`KernelError::InactiveEffect`] when this fiber cannot register effects.
+    pub fn install_permission_listener(&self, ctx: &Context) -> Result<(), KernelError> {
+        let bridge = self.clone();
+        ctx.on_waterfall::<ApprovalQuestion, _, _>(
+            EVENT_APPROVAL_REQUEST,
+            move |question, next| {
+                let bridge = bridge.clone();
+                async move {
+                    let Some(call_id) = question.call_id().cloned() else {
+                        return next(question).await;
+                    };
+                    if bridge.owned(question.session_id().as_str()).is_none() {
+                        return next(question).await;
+                    }
+                    match bridge
+                        .request_permission(question.session_id(), &call_id)
+                        .await
+                    {
+                        Ok(outcome) => question.with_outcome(outcome),
+                        Err(_) => question.with_outcome(ApprovalOutcome::Unavailable),
+                    }
+                }
+            },
+        )?;
+        Ok(())
+    }
+
+    fn owned(&self, session_id: &str) -> Option<AgentHandle> {
+        self.inner
+            .sessions
+            .lock()
+            .expect("sessions")
+            .get(session_id)
+            .map(|record| record.handle.clone())
+    }
+
+    async fn request_permission(
+        &self,
+        session_id: &SessionId,
+        call_id: &CallId,
+    ) -> Result<ApprovalOutcome, AcpError> {
+        let params = RequestPermissionParams::new(session_id.as_str(), call_id.as_str());
+        let result = self
+            .inner
+            .transport
+            .request("session/request_permission", &params)
+            .await?;
+        Ok(map_permission_result(&result))
+    }
+
     /// Read NDJSON until EOF by delegating to the transport.
     ///
     /// # Errors
@@ -476,14 +551,16 @@ mod tests {
     use super::AcpBridge;
     use crate::{AcpContentBlock, AcpNdjsonTransport, acp_prompt_to_text};
     use dsh_agent::AgentRegistry;
+    use dsh_kernel::Context;
     use dsh_llm::{
         LlmError, LlmRuntime, MockAdapter, MockScript, max_tokens_response, text_response,
         tool_call_response,
     };
-    use dsh_session::{ContentBlock, SessionId};
+    use dsh_session::{CallId, ContentBlock, SessionEvent, SessionId, TurnStartData};
     use dsh_session_persist::JsonlSessionStore;
     use dsh_system_prompt::{SystemPrompt, SystemPromptConfig};
     use dsh_tools::{ToolDefinition, ToolPresentationMode, ToolRuntime};
+    use dsh_user_approval::{ApprovalOutcome, ApprovalPolicy, ApprovalRequest, ApprovalService};
     use serde_json::{Value, json};
     use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, duplex};
@@ -1223,6 +1300,291 @@ mod tests {
         .await
         .expect("hanging prompt should settle after cancel");
         assert_eq!(cancelled["result"]["stopReason"], json!("cancelled"));
+        writer.shutdown().await.unwrap();
+        let _ = serve.await;
+        restore_session_root(previous);
+    }
+
+    enum PermissionClientReply {
+        Result(Value),
+        RpcError { code: i64, message: String },
+    }
+
+    async fn start_permission_bridge() -> (
+        tokio::io::WriteHalf<tokio::io::DuplexStream>,
+        tokio::io::Lines<BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>>,
+        tokio::task::JoinHandle<Result<(), crate::AcpTransportError>>,
+        Arc<AgentRegistry>,
+        Context,
+    ) {
+        let ctx = Context::new();
+        let adapter = Arc::new(MockAdapter::new(vec![MockScript::Chunks(text_response(
+            "unused",
+        ))]));
+        let mut llm = LlmRuntime::new();
+        llm.register_adapter("mock", adapter);
+        let tools = ToolRuntime::new(ToolPresentationMode::Native);
+        let registry = Arc::new(AgentRegistry::from_shared(
+            ctx.clone(),
+            Arc::new(Mutex::new(llm)),
+            Arc::new(Mutex::new(tools)),
+            SystemPrompt::new(SystemPromptConfig::default()).unwrap(),
+        ));
+        let (client, server) = duplex(64 * 1024);
+        let (client_read, client_write) = tokio::io::split(client);
+        let (server_read, server_write) = tokio::io::split(server);
+        let transport = AcpNdjsonTransport::new(BufReader::new(server_read), server_write);
+        let bridge = AcpBridge::new(
+            transport,
+            Arc::clone(&registry),
+            "mock".into(),
+            "mock".into(),
+        );
+        bridge.bind();
+        bridge.install_permission_listener(&ctx).unwrap();
+        let serve = tokio::spawn({
+            let bridge = bridge.clone();
+            async move { bridge.serve().await }
+        });
+        (
+            client_write,
+            BufReader::new(client_read).lines(),
+            serve,
+            registry,
+            ctx,
+        )
+    }
+
+    async fn request_owned_approval(
+        registry: &AgentRegistry,
+        ctx: &Context,
+        session_id: &str,
+        call_id: bool,
+    ) -> ApprovalOutcome {
+        let handle = registry.get(session_id).expect("live handle");
+        let mut session = handle.lock().session.clone();
+        assert_eq!(session.id().as_str(), session_id);
+        let seq = session.events().len() as u64;
+        session
+            .append(SessionEvent::TurnStart {
+                seq,
+                time: seq as i64,
+                data: TurnStartData { turn: 1 },
+                ignorable: None,
+            })
+            .expect("turn/start");
+        let approval = ApprovalService::new(ctx.clone(), ApprovalPolicy::Ask);
+        let req = if call_id {
+            ApprovalRequest::new("bash").with_call_id(CallId::new("call-9"))
+        } else {
+            ApprovalRequest::new("bash")
+        };
+        approval.request(&mut session, req).await.expect("approval")
+    }
+
+    async fn answer_permission(
+        lines: &mut tokio::io::Lines<BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>>,
+        writer: &mut tokio::io::WriteHalf<tokio::io::DuplexStream>,
+        reply: PermissionClientReply,
+    ) -> String {
+        loop {
+            let line = lines.next_line().await.unwrap().expect("rpc line");
+            let value: Value = serde_json::from_str(&line).unwrap();
+            if value.get("method").and_then(Value::as_str) != Some("session/request_permission") {
+                continue;
+            }
+            let id = value.get("id").cloned().expect("permission id");
+            let response = match &reply {
+                PermissionClientReply::Result(result) => json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": result,
+                }),
+                PermissionClientReply::RpcError { code, message } => json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": code, "message": message },
+                }),
+            };
+            write_line(writer, &response.to_string()).await;
+            return line;
+        }
+    }
+
+    async fn request_with_client_reply(
+        registry: &AgentRegistry,
+        ctx: &Context,
+        session_id: &str,
+        writer: &mut tokio::io::WriteHalf<tokio::io::DuplexStream>,
+        lines: &mut tokio::io::Lines<BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>>,
+        reply: PermissionClientReply,
+    ) -> (ApprovalOutcome, String) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(
+                request_owned_approval(registry, ctx, session_id, true),
+                answer_permission(lines, writer, reply),
+            )
+        })
+        .await
+        .expect("permission round-trip")
+    }
+
+    #[tokio::test]
+    async fn maps_allow_once_to_allowed_once() {
+        let (_lock, previous) = pin_session_root();
+        let (mut writer, mut lines, serve, registry, ctx) = start_permission_bridge().await;
+        handshake(&mut writer, &mut lines).await;
+        let session_id = create_session(&mut writer, &mut lines).await;
+        let (outcome, line) = request_with_client_reply(
+            &registry,
+            &ctx,
+            &session_id,
+            &mut writer,
+            &mut lines,
+            PermissionClientReply::Result(json!({
+                "outcome": { "outcome": "selected", "optionId": "allow-once" }
+            })),
+        )
+        .await;
+        assert!(matches!(outcome, ApprovalOutcome::AllowedOnce));
+        let parsed: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(parsed["jsonrpc"], json!("2.0"));
+        assert_eq!(parsed["id"], json!("req_1"));
+        assert_eq!(parsed["method"], json!("session/request_permission"));
+        assert_eq!(parsed["params"]["sessionId"], json!(session_id));
+        assert_eq!(parsed["params"]["toolCall"]["toolCallId"], json!("call-9"));
+        assert_eq!(
+            parsed["params"]["options"],
+            json!([
+                { "optionId": "allow-once", "name": "Allow once", "kind": "allow_once" },
+                { "optionId": "reject-once", "name": "Reject", "kind": "reject_once" }
+            ])
+        );
+        let params_at = line.find("\"params\":").expect("params");
+        let params = &line[params_at..];
+        let session_at = params.find("\"sessionId\"").expect("sessionId key");
+        let tool_at = params.find("\"toolCall\"").expect("toolCall key");
+        let options_at = params.find("\"options\"").expect("options key");
+        assert!(session_at < tool_at, "{line}");
+        assert!(tool_at < options_at, "{line}");
+        assert_eq!(
+            line,
+            format!(
+                r#"{{"jsonrpc":"2.0","id":"req_1","method":"session/request_permission","params":{{"sessionId":"{session_id}","toolCall":{{"toolCallId":"call-9"}},"options":[{{"optionId":"allow-once","name":"Allow once","kind":"allow_once"}},{{"optionId":"reject-once","name":"Reject","kind":"reject_once"}}]}}}}"#
+            )
+        );
+        writer.shutdown().await.unwrap();
+        let _ = serve.await;
+        restore_session_root(previous);
+    }
+
+    #[tokio::test]
+    async fn maps_reject_once_to_rejected() {
+        let (_lock, previous) = pin_session_root();
+        let (mut writer, mut lines, serve, registry, ctx) = start_permission_bridge().await;
+        handshake(&mut writer, &mut lines).await;
+        let session_id = create_session(&mut writer, &mut lines).await;
+        let (outcome, _line) = request_with_client_reply(
+            &registry,
+            &ctx,
+            &session_id,
+            &mut writer,
+            &mut lines,
+            PermissionClientReply::Result(json!({
+                "outcome": { "outcome": "selected", "optionId": "reject-once" }
+            })),
+        )
+        .await;
+        assert!(matches!(outcome, ApprovalOutcome::Rejected));
+        writer.shutdown().await.unwrap();
+        let _ = serve.await;
+        restore_session_root(previous);
+    }
+
+    #[tokio::test]
+    async fn maps_cancelled_outcome() {
+        let (_lock, previous) = pin_session_root();
+        let (mut writer, mut lines, serve, registry, ctx) = start_permission_bridge().await;
+        handshake(&mut writer, &mut lines).await;
+        let session_id = create_session(&mut writer, &mut lines).await;
+        let (outcome, _line) = request_with_client_reply(
+            &registry,
+            &ctx,
+            &session_id,
+            &mut writer,
+            &mut lines,
+            PermissionClientReply::Result(json!({
+                "outcome": { "outcome": "cancelled" }
+            })),
+        )
+        .await;
+        assert!(matches!(outcome, ApprovalOutcome::Cancelled));
+        writer.shutdown().await.unwrap();
+        let _ = serve.await;
+        restore_session_root(previous);
+    }
+
+    #[tokio::test]
+    async fn unknown_option_id_is_rejected() {
+        let (_lock, previous) = pin_session_root();
+        let (mut writer, mut lines, serve, registry, ctx) = start_permission_bridge().await;
+        handshake(&mut writer, &mut lines).await;
+        let session_id = create_session(&mut writer, &mut lines).await;
+        let (outcome, _line) = request_with_client_reply(
+            &registry,
+            &ctx,
+            &session_id,
+            &mut writer,
+            &mut lines,
+            PermissionClientReply::Result(json!({
+                "outcome": { "outcome": "selected", "optionId": "unknown-grant" }
+            })),
+        )
+        .await;
+        assert!(matches!(outcome, ApprovalOutcome::Rejected));
+        writer.shutdown().await.unwrap();
+        let _ = serve.await;
+        restore_session_root(previous);
+    }
+
+    #[tokio::test]
+    async fn client_error_is_unavailable() {
+        let (_lock, previous) = pin_session_root();
+        let (mut writer, mut lines, serve, registry, ctx) = start_permission_bridge().await;
+        handshake(&mut writer, &mut lines).await;
+        let session_id = create_session(&mut writer, &mut lines).await;
+        let (outcome, _line) = request_with_client_reply(
+            &registry,
+            &ctx,
+            &session_id,
+            &mut writer,
+            &mut lines,
+            PermissionClientReply::RpcError {
+                code: -32603,
+                message: "Internal error: client gone".into(),
+            },
+        )
+        .await;
+        assert!(matches!(outcome, ApprovalOutcome::Unavailable));
+        writer.shutdown().await.unwrap();
+        let _ = serve.await;
+        restore_session_root(previous);
+    }
+
+    #[tokio::test]
+    async fn missing_call_id_delegates_to_unavailable() {
+        let (_lock, previous) = pin_session_root();
+        let (mut writer, mut lines, serve, registry, ctx) = start_permission_bridge().await;
+        handshake(&mut writer, &mut lines).await;
+        let session_id = create_session(&mut writer, &mut lines).await;
+        let outcome = request_owned_approval(&registry, &ctx, &session_id, false).await;
+        assert!(matches!(outcome, ApprovalOutcome::Unavailable));
+        let extra =
+            tokio::time::timeout(std::time::Duration::from_millis(100), lines.next_line()).await;
+        assert!(
+            extra.is_err(),
+            "no session/request_permission should be sent"
+        );
         writer.shutdown().await.unwrap();
         let _ = serve.await;
         restore_session_root(previous);

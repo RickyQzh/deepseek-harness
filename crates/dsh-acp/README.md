@@ -12,6 +12,8 @@ ACP stdio adapter for the DeepSeek Harness Rust host. This crate is not the SDK 
 
 `session/prompt` waits for whole-agent idle, emits committed `agent_message_chunk` text, and reports `end_turn` (token-limit included). `session/cancel` is a no-op for unknown ids and settles an in-flight prompt as `cancelled`; a second prompt while one is in flight is `-32602`.
 
+The bridge answers `approval/request` for owned sessions by sending one-shot `session/request_permission` (`allow-once` / `reject-once`); unknown option ids are `rejected`, client errors are `unavailable`, and nothing is granted durably.
+
 ## Known Limitations and Deferred Work
 
 - Session load, list, resume, delete, and fork are unsupported.

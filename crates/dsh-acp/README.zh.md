@@ -12,6 +12,8 @@ DeepSeek Harness Rust 宿主的 ACP（Agent Client Protocol）stdio 适配器。
 
 `session/prompt` 等待整个 agent 空闲，发出已提交的 `agent_message_chunk` 文本，并报告 `end_turn`（包含 token 上限结束）。`session/cancel` 对未知 id 为空操作，并把进行中的提示词结算为 `cancelled`；同一会话已有进行中的提示词时，第二个 `session/prompt` 返回 `-32602`。
 
+桥接器对所拥有的会话应答 `approval/request`，发送一次性的 `session/request_permission`（`allow-once` / `reject-once`）；未知 option id 映射为 `rejected`，客户端错误映射为 `unavailable`，并且不会授予持久权限。
+
 ## 已知限制与暂缓事项
 
 - 不支持会话 load、list、resume、delete 与 fork。

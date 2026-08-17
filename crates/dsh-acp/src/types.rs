@@ -1,4 +1,4 @@
-//! ACP handshake, `session/new`, `session/prompt`, `session/cancel`, and `session/update` wire types. [`InitializeResult`] field order is `protocolVersion`, `agentInfo`, `agentCapabilities`, `authMethods`.
+//! ACP handshake, `session/new`, `session/prompt`, `session/cancel`, `session/update`, and `session/request_permission` wire types. [`InitializeResult`] field order is `protocolVersion`, `agentInfo`, `agentCapabilities`, `authMethods`.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -227,6 +227,56 @@ impl SessionUpdateParams {
                 session_update: "agent_message_chunk",
                 content: TextContent { kind: "text", text },
             },
+        }
+    }
+}
+
+/// Outbound `session/request_permission` params. Field order is `sessionId`, `toolCall`, `options`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RequestPermissionParams {
+    session_id: String,
+    tool_call: PermissionToolCall,
+    options: Vec<PermissionOption>,
+}
+
+/// `toolCall` payload. Field order is `toolCallId`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PermissionToolCall {
+    tool_call_id: String,
+}
+
+/// One permission choice. Field order is `optionId`, `name`, `kind`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PermissionOption {
+    option_id: String,
+    name: String,
+    kind: String,
+}
+
+impl RequestPermissionParams {
+    /// One-shot `allow-once` / `reject-once` choices for `tool_call_id` on `session_id`.
+    #[must_use]
+    pub(crate) fn new(session_id: impl Into<String>, tool_call_id: impl Into<String>) -> Self {
+        Self {
+            session_id: session_id.into(),
+            tool_call: PermissionToolCall {
+                tool_call_id: tool_call_id.into(),
+            },
+            options: vec![
+                PermissionOption {
+                    option_id: "allow-once".into(),
+                    name: "Allow once".into(),
+                    kind: "allow_once".into(),
+                },
+                PermissionOption {
+                    option_id: "reject-once".into(),
+                    name: "Reject".into(),
+                    kind: "reject_once".into(),
+                },
+            ],
         }
     }
 }
