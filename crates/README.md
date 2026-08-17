@@ -51,3 +51,4 @@ Rust workspace members for the DeepSeek Harness host process. Layout, keep-or-dr
 | [`dsh-headless`](dsh-headless/README.md) | One-shot headless runner: last assistant text plus newline; exit 0 iff `turn/end` is `completed`. |
 | [`dsh-base`](dsh-base/README.md) | Phase 6 product plugin aggregator (`register_base_plugins`) and static headless/jsonrpc `base.cordis.yml`. |
 | [`dsh-cli`](dsh-cli/README.md) | `dsh` clap launcher: `--profile headless`, `--patch`, one positional task. |
+| [`dsh-rpc`](dsh-rpc/README.md) | GUI four-quadrant envelopes (`RpcMessage`, `RpcResult`, `RpcReceipt`) and closed kebab-case error codes. |
