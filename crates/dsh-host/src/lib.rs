@@ -1,4 +1,4 @@
-//! GUI host loopback HTTP listener, `/api` trust fence, static SPA files, plugin bundles, and `__DSH_BOOT__` injection.
+//! GUI host loopback HTTP listener, `/api` trust fence, WebSocket downlinks, static SPA files, plugin bundles, and `__DSH_BOOT__` injection.
 
 mod boot;
 mod dispatch;
@@ -6,6 +6,7 @@ mod plugins;
 mod server;
 mod static_files;
 mod trust;
+mod ws;
 
 pub use boot::{WebBootEntry, WebBootGraph, inject_boot_manifest};
 pub use dispatch::{RpcHandler, StubHandler};
@@ -16,3 +17,4 @@ pub use trust::{
     TrustError, assert_trusted_authority, is_loopback_hostname, is_privileged_method,
     is_trusted_api_request, privileged_requires_loopback,
 };
+pub use ws::DownlinkHub;

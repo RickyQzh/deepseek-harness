@@ -442,12 +442,14 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "dsh-rpc",
+ "futures",
  "reqwest",
  "serde",
  "serde_json",
  "sha2",
  "thiserror",
  "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]

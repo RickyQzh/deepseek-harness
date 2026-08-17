@@ -1,7 +1,7 @@
 [package]
 name = "dsh-host"
 version = "0.1.0"
-description = "GUI host loopback HTTP listener, unary /api carrier, trust fence, SPA, and /plugins"
+description = "GUI host loopback HTTP listener, unary /api carrier, WebSocket downlinks, trust fence, SPA, and /plugins"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -11,6 +11,7 @@ repository.workspace = true
 [dependencies]
 axum = { workspace = true }
 dsh-rpc = { path = "../dsh-rpc" }
+futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -19,6 +20,7 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 reqwest = { workspace = true }
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect"] }
 
 [lints]
 workspace = true

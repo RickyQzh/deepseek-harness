@@ -1,4 +1,4 @@
-//! Loopback HTTP listener, static SPA/`/plugins` routes, and unary `/api` carrier.
+//! Loopback HTTP listener, static SPA/`/plugins` routes, unary `/api` carrier, and WebSocket downlinks.
 
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Bytes;
+use axum::extract::ws::{WebSocketUpgrade, rejection::WebSocketUpgradeRejection};
 use axum::extract::{Path as PathParam, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
@@ -22,6 +23,7 @@ use crate::plugins::{
 };
 use crate::static_files::{StaticResponse, serve_spa};
 use crate::trust::{assert_trusted_authority, is_trusted_api_request};
+use crate::ws::{DownlinkHub, run_downlink};
 
 /// Loopback bind target. `listen_host` must be `127.0.0.1`; port `0` is OS-assigned.
 #[derive(Clone, Debug)]
@@ -83,7 +85,7 @@ impl HostPaths {
     }
 }
 
-/// Listener configuration, boot graph, trust list, and dotted RPC handler.
+/// Listener configuration, boot graph, trust list, downlink hub, and dotted RPC handler.
 #[derive(Clone)]
 pub struct HostState {
     bind: HostBind,
@@ -92,6 +94,7 @@ pub struct HostState {
     trusted_hosts: Vec<String>,
     plugin_dirs: HashMap<String, String>,
     handler: Arc<dyn ErasedRpcHandler>,
+    hub: DownlinkHub,
 }
 
 impl HostState {
@@ -115,6 +118,7 @@ impl HostState {
             trusted_hosts,
             plugin_dirs,
             handler: Arc::new(handler),
+            hub: DownlinkHub::new(),
         })
     }
 
@@ -123,12 +127,19 @@ impl HostState {
     pub fn bind(&self) -> &HostBind {
         &self.bind
     }
+
+    /// Mux and host downlink publisher for this listener.
+    #[must_use]
+    pub fn hub(&self) -> &DownlinkHub {
+        &self.hub
+    }
 }
 
 /// Bound loopback listener. Dropping the value without [`ListeningHost::shutdown`] aborts the accept loop.
 #[must_use]
 pub struct ListeningHost {
     local_addr: SocketAddr,
+    hub: DownlinkHub,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     join: Option<tokio::task::JoinHandle<Result<(), std::io::Error>>>,
 }
@@ -138,6 +149,12 @@ impl ListeningHost {
     #[must_use]
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
+    }
+
+    /// Downlink hub bound with this listener. `publish_*` wraps [`dsh_rpc::RpcMessage::server_request`].
+    #[must_use]
+    pub fn hub(&self) -> &DownlinkHub {
+        &self.hub
     }
 
     /// Stop accepting and wait for in-flight requests to finish.
@@ -160,6 +177,7 @@ pub async fn serve(state: HostState) -> Result<ListeningHost, HostError> {
     let local_addr = listener
         .local_addr()
         .map_err(|source| HostError::bind(addr.to_string(), source))?;
+    let hub = state.hub.clone();
     let app = router(state);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let join = tokio::spawn(async move {
@@ -171,6 +189,7 @@ pub async fn serve(state: HostState) -> Result<ListeningHost, HostError> {
     });
     Ok(ListeningHost {
         local_addr,
+        hub,
         shutdown: Some(shutdown_tx),
         join: Some(join),
     })
@@ -179,14 +198,8 @@ pub async fn serve(state: HostState) -> Result<ListeningHost, HostError> {
 fn router(state: HostState) -> Router {
     Router::new()
         .route("/api/respond", post(post_respond))
-        .route(
-            "/api/events.mux",
-            get(upgrade_required).head(upgrade_required),
-        )
-        .route(
-            "/api/events.host",
-            get(upgrade_required).head(upgrade_required),
-        )
+        .route("/api/events.mux", get(events_mux).head(upgrade_required))
+        .route("/api/events.host", get(events_host).head(upgrade_required))
         .route("/api/{*method}", post(post_dotted))
         .fallback(fallback)
         .with_state(state)
@@ -219,6 +232,10 @@ async fn upgrade_required(State(state): State<HostState>, headers: HeaderMap) ->
     if !api_trusted(&state, &headers) {
         return forbidden_response();
     }
+    upgrade_required_response()
+}
+
+fn upgrade_required_response() -> Response {
     let mut response = (StatusCode::UPGRADE_REQUIRED, "upgrade required").into_response();
     response
         .headers_mut()
@@ -227,6 +244,46 @@ async fn upgrade_required(State(state): State<HostState>, headers: HeaderMap) ->
         .headers_mut()
         .insert(header::CONNECTION, HeaderValue::from_static("Upgrade"));
     response
+}
+
+async fn events_mux(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
+) -> Response {
+    accept_downlink(api_trusted(&state, &headers), upgrade, || {
+        state.hub.subscribe_mux()
+    })
+}
+
+async fn events_host(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
+) -> Response {
+    accept_downlink(api_trusted(&state, &headers), upgrade, || {
+        state.hub.subscribe_host()
+    })
+}
+
+fn accept_downlink<F>(
+    trusted: bool,
+    upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
+    subscribe: F,
+) -> Response
+where
+    F: FnOnce() -> tokio::sync::broadcast::Receiver<dsh_rpc::RpcMessage>,
+{
+    if !trusted {
+        return forbidden_response();
+    }
+    match upgrade {
+        Ok(ws) => {
+            let rx = subscribe();
+            ws.on_upgrade(move |socket| run_downlink(socket, rx))
+        }
+        Err(_) => upgrade_required_response(),
+    }
 }
 
 async fn post_dotted(

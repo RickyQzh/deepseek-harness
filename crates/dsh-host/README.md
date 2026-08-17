@@ -2,13 +2,16 @@
 
 English | [中文](README.zh.md)
 
-GUI host crate for the DeepSeek Harness Rust process. It binds an axum listener on `127.0.0.1` only (`HostBind`; any other `listen_host` is `HostError`), serves the SPA dist and `/plugins` bundles, and dispatches unary `POST /api/<dotted>` JSON `client-request` envelopes through `RpcHandler`. Port `0` is OS-assigned. `ListeningHost::local_addr` reports the bound address; `shutdown` stops accept and waits for in-flight requests.
+GUI host crate for the DeepSeek Harness Rust process. It binds an axum listener on `127.0.0.1` only (`HostBind`; any other `listen_host` is `HostError`), serves the SPA dist and `/plugins` bundles, dispatches unary `POST /api/<dotted>` JSON `client-request` envelopes through `RpcHandler`, and carries mux/host GUI downlinks over WebSocket. Port `0` is OS-assigned. `ListeningHost::local_addr` reports the bound address; `shutdown` stops accept and waits for in-flight requests. `ListeningHost::hub` / `HostState::hub` is the cloneable `DownlinkHub` used to publish downlink frames.
 
 Every `/api` request runs `is_trusted_api_request` using Host, Origin, `sec-fetch-site`, and `trustedHosts`. Untrusted `/api` is HTTP 403 with body `forbidden`. After JSON parse, a privileged dotted method (see `is_privileged_method`) is re-checked as if `trustedHosts` were empty: `privileged_requires_loopback` must be true, so a non-loopback Host is 403 even when listed in `trustedHosts`. There is no CORS and no TLS.
 
 `POST /api/<dotted>` requires `Content-Type: application/json` (parameters after `;` are ignored); any other media type is HTTP 415 with body `content type must be application/json`. JSON that is not a `client-request`, or whose `method` does not equal the path suffix after `/api/`, is HTTP 400. Unknown dotted methods are HTTP 404 (carrier), not `RpcResult::err`. Business results, including errors from a mounted handler, are HTTP 200 + `server-response`. This crate's `StubHandler` answers only `host.describe` (`version` `0.0.1`, `cwd` from `DSH_CWD` or `current_dir`, `attachedSessions` `0`, `canOpenPath` `false`). `POST /api/respond` is HTTP 501.
 
-`GET`/`HEAD` `/api/events.mux` and `/api/events.host` return HTTP 426 with `Upgrade: websocket`. WebSocket upgrade is not implemented. `GET`/`HEAD` `/plugins/<id>/client.js` uses the static helper; a scoped graph id that contains `/` is mapped to the scanned directory name and is not passed as a single path segment. Other `GET`/`HEAD` paths use `serve_spa`. Other methods on those static paths are HTTP 405.
+`GET`/`HEAD` `/api/events.mux` and `/api/events.host` without a WebSocket Upgrade return HTTP 426 with `Upgrade: websocket`. A trusted GET with Upgrade opens a downlink-only WebSocket on those two paths; other paths do not accept WebSocket.
+Each text frame is one `server-request` JSON document from `DownlinkHub::publish_mux` or `publish_host` (`RpcMessage::server_request`). Lagged subscribers skip. Client-to-server text or binary application messages close the socket without echo. Ping/pong is handled by tungstenite.
+Privileged-method checks do not apply to the upgrade (the paths are not dotted methods). The Host/Origin/`sec-fetch-site` check still applies; an untrusted upgrade is HTTP 403.
+`GET`/`HEAD` `/plugins/<id>/client.js` uses the static helper; a scoped graph id that contains `/` is mapped to the scanned directory name and is not passed as a single path segment. Other `GET`/`HEAD` paths use `serve_spa`. Other methods on those static paths are HTTP 405.
 
 `is_loopback_hostname` takes a hostname (port already stripped): `localhost`, `[::1]`, or IPv4 127/8. `assert_trusted_authority` requires a bare `host` or `host:port` that survives WHATWG-equivalent parse unchanged (lowercase compare). Path, userinfo, whitespace, a dangling colon, and non-canonical hosts such as `0x7f.0.0.1` fail loudly as `TrustError`.
 
@@ -22,7 +25,7 @@ This crate depends on `dsh-rpc` for envelope types and accessors (`rpc_id`, `met
 
 ## Known Limitations and Deferred Work
 
-- WebSocket upgrade on `/api/events.mux` and `/api/events.host` is not implemented; network GET/HEAD still returns 426.
+- Test clients use tokio-tungstenite 0.29 (`default-features = false`, feature `connect` only, `ws://127.0.0.1`, no rustls, no native-tls) because axum 0.8 `ws` already locked 0.29; the Phase 7 plan named 0.26, which does not unify with that lock.
 - Slash Typert remotes (`/api/commands/list` and `/api/commands/execute`) are not mounted; a path after `/api/` that contains `/` is treated as an unknown dotted method (HTTP 404).
 - `POST /api/respond` returns 501. `StubHandler` does not implement the rest of the dotted `RpcMethodMap`.
 - Plugin YAML names for the web composition live as string constants on `dsh-boot`; this crate does not register them yet.
