@@ -393,9 +393,11 @@ dependencies = [
  "dsh-boot",
  "dsh-brand",
  "dsh-kernel",
+ "dsh-rpc",
  "serde_json",
  "serde_yaml",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -614,6 +616,19 @@ dependencies = [
  "serde_json",
  "thiserror",
  "zstd",
+]
+
+[[package]]
+name = "dsh-settings"
+version = "0.1.0"
+dependencies = [
+ "dsh-boot",
+ "dsh-kernel",
+ "dsh-rpc",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

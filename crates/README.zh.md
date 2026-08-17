@@ -20,7 +20,8 @@ DeepSeek Harness 宿主进程的 Rust workspace 成员。布局、保留/放弃�
 | [`dsh-user-approval`](dsh-user-approval/README.md) | 失败即关闭的 `approval/request` waterfall（瀑布式事件）、每会话 ask/never 策略，以及 `headless-auto-approve`。 |
 | [`dsh-permission-presets`](dsh-permission-presets/README.md) | 在会话创建时钉死 `permission/preset`、`sandbox/mode` 与 `approval/policy`。 |
 | [`dsh-system-prompt`](dsh-system-prompt/README.md) | 有序系统提示词段落、运行时上下文快照，以及严格的 `{{var}}` 插值。 |
-| [`dsh-credentials`](dsh-credentials/README.md) | 按次解析 POSIX 凭据引用（环境、YAML 映射、内存）。 |
+| [`dsh-credentials`](dsh-credentials/README.md) | 按次解析 POSIX 凭据引用（环境、YAML 映射、内存）以及持久化 `credentials.yaml` 写入。 |
+| [`dsh-settings`](dsh-settings/README.md) | 用户 settings 命名空间（`ui-onboarding`）与带 revision 的 JSON 文件。 |
 | [`dsh-llm`](dsh-llm/README.md) | 提供方无关的 LLM（大语言模型）流契约、块组装器与 mock 适配器。 |
 | [`dsh-llm-deepseek`](dsh-llm-deepseek/README.md) | DeepSeek `POST /chat/completions` SSE（Server-Sent Events）适配器：序列化、翻译、按次密钥、空闲超时。 |
 | [`dsh-token-meter`](dsh-token-meter/README.md) | 重放 token 计量：固定每 4 字符一 token 的启发式、surface fold、提供方 usage 锚点。 |

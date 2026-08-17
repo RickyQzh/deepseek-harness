@@ -4,8 +4,12 @@ pub mod plugin;
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
 use dsh_brand::Branded;
+use dsh_rpc::RpcErrorCode;
 
 /// Compile-time brand for a POSIX credential reference.
 pub struct CredentialRefTag;
@@ -78,6 +82,37 @@ pub struct CredentialInfo {
     pub writable: bool,
 }
 
+/// Wire view of one credential reference. Never includes the secret.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CredentialView {
+    configured: bool,
+    source: Option<String>,
+    writable: bool,
+}
+
+impl CredentialView {
+    /// Whether any layer currently supplies a non-empty value.
+    #[must_use]
+    pub fn configured(&self) -> bool {
+        self.configured
+    }
+
+    /// Winning layer when configured (`env`, `file`, `memory`); `None` while unconfigured.
+    #[must_use]
+    pub fn source(&self) -> Option<&str> {
+        self.source.as_deref()
+    }
+
+    /// Whether [`LayeredCredentials::set_ref`] can affect this reference.
+    #[must_use]
+    pub fn writable(&self) -> bool {
+        self.writable
+    }
+}
+
+/// Durable credential store. The provided service type is [`LayeredCredentials`].
+pub type CredentialStore = LayeredCredentials;
+
 /// Resolve, describe, and mutate credential references.
 pub trait CredentialProvider: Send + Sync {
     /// Resolve one reference to its current value. Resolution is per call.
@@ -102,7 +137,7 @@ pub trait CredentialProvider: Send + Sync {
     /// # Errors
     ///
     /// Returns [`CredentialError::EmptyValue`] for an empty `value`, or
-    /// [`CredentialError::InvalidFile`] when a read-only env layer currently
+    /// [`CredentialError::Shadowed`] when a read-only env layer currently
     /// shadows the reference.
     fn set(&mut self, credential: &CredentialRef, value: String) -> Result<(), CredentialError>;
 
@@ -110,13 +145,18 @@ pub trait CredentialProvider: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`CredentialError::InvalidFile`] when a read-only env layer
+    /// Returns [`CredentialError::Shadowed`] when a read-only env layer
     /// currently shadows the reference.
     fn unset(&mut self, credential: &CredentialRef) -> Result<(), CredentialError>;
 }
 
 /// Memory + optional YAML file map + live process environment.
 pub struct LayeredCredentials {
+    layers: Mutex<Layers>,
+    persist_path: Option<PathBuf>,
+}
+
+struct Layers {
     memory: HashMap<String, String>,
     file: HashMap<String, String>,
 }
@@ -124,10 +164,19 @@ pub struct LayeredCredentials {
 /// Prints layer key names only; secret values stay out of the debug string.
 impl fmt::Debug for LayeredCredentials {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let layers = self.lock();
         f.debug_struct("LayeredCredentials")
-            .field("memory_keys", &self.memory.keys())
-            .field("file_keys", &self.file.keys())
+            .field("memory_keys", &Keys(&layers.memory))
+            .field("file_keys", &Keys(&layers.file))
             .finish()
+    }
+}
+
+struct Keys<'a>(&'a HashMap<String, String>);
+
+impl fmt::Debug for Keys<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.0.keys()).finish()
     }
 }
 
@@ -136,8 +185,11 @@ impl LayeredCredentials {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            memory: HashMap::new(),
-            file: HashMap::new(),
+            layers: Mutex::new(Layers {
+                memory: HashMap::new(),
+                file: HashMap::new(),
+            }),
+            persist_path: None,
         }
     }
 
@@ -145,8 +197,11 @@ impl LayeredCredentials {
     #[must_use]
     pub fn with_file_map(map: BTreeMap<String, String>) -> Self {
         Self {
-            memory: HashMap::new(),
-            file: map.into_iter().collect(),
+            layers: Mutex::new(Layers {
+                memory: HashMap::new(),
+                file: map.into_iter().collect(),
+            }),
+            persist_path: None,
         }
     }
 
@@ -161,6 +216,121 @@ impl LayeredCredentials {
             .map_err(|error| CredentialError::InvalidFile(error.to_string()))?;
         Ok(Self::with_file_map(file))
     }
+
+    /// Load `{path}` as the file layer when present. Creates the parent directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CredentialError::Io`] when the parent cannot be created or the file
+    /// cannot be read, or [`CredentialError::InvalidFile`] when the file is not a
+    /// YAML string map.
+    pub fn with_persist_path(path: PathBuf) -> Result<Self, CredentialError> {
+        ensure_parent(&path)?;
+        let file = load_file_map(&path)?;
+        Ok(Self {
+            layers: Mutex::new(Layers {
+                memory: HashMap::new(),
+                file,
+            }),
+            persist_path: Some(path),
+        })
+    }
+
+    /// Describe named references without exposing values.
+    ///
+    /// # Errors
+    ///
+    /// [`CredentialError::InvalidRef`] when any name is not a POSIX identifier.
+    pub fn describe_refs(
+        &self,
+        refs: &[String],
+    ) -> Result<BTreeMap<String, CredentialView>, CredentialError> {
+        let mut out = BTreeMap::new();
+        for name in refs {
+            let credential = credential_ref(name)?;
+            let info = self.describe(&credential)?;
+            out.insert(
+                name.clone(),
+                CredentialView {
+                    configured: info.configured,
+                    source: info.source,
+                    writable: info.writable,
+                },
+            );
+        }
+        Ok(out)
+    }
+
+    /// Store `value` in the file layer. An empty `value` is [`Self::unset_ref`].
+    ///
+    /// # Errors
+    ///
+    /// [`CredentialError::InvalidRef`], [`CredentialError::Shadowed`] when env
+    /// currently supplies the reference, or persist I/O failures.
+    pub fn set_ref(&self, r#ref: &str, value: &str) -> Result<(), CredentialError> {
+        if value.is_empty() {
+            return self.unset_ref(r#ref);
+        }
+        let credential = credential_ref(r#ref)?;
+        if env_nonempty(credential.as_str()).is_some() {
+            return Err(CredentialError::Shadowed(credential.as_str().to_string()));
+        }
+        let mut layers = self.lock();
+        let key = credential.as_str().to_string();
+        let previous = layers.file.insert(key.clone(), value.to_string());
+        if let Err(error) = self.persist_file_map(&layers.file) {
+            match previous {
+                Some(old) => {
+                    layers.file.insert(key, old);
+                }
+                None => {
+                    layers.file.remove(&key);
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Remove `ref` from the file layer. Absent keys succeed.
+    ///
+    /// # Errors
+    ///
+    /// [`CredentialError::InvalidRef`], [`CredentialError::Shadowed`] when env
+    /// currently supplies the reference, or persist I/O failures.
+    pub fn unset_ref(&self, r#ref: &str) -> Result<(), CredentialError> {
+        let credential = credential_ref(r#ref)?;
+        if env_nonempty(credential.as_str()).is_some() {
+            return Err(CredentialError::Shadowed(credential.as_str().to_string()));
+        }
+        let mut layers = self.lock();
+        let key = credential.as_str().to_string();
+        let Some(previous) = layers.file.remove(&key) else {
+            return Ok(());
+        };
+        if let Err(error) = self.persist_file_map(&layers.file) {
+            layers.file.insert(key, previous);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn persist_file_map(&self, file: &HashMap<String, String>) -> Result<(), CredentialError> {
+        let Some(path) = &self.persist_path else {
+            return Ok(());
+        };
+        let map: BTreeMap<&str, &str> = file
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect();
+        let text =
+            serde_yaml::to_string(&map).map_err(|error| CredentialError::Io(error.to_string()))?;
+        write_atomic(path, text.as_bytes())
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Layers> {
+        self.layers.lock().expect("credentials lock")
+    }
 }
 
 impl Default for LayeredCredentials {
@@ -173,45 +343,50 @@ fn nonempty(value: &str) -> Option<&str> {
     if value.is_empty() { None } else { Some(value) }
 }
 
+fn env_nonempty(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| nonempty(&value).map(str::to_string))
+}
+
+fn resolve_layers(layers: &Layers, name: &str) -> Option<ResolvedCredential> {
+    if let Some(value) = env_nonempty(name) {
+        return Some(ResolvedCredential {
+            value,
+            source: "env".into(),
+        });
+    }
+    if let Some(value) = layers.file.get(name).and_then(|value| nonempty(value)) {
+        return Some(ResolvedCredential {
+            value: value.to_string(),
+            source: "file".into(),
+        });
+    }
+    if let Some(value) = layers.memory.get(name).and_then(|value| nonempty(value)) {
+        return Some(ResolvedCredential {
+            value: value.to_string(),
+            source: "memory".into(),
+        });
+    }
+    None
+}
+
 impl CredentialProvider for LayeredCredentials {
     fn resolve(
         &self,
         credential: &CredentialRef,
     ) -> Result<Option<ResolvedCredential>, CredentialError> {
-        let name = credential.as_str();
-        if let Ok(value) = std::env::var(name) {
-            if let Some(value) = nonempty(&value) {
-                return Ok(Some(ResolvedCredential {
-                    value: value.to_string(),
-                    source: "env".into(),
-                }));
-            }
-        }
-        if let Some(value) = self.file.get(name).and_then(|v| nonempty(v)) {
-            return Ok(Some(ResolvedCredential {
-                value: value.to_string(),
-                source: "file".into(),
-            }));
-        }
-        if let Some(value) = self.memory.get(name).and_then(|v| nonempty(v)) {
-            return Ok(Some(ResolvedCredential {
-                value: value.to_string(),
-                source: "memory".into(),
-            }));
-        }
-        Ok(None)
+        let layers = self.lock();
+        Ok(resolve_layers(&layers, credential.as_str()))
     }
 
     fn describe(&self, credential: &CredentialRef) -> Result<CredentialInfo, CredentialError> {
-        let resolved = self.resolve(credential)?;
-        let shadowed_by_env = std::env::var(credential.as_str())
-            .ok()
-            .and_then(|v| nonempty(&v).map(str::to_string))
-            .is_some();
+        let layers = self.lock();
+        let resolved = resolve_layers(&layers, credential.as_str());
         Ok(CredentialInfo {
             configured: resolved.is_some(),
-            source: resolved.map(|r| r.source),
-            writable: !shadowed_by_env,
+            source: resolved.map(|resolved| resolved.source),
+            writable: env_nonempty(credential.as_str()).is_none(),
         })
     }
 
@@ -219,24 +394,20 @@ impl CredentialProvider for LayeredCredentials {
         if value.is_empty() {
             return Err(CredentialError::EmptyValue);
         }
-        if !self.describe(credential)?.writable {
-            return Err(CredentialError::InvalidFile(format!(
-                "read-only source shadows \"{}\"",
-                credential.as_str()
-            )));
+        if env_nonempty(credential.as_str()).is_some() {
+            return Err(CredentialError::Shadowed(credential.as_str().to_string()));
         }
-        self.memory.insert(credential.as_str().to_string(), value);
+        self.lock()
+            .memory
+            .insert(credential.as_str().to_string(), value);
         Ok(())
     }
 
     fn unset(&mut self, credential: &CredentialRef) -> Result<(), CredentialError> {
-        if !self.describe(credential)?.writable {
-            return Err(CredentialError::InvalidFile(format!(
-                "read-only source shadows \"{}\"",
-                credential.as_str()
-            )));
+        if env_nonempty(credential.as_str()).is_some() {
+            return Err(CredentialError::Shadowed(credential.as_str().to_string()));
         }
-        self.memory.remove(credential.as_str());
+        self.lock().memory.remove(credential.as_str());
         Ok(())
     }
 }
@@ -250,9 +421,102 @@ pub enum CredentialError {
     /// `set` rejected an empty secret.
     #[error("credentials reject an empty value")]
     EmptyValue,
-    /// YAML was not a string-to-string mapping, or a write is shadowed by env.
+    /// YAML was not a string-to-string mapping.
     #[error("{0}")]
     InvalidFile(String),
+    /// A read-only env layer currently supplies this reference.
+    #[error("read-only source shadows \"{0}\"")]
+    Shadowed(String),
+    /// Filesystem failure while creating the parent directory or writing YAML.
+    #[error("credential persist failed: {0}")]
+    Io(String),
+}
+
+impl CredentialError {
+    /// Kebab-case wire code for this failure.
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidRef(_) => "bad-request",
+            Self::EmptyValue | Self::Shadowed(_) => "credential-rejected",
+            Self::InvalidFile(_) | Self::Io(_) => "internal",
+        }
+    }
+
+    /// Closed RPC error code for this failure.
+    #[must_use]
+    pub fn rpc_code(&self) -> RpcErrorCode {
+        match self {
+            Self::InvalidRef(_) => RpcErrorCode::BadRequest,
+            Self::EmptyValue | Self::Shadowed(_) => RpcErrorCode::CredentialRejected,
+            Self::InvalidFile(_) | Self::Io(_) => RpcErrorCode::Internal,
+        }
+    }
+}
+
+fn load_file_map(path: &Path) -> Result<HashMap<String, String>, CredentialError> {
+    match fs::read_to_string(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+        Err(error) => Err(CredentialError::Io(error.to_string())),
+        Ok(text) => {
+            if text.trim().is_empty() {
+                return Ok(HashMap::new());
+            }
+            let file: BTreeMap<String, String> = serde_yaml::from_str(&text)
+                .map_err(|error| CredentialError::InvalidFile(error.to_string()))?;
+            Ok(file.into_iter().collect())
+        }
+    }
+}
+
+fn ensure_parent(path: &Path) -> Result<(), CredentialError> {
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    if parent.as_os_str().is_empty() {
+        return Ok(());
+    }
+    fs::create_dir_all(parent).map_err(|error| CredentialError::Io(error.to_string()))
+}
+
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CredentialError> {
+    ensure_parent(path)?;
+    let tmp = tmp_path(path)?;
+    if let Err(error) = fs::write(&tmp, bytes) {
+        let _ = fs::remove_file(&tmp);
+        return Err(CredentialError::Io(error.to_string()));
+    }
+    if let Err(error) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(CredentialError::Io(error.to_string()));
+    }
+    Ok(())
+}
+
+fn tmp_path(path: &Path) -> Result<PathBuf, CredentialError> {
+    let Some(name) = path.file_name() else {
+        return Err(CredentialError::Io(
+            "credential persist path has no file name".into(),
+        ));
+    };
+    let mut tmp_name = name.to_os_string();
+    tmp_name.push(format!(".{}.tmp", std::process::id()));
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => Ok(parent.join(tmp_name)),
+        _ => Ok(PathBuf::from(tmp_name)),
+    }
+}
+
+/// Build credentials from `DSH_HOME` when set, otherwise memory-only.
+pub(crate) fn credentials_from_home(
+    home: Option<&str>,
+) -> Result<LayeredCredentials, CredentialError> {
+    match home {
+        Some(home) if !home.is_empty() => {
+            LayeredCredentials::with_persist_path(PathBuf::from(home).join("credentials.yaml"))
+        }
+        _ => Ok(LayeredCredentials::new()),
+    }
 }
 
 #[cfg(test)]
@@ -445,5 +709,88 @@ mod tests {
         let resolved = creds.resolve(&r).unwrap().expect("memory under empty file");
         assert_eq!(resolved.value, "sk-memory");
         assert_eq!(resolved.source, "memory");
+    }
+
+    #[test]
+    fn persist_set_describe_omits_secret() {
+        let dir = std::env::temp_dir().join(format!(
+            "cred-persist-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("credentials.yaml");
+        let creds = LayeredCredentials::with_persist_path(path.clone()).expect("persist path");
+        let secret = "task85-omit-from-describe";
+        creds
+            .set_ref("TASK85_PERSIST_OMIT", secret)
+            .expect("set_ref");
+        let map = creds
+            .describe_refs(&["TASK85_PERSIST_OMIT".into()])
+            .expect("describe_refs");
+        let view = map.get("TASK85_PERSIST_OMIT").expect("named ref");
+        assert!(view.configured());
+        assert_eq!(view.source(), Some("file"));
+        assert!(view.writable());
+        let view_debug = format!("{view:?}");
+        let creds_debug = format!("{creds:?}");
+        let map_debug = format!("{map:?}");
+        let json = serde_json::json!({
+            "configured": view.configured(),
+            "source": view.source(),
+            "writable": view.writable(),
+        })
+        .to_string();
+        assert!(!view_debug.contains(secret), "CredentialView debug");
+        assert!(!creds_debug.contains(secret), "LayeredCredentials debug");
+        assert!(!map_debug.contains(secret), "describe_refs debug");
+        assert!(!json.contains(secret), "describe_refs json");
+        let stored = std::fs::read_to_string(&path).expect("yaml");
+        assert!(stored.contains("TASK85_PERSIST_OMIT"));
+        assert!(!format!("{creds:?}").contains(secret));
+    }
+
+    #[test]
+    fn describe_refs_rejects_invalid_posix_name() {
+        let creds = LayeredCredentials::new();
+        let error = creds
+            .describe_refs(&["not-posix".into()])
+            .expect_err("invalid");
+        assert_eq!(error.code(), "bad-request");
+        assert_eq!(error.rpc_code(), dsh_rpc::RpcErrorCode::BadRequest);
+    }
+
+    #[test]
+    fn set_ref_empty_unsets_file_layer() {
+        let dir = std::env::temp_dir().join(format!(
+            "cred-unset-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let creds = LayeredCredentials::with_persist_path(dir.join("credentials.yaml")).unwrap();
+        creds.set_ref("TASK85_EMPTY_UNSET", "present").unwrap();
+        creds.set_ref("TASK85_EMPTY_UNSET", "").unwrap();
+        let map = creds.describe_refs(&["TASK85_EMPTY_UNSET".into()]).unwrap();
+        assert!(!map["TASK85_EMPTY_UNSET"].configured());
+        creds.unset_ref("TASK85_EMPTY_UNSET").unwrap();
+    }
+
+    #[test]
+    fn unknown_valid_ref_describes_unconfigured() {
+        let creds = LayeredCredentials::new();
+        let map = creds
+            .describe_refs(&["TASK85_UNKNOWN_VALID".into()])
+            .unwrap();
+        let view = &map["TASK85_UNKNOWN_VALID"];
+        assert!(!view.configured());
+        assert_eq!(view.source(), None);
+        assert!(view.writable());
     }
 }

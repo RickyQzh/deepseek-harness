@@ -20,7 +20,8 @@ Rust workspace members for the DeepSeek Harness host process. Layout, keep-or-dr
 | [`dsh-user-approval`](dsh-user-approval/README.md) | Fail-closed `approval/request` waterfall, per-session ask/never policy, and `headless-auto-approve`. |
 | [`dsh-permission-presets`](dsh-permission-presets/README.md) | Pin `permission/preset`, `sandbox/mode`, and `approval/policy` at session creation. |
 | [`dsh-system-prompt`](dsh-system-prompt/README.md) | Ordered system-prompt sections, runtime-context snapshots, and strict `{{var}}` interpolation. |
-| [`dsh-credentials`](dsh-credentials/README.md) | Per-request POSIX credential-reference resolve (env, YAML map, memory). |
+| [`dsh-credentials`](dsh-credentials/README.md) | Per-request POSIX credential-reference resolve (env, YAML map, memory) and durable `credentials.yaml` writes. |
+| [`dsh-settings`](dsh-settings/README.md) | User-settings namespaces (`ui-onboarding`) and revisioned JSON files. |
 | [`dsh-llm`](dsh-llm/README.md) | Provider-neutral LLM stream contract, block assembler, and mock adapter. |
 | [`dsh-llm-deepseek`](dsh-llm-deepseek/README.md) | DeepSeek `POST /chat/completions` SSE adapter: serialize, translate, per-request key, idle timeout. |
 | [`dsh-token-meter`](dsh-token-meter/README.md) | Replay token meter: fixed 4-chars-per-token heuristic, surface fold, provider-usage anchors. |
