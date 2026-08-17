@@ -8,7 +8,8 @@
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { join } from 'node:path'
+import { existsSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import {
   ClientSideConnection,
@@ -77,23 +78,49 @@ export interface LaunchedAcpTestAgent {
  */
 export function launchAcpTestAgent(options: AcpTestLaunchOptions): LaunchedAcpTestAgent {
   const { agent, cwd } = options
-  const launch = resolveExampleLaunch({
-    srcBin: agent.binScript,
-    libBin: agent.libBinScript,
-    configArgs: ['--config', options.configPath ?? agent.configPath],
-    tsconfigPath: agent.tsconfigPath,
-    env: {
+  let command: string
+  let args: string[]
+  let env: NodeJS.ProcessEnv
+  if (process.env.DSH_RUNTIME === 'rust') {
+    const repoRoot = dirname(agent.tsconfigPath)
+    const rustBin = process.env.DSH_RUNTIME_BIN && process.env.DSH_RUNTIME_BIN !== ''
+      ? process.env.DSH_RUNTIME_BIN
+      : join(repoRoot, 'target/debug/dsh')
+    if (!existsSync(rustBin)) {
+      throw new Error(`DSH_RUNTIME=rust but ${rustBin} is missing; run cargo build -p dsh-cli`)
+    }
+    const rustYaml = join(dirname(agent.configPath), 'rust.snapshot.cordis.yml')
+    command = rustBin
+    args = ['--profile', 'acp']
+    env = {
+      ...process.env,
       ...options.env,
       DSH_HOME: join(cwd, '.dsh'),
       DSH_AGENTS_HOME: join(cwd, '.agents'),
-    },
-  })
+      DSH_CORDIS_CONFIG: rustYaml,
+    }
+  } else {
+    const launch = resolveExampleLaunch({
+      srcBin: agent.binScript,
+      libBin: agent.libBinScript,
+      configArgs: ['--config', options.configPath ?? agent.configPath],
+      tsconfigPath: agent.tsconfigPath,
+      env: {
+        ...options.env,
+        DSH_HOME: join(cwd, '.dsh'),
+        DSH_AGENTS_HOME: join(cwd, '.agents'),
+      },
+    })
+    command = launch.command
+    args = launch.args
+    env = { ...process.env, ...launch.env }
+  }
   const child = spawn(
-    launch.command,
-    launch.args,
+    command,
+    args,
     {
       cwd,
-      env: { ...process.env, ...launch.env },
+      env,
       stdio: ['pipe', 'pipe', 'pipe'],
     },
   )
