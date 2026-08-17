@@ -812,6 +812,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-terminal"
+version = "0.1.0"
+dependencies = [
+ "dsh-boot",
+ "dsh-brand",
+ "dsh-kernel",
+ "dsh-session",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
 name = "dsh-time-context"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,17 @@
+//! Owner-scoped persistent PTY registry and in-memory snapshot backend.
+
+mod id;
+mod plugin;
+mod service;
+mod snapshot;
+
+pub use id::{TerminalSessionId, TerminalSessionIdTag};
+pub use plugin::{register, register_snapshot_backend, register_terminal_plugins};
+pub use service::{
+    TerminalBackend, TerminalBackendSession, TerminalBackendSpawnSpec, TerminalError,
+    TerminalErrorCode, TerminalReadRequest, TerminalReadResult, TerminalSendOperation,
+    TerminalSendRead, TerminalSendRequest, TerminalSendResult, TerminalSessionService,
+    TerminalSessionSnapshot, TerminalSessionStatus, TerminalSignal, TerminalSignalResult,
+    TerminalSpawnRequest, TerminalSpawnResult, TerminalWaitReason,
+};
+pub use snapshot::SnapshotBackend;
