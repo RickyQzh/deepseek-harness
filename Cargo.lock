@@ -232,8 +232,12 @@ dependencies = [
 name = "dsh-acp"
 version = "0.1.0"
 dependencies = [
+ "dsh-agent",
  "dsh-boot",
  "dsh-kernel",
+ "dsh-llm",
+ "dsh-system-prompt",
+ "dsh-tools",
  "serde",
  "serde_json",
  "thiserror",

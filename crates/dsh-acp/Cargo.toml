@@ -9,12 +9,18 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
+dsh-agent = { path = "../dsh-agent" }
 dsh-boot = { path = "../dsh-boot" }
 dsh-kernel = { path = "../dsh-kernel" }
 serde = { workspace = true }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["raw_value"] }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+
+[dev-dependencies]
+dsh-llm = { path = "../dsh-llm" }
+dsh-system-prompt = { path = "../dsh-system-prompt" }
+dsh-tools = { path = "../dsh-tools" }
 
 [lints]
 workspace = true

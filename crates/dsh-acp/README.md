@@ -6,6 +6,8 @@ ACP stdio adapter for the DeepSeek Harness Rust host. This crate is not the SDK 
 
 `register` mounts YAML `@deepseek-ai/dsh-acp` (`dsh_boot::PLUGIN_ACP`). `register_acp_plugins` calls `register`. Plugin setup returns `Ok(())` after rejecting unknown config keys and does not serve stdio. The kernel service name is `acpServer`. This crate does not depend on `dsh-sdk-protocol`, `dsh-sdk-jsonrpc-server`, `dsh-base`, `dsh-host`, `dsh-cli`, `dsh-headless`, or `dsh-subagent`. `dsh-agent` must not depend on this crate.
 
+`initialize` ignores the client's `protocolVersion` and always returns `protocolVersion` 1, `agentInfo.name` `deepseek-harness-acp`, `agentInfo.version` `0.0.1`, empty `authMethods`, and `promptCapabilities` with `image`, `audio`, and `embeddedContext` all false; `sessionCapabilities` and `mcpCapabilities` are omitted. `authenticate` returns `{}`. Unknown requests, including `session/load`, return JSON-RPC `-32601` with message `"Method not found": {method}` and `data.method`.
+
 ## Known Limitations and Deferred Work
 
 - Session load, list, resume, delete, and fork are unsupported.

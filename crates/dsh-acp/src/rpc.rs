@@ -5,6 +5,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::oneshot;
@@ -61,12 +62,13 @@ impl JsonRpcId {
 #[error("{0}")]
 pub struct AcpTransportError(String);
 
-/// Async request handler. `Err` becomes a JSON-RPC error response with the same id.
+/// Async request handler. Success is pre-serialized JSON-RPC `result`. `Err` becomes a JSON-RPC error response with the same id.
 pub type RequestHandler = Arc<
     dyn Fn(
             String,
             Value,
-        ) -> Pin<Box<dyn std::future::Future<Output = Result<Value, AcpError>> + Send>>
+        )
+            -> Pin<Box<dyn std::future::Future<Output = Result<Box<RawValue>, AcpError>> + Send>>
         + Send
         + Sync,
 >;
@@ -113,44 +115,79 @@ fn object_params(params: Option<&Value>) -> Value {
     }
 }
 
-fn frame_line(value: &Value) -> String {
+#[derive(Serialize)]
+struct RequestFrame<'a> {
+    jsonrpc: &'static str,
+    id: &'a JsonRpcId,
+    method: &'a str,
+    params: &'a Value,
+}
+
+#[derive(Serialize)]
+struct NotificationFrame<'a> {
+    jsonrpc: &'static str,
+    method: &'a str,
+    params: &'a Value,
+}
+
+#[derive(Serialize)]
+struct ResultFrame<'a> {
+    jsonrpc: &'static str,
+    id: &'a JsonRpcId,
+    result: &'a RawValue,
+}
+
+#[derive(Serialize)]
+struct ErrorFrame<'a> {
+    jsonrpc: &'static str,
+    id: &'a JsonRpcId,
+    error: &'a AcpError,
+}
+
+fn frame_line<T: Serialize>(value: &T) -> String {
     let mut line = serde_json::to_string(value).expect("jsonrpc frame");
     line.push('\n');
     line
 }
 
 fn encode_request(id: &JsonRpcId, method: &str, params: &Value) -> String {
-    frame_line(&json!({
-        "jsonrpc": JSONRPC_VERSION,
-        "id": id,
-        "method": method,
-        "params": params,
-    }))
+    frame_line(&RequestFrame {
+        jsonrpc: JSONRPC_VERSION,
+        id,
+        method,
+        params,
+    })
 }
 
 fn encode_notification(method: &str, params: &Value) -> String {
-    frame_line(&json!({
-        "jsonrpc": JSONRPC_VERSION,
-        "method": method,
-        "params": params,
-    }))
+    frame_line(&NotificationFrame {
+        jsonrpc: JSONRPC_VERSION,
+        method,
+        params,
+    })
 }
 
-fn encode_result(id: &JsonRpcId, result: &Value) -> String {
-    frame_line(&json!({
-        "jsonrpc": JSONRPC_VERSION,
-        "id": id,
-        "result": result,
-    }))
+fn encode_result(id: &JsonRpcId, result: &RawValue) -> String {
+    frame_line(&ResultFrame {
+        jsonrpc: JSONRPC_VERSION,
+        id,
+        result,
+    })
 }
 
 fn encode_error(id: &JsonRpcId, error: &AcpError) -> String {
-    let error_value = serde_json::to_value(error).expect("acp error");
-    frame_line(&json!({
-        "jsonrpc": JSONRPC_VERSION,
-        "id": id,
-        "error": error_value,
-    }))
+    frame_line(&ErrorFrame {
+        jsonrpc: JSONRPC_VERSION,
+        id,
+        error,
+    })
+}
+
+/// Serialize `value` as JSON-RPC `result` without converting through `serde_json::Value`.
+#[must_use]
+pub(crate) fn serialize_result<T: Serialize>(value: &T) -> Box<RawValue> {
+    RawValue::from_string(serde_json::to_string(value).expect("jsonrpc result"))
+        .expect("raw jsonrpc result")
 }
 
 fn decode_line(line: &str) -> Option<DecodedFrame> {
@@ -286,7 +323,7 @@ impl AcpNdjsonTransport {
                 .await;
         };
         match handler(method, params).await {
-            Ok(result) => self.write_frame(encode_result(&id, &result)).await,
+            Ok(result) => self.write_frame(encode_result(&id, result.as_ref())).await,
             Err(error) => self.write_frame(encode_error(&id, &error)).await,
         }
     }
@@ -362,7 +399,7 @@ impl AcpNdjsonTransport {
 
 #[cfg(test)]
 mod tests {
-    use super::{AcpNdjsonTransport, JSONRPC_VERSION, JsonRpcId};
+    use super::{AcpNdjsonTransport, JSONRPC_VERSION, JsonRpcId, serialize_result};
     use crate::error::{internal_error, invalid_params, method_not_found};
     use serde_json::{Value, json};
     use std::sync::Arc;
@@ -437,7 +474,7 @@ mod tests {
             Box::pin(async move {
                 assert_eq!(method, "ping");
                 assert_eq!(params, json!({}));
-                Ok(json!({"ok": true}))
+                Ok(serialize_result(&json!({"ok": true})))
             })
         }));
         let serve = tokio::spawn({
