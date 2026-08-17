@@ -99,6 +99,48 @@ impl RpcMessage {
     pub fn client_response(rpc_id: RpcId, result: RpcResult) -> Self {
         Self::ClientResponse { rpc_id, result }
     }
+
+    /// Correlation id: minted on a request, echoed on the matching response.
+    #[must_use]
+    pub fn rpc_id(&self) -> &RpcId {
+        match self {
+            Self::ClientRequest { rpc_id, .. }
+            | Self::ServerResponse { rpc_id, .. }
+            | Self::ServerRequest { rpc_id, .. }
+            | Self::ClientResponse { rpc_id, .. } => rpc_id,
+        }
+    }
+
+    /// Method name on a request; `None` on a response.
+    #[must_use]
+    pub fn method(&self) -> Option<&str> {
+        match self {
+            Self::ClientRequest { method, .. } | Self::ServerRequest { method, .. } => Some(method),
+            Self::ServerResponse { .. } | Self::ClientResponse { .. } => None,
+        }
+    }
+
+    /// Request payload JSON; `None` on a response.
+    #[must_use]
+    pub fn payload(&self) -> Option<&Value> {
+        match self {
+            Self::ClientRequest { payload, .. } | Self::ServerRequest { payload, .. } => {
+                Some(payload)
+            }
+            Self::ServerResponse { .. } | Self::ClientResponse { .. } => None,
+        }
+    }
+
+    /// Response result; `None` on a request.
+    #[must_use]
+    pub fn result(&self) -> Option<&RpcResult> {
+        match self {
+            Self::ServerResponse { result, .. } | Self::ClientResponse { result, .. } => {
+                Some(result)
+            }
+            Self::ClientRequest { .. } | Self::ServerRequest { .. } => None,
+        }
+    }
 }
 
 /// Business success or failure in a unary response. Methods never throw business errors.
@@ -127,6 +169,24 @@ impl RpcResult {
     #[must_use]
     pub fn err(error: RpcError) -> Self {
         Self::Err { error }
+    }
+
+    /// Success payload when `ok` is true.
+    #[must_use]
+    pub fn as_ok(&self) -> Option<&Value> {
+        match self {
+            Self::Ok { value } => Some(value),
+            Self::Err { .. } => None,
+        }
+    }
+
+    /// Closed-code error when `ok` is false.
+    #[must_use]
+    pub fn as_err(&self) -> Option<&RpcError> {
+        match self {
+            Self::Err { error } => Some(error),
+            Self::Ok { .. } => None,
+        }
     }
 }
 
@@ -197,6 +257,21 @@ impl RpcReceipt {
     #[must_use]
     pub fn rejected(reason: ReceiptReject) -> Self {
         Self::Rejected { reason }
+    }
+
+    /// Whether the carrier accepted the client-response.
+    #[must_use]
+    pub fn is_accepted(&self) -> bool {
+        matches!(self, Self::Accepted)
+    }
+
+    /// Rejection reason when the client-response was not applied.
+    #[must_use]
+    pub fn reject_reason(&self) -> Option<ReceiptReject> {
+        match self {
+            Self::Rejected { reason } => Some(*reason),
+            Self::Accepted => None,
+        }
     }
 }
 

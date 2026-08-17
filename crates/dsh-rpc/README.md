@@ -8,6 +8,8 @@ GUI four-quadrant RPC envelopes for the DeepSeek Harness Rust host. This crate i
 
 `RpcReceipt` is a carrier receipt, not an `RpcMessage`: `{ "accepted": true }` or `{ "accepted": false, "reason": "not-pending" | "bad-response" }`. It has no `type` field.
 
+Other crates inspect decoded envelopes through accessors (`rpc_id`, `method`, `payload`, `result`, `as_ok`/`as_err`, `is_accepted`/`reject_reason`); variant fields are private, so field matches will not compile outside this crate.
+
 Payload and error details stay `serde_json::Value`. This crate has no HTTP server and does not depend on `dsh-session`.
 
 ## Known Limitations and Deferred Work

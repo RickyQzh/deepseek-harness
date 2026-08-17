@@ -8,6 +8,8 @@ DeepSeek Harness Rust 宿主的 GUI 四象限 RPC 信封。本 crate 是 GUI 协
 
 `RpcReceipt` 是载体回执，不是 `RpcMessage`：`{ "accepted": true }` 或 `{ "accepted": false, "reason": "not-pending" | "bad-response" }`。它没有 `type` 字段。
 
+其他 crate 通过访问器读取解码后的信封（`rpc_id`、`method`、`payload`、`result`、`as_ok`/`as_err`、`is_accepted`/`reject_reason`）；变体字段为私有，因此在本 crate 外按字段匹配无法编译。
+
 载荷与错误 details 保持为 `serde_json::Value`。本 crate 没有 HTTP 服务器，也不依赖 `dsh-session`。
 
 ## 已知限制与暂缓事项
