@@ -35,4 +35,10 @@ pub enum SubprocessError {
     /// This host does not implement process-tree spawn.
     #[error("unsupported on this platform")]
     UnsupportedPlatform,
+    /// Terminal process-table inspection is unsupported on this OS.
+    #[error("subprocess-local: terminal inspection is unsupported on platform {platform}")]
+    UnsupportedInspection {
+        /// OS name that has no inspector (`std::env::consts::OS` or a test platform string).
+        platform: String,
+    },
 }

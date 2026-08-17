@@ -10,11 +10,13 @@
 
 `spawn_terminal` 用 `portable-pty` 打开 POSIX PTY（`PtySize` 的 rows/cols，像素尺寸为 0），按 cwd 与 `env_clear` 之后的 `child_env` spawn `argv`，向 master 写入字节，并在 `tokio::sync::broadcast` 通道上发布 UTF-8 有损 `String` 分块。`done` 在顶层 PTY 子进程退出时结算。最后一个 handle drop 会关闭 master 并向子进程发信号。`LocalSubprocessRuntime::spawn_terminal` 会保留 clone，直到 `dispose` 丢弃它们；`dispose` 不等待 PTY 子进程。
 
+`create_process_inspector` 通过 Linux `/proc`（x86_64 与 aarch64 系统调用号表）和 macOS `ps` 检查前台 PGID、stdin 等待、子进程优先的进程树，以及 PID+启动身份。`read(0)` 视为 stdin 等待；无法读取的 `/proc/<pid>/mem` 不视为等待。macOS 上 `is_stdin_waiting` 恒为 false。`SubprocessTerminalHandle` 上尚无 inspect、signal、terminate 方法。
+
 `plugin::register` 挂载 YAML `@deepseek-ai/dsh-subprocess-local`，并提供 `subprocess` 服务（`LocalSubprocessRuntime`）。
 
 ## 已知限制与暂缓事项
 
 - Windows ConPTY 不在范围内；非 unix 上 `spawn_terminal` 返回 `UnsupportedPlatform`。
-- PTY 的 inspect、signal 与 terminate 尚未实现；`dispose` 不等待 PTY 子进程。
+- `SubprocessTerminalHandle` 上尚无 inspect、signal 与 terminate 方法。`dispose` 不等待 PTY 子进程。
 - Windows `taskkill /T` 进程树终止暂缓；非 unix 上 `spawn_subprocess` 返回 `UnsupportedPlatform`。
 - `argv` 绝不是 shell 字符串。
