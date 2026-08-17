@@ -50,6 +50,7 @@ Rust workspace members for the DeepSeek Harness host process. Layout, keep-or-dr
 | [`dsh-tool-bash`](dsh-tool-bash/README.md) | Model-facing bash tool. |
 | [`dsh-sdk-protocol`](dsh-sdk-protocol/README.md) | SDK JSON-RPC 2.0 wire types (`initialize`, `session/prompt`, `shutdown`, four notifications). |
 | [`dsh-sdk-jsonrpc-server`](dsh-sdk-jsonrpc-server/README.md) | NDJSON JSON-RPC SDK server and `dsh-jsonrpc-agent` stdio bin. |
+| [`dsh-acp`](dsh-acp/README.md) | ACP stdio adapter: NDJSON JSON-RPC, not the SDK JSON-RPC server. |
 | [`dsh-headless`](dsh-headless/README.md) | One-shot headless runner: last assistant text plus newline; exit 0 iff `turn/end` is `completed`. |
 | [`dsh-base`](dsh-base/README.md) | Phase 6 product plugin aggregator (`register_base_plugins`) and static headless/jsonrpc `base.cordis.yml`. |
 | [`dsh-cli`](dsh-cli/README.md) | `dsh` clap launcher: `--profile headless` / `web`, `dsh web` alias, `--patch`. |

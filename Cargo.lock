@@ -229,6 +229,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-acp"
+version = "0.1.0"
+dependencies = [
+ "dsh-boot",
+ "dsh-kernel",
+ "serde_json",
+]
+
+[[package]]
 name = "dsh-agent"
 version = "0.1.0"
 dependencies = [

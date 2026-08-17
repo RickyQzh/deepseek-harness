@@ -95,6 +95,8 @@ pub const PLUGIN_HEADLESS_RUNNER: &str = "headless-runner";
 pub const PLUGIN_HEADLESS_AUTO_APPROVE: &str = "headless-auto-approve";
 /// YAML `name` for the SDK JSON-RPC server plugin.
 pub const PLUGIN_SDK_JSONRPC: &str = "sdk-jsonrpc-server";
+/// YAML `name` for `@deepseek-ai/dsh-acp`.
+pub const PLUGIN_ACP: &str = "@deepseek-ai/dsh-acp";
 /// YAML `name` for `@deepseek-ai/dsh-host-webserver`.
 pub const PLUGIN_HOST_WEBSERVER: &str = "@deepseek-ai/dsh-host-webserver";
 /// YAML `name` for `@deepseek-ai/dsh-host-frontend-static`.
