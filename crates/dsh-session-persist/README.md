@@ -4,7 +4,7 @@ English | [中文](README.zh.md)
 
 JSONL is the product default (`session.jsonl` / `session.jsonl.zstd`). This crate encodes the `type: "session"` header line, event lines, packed chunk rows, and concatenated checksummed zstd frames. It depends on `dsh-session`, not on compose.
 
-`JsonlSessionStore` writes uncompressed unpacked JSONL to `{root}/{sessionId}/session.jsonl` (`SessionId::as_str()`, no `--<project>--` segment) so the file matches Python SDK and jsonrpc fixtures; `flush` may rewrite the whole file and `load` reads it back through `decode_session_log` then `Session::from_events`. `from_env` uses `DSH_SESSION_ROOT` when that variable is set and non-empty, otherwise `{DSH_HOME}/sessions`.
+`JsonlSessionStore` writes uncompressed unpacked JSONL to `{root}/{sessionId}/session.jsonl` (`SessionId::as_str()`, no `--<project>--` segment) so the file matches Python SDK and jsonrpc fixtures; `flush` may rewrite the whole file and `load` reads it back through `decode_session_log` then `Session::from_events`. `list_ids` returns directory names under `root` that contain `session.jsonl`; a missing `root` is an empty list. `from_env` uses `DSH_SESSION_ROOT` when that variable is set and non-empty, otherwise `{DSH_HOME}/sessions`.
 
 `plugin::register` provides `sessions` as `JsonlSessionStore` from `from_env`, or `with_root` when config `root` is a string.
 

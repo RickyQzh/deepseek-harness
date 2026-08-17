@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write crates/dsh-session-persist/README.md
-README.md: 997a6b800e9e81f86afc2d8ad1bd4a0b27d3b7e1
-README.zh.md: b9427640645017f263de22377ce4824fb66962b2
+README.md: 3e9c91cb454c716767a6a51d07d5e992617a22b1
+README.zh.md: 0b508ea2d38a8521483afd739d983cbd89b9a058

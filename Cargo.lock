@@ -455,7 +455,14 @@ name = "dsh-host"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "dsh-agent",
+ "dsh-llm",
  "dsh-rpc",
+ "dsh-session",
+ "dsh-session-persist",
+ "dsh-system-prompt",
+ "dsh-tools",
+ "dsh-workspace",
  "futures",
  "reqwest",
  "serde",

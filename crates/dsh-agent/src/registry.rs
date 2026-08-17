@@ -52,6 +52,12 @@ impl AgentHandle {
         &self.id
     }
 
+    /// Whether both handles share the same live agent.
+    #[must_use]
+    pub fn ptr_eq(this: &Self, other: &Self) -> bool {
+        Arc::ptr_eq(&this.inner, &other.inner)
+    }
+
     /// Lock session/inbox state. Hold only for short reads; do not hold across `.await`.
     pub fn lock(&self) -> std::sync::MutexGuard<'_, LoopAgent> {
         self.inner.state.lock().expect("loop agent state")

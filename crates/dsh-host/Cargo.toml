@@ -10,7 +10,11 @@ repository.workspace = true
 
 [dependencies]
 axum = { workspace = true }
+dsh-agent = { path = "../dsh-agent" }
 dsh-rpc = { path = "../dsh-rpc" }
+dsh-session = { path = "../dsh-session" }
+dsh-session-persist = { path = "../dsh-session-persist" }
+dsh-workspace = { path = "../dsh-workspace" }
 futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -19,6 +23,9 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+dsh-llm = { path = "../dsh-llm" }
+dsh-system-prompt = { path = "../dsh-system-prompt" }
+dsh-tools = { path = "../dsh-tools" }
 reqwest = { workspace = true }
 tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect"] }
 

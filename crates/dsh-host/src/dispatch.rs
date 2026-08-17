@@ -77,7 +77,7 @@ impl RpcHandler for StubHandler {
     }
 }
 
-fn host_describe_value() -> serde_json::Value {
+pub(crate) fn host_describe_value() -> serde_json::Value {
     let cwd = match std::env::var("DSH_CWD") {
         Ok(cwd) => cwd,
         Err(_) => match std::env::current_dir() {
@@ -144,7 +144,7 @@ pub(crate) async fn dispatch_dotted(
         .into_response()
 }
 
-fn is_json_content_type(content_type: Option<&str>) -> bool {
+pub(crate) fn is_json_content_type(content_type: Option<&str>) -> bool {
     let Some(raw) = content_type else {
         return false;
     };

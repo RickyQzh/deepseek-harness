@@ -67,6 +67,35 @@ impl JsonlSessionStore {
         std::fs::write(&path, text).map_err(|error| PersistError::Io(error.to_string()))
     }
 
+    /// Session ids that have a `{root}/{id}/session.jsonl` file.
+    ///
+    /// Missing `root` is an empty list. Directory names without that file are skipped.
+    ///
+    /// # Errors
+    ///
+    /// [`PersistError::Io`] when `root` exists but cannot be read.
+    pub fn list_ids(&self) -> Result<Vec<SessionId>, PersistError> {
+        let entries = match std::fs::read_dir(&self.root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(PersistError::Io(error.to_string())),
+        };
+        let mut ids = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|error| PersistError::Io(error.to_string()))?;
+            let name = entry.file_name();
+            let jsonl = self.root.join(&name).join("session.jsonl");
+            if !jsonl.is_file() {
+                continue;
+            }
+            let Some(id) = name.to_str() else {
+                continue;
+            };
+            ids.push(SessionId::new(id.to_string()));
+        }
+        Ok(ids)
+    }
+
     /// Read uncompressed JSONL from [`Self::path_for`] and rebuild the session surface.
     ///
     /// # Errors
@@ -181,6 +210,26 @@ mod tests {
             })
             .unwrap();
         session
+    }
+
+    #[test]
+    fn list_ids_scans_session_jsonl_directories() {
+        let dir = test_temp_dir("list-ids");
+        let store = JsonlSessionStore::with_root(&dir);
+        store.flush(&session_with_id("alpha")).unwrap();
+        store.flush(&session_with_id("beta")).unwrap();
+        std::fs::create_dir_all(dir.join("ghost")).unwrap();
+        std::fs::write(dir.join("not-a-session"), b"x").unwrap();
+        let mut ids: Vec<String> = store
+            .list_ids()
+            .unwrap()
+            .into_iter()
+            .map(|id| id.into_inner())
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec!["alpha".to_string(), "beta".to_string()]);
+        let missing = JsonlSessionStore::with_root(dir.join("no-such-root"));
+        assert!(missing.list_ids().unwrap().is_empty());
     }
 
     #[test]

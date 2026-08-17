@@ -17,10 +17,13 @@ use tokio::net::TcpListener;
 use crate::boot::WebBootGraph;
 #[cfg(test)]
 use crate::dispatch::StubHandler;
-use crate::dispatch::{ErasedRpcHandler, RpcHandler, dispatch_dotted, forbidden_response};
+use crate::dispatch::{
+    ErasedRpcHandler, RpcHandler, dispatch_dotted, forbidden_response, is_json_content_type,
+};
 use crate::plugins::{
     HostError, scan_client_graph_and_dirs, serve_plugin_js, serve_plugin_source_map,
 };
+use crate::respond::RespondTable;
 use crate::static_files::{StaticResponse, serve_spa};
 use crate::trust::{assert_trusted_authority, is_trusted_api_request};
 use crate::ws::{DownlinkHub, run_downlink};
@@ -95,6 +98,7 @@ pub struct HostState {
     plugin_dirs: HashMap<String, String>,
     handler: Arc<dyn ErasedRpcHandler>,
     hub: DownlinkHub,
+    respond: RespondTable,
 }
 
 impl HostState {
@@ -119,6 +123,7 @@ impl HostState {
             plugin_dirs,
             handler: Arc::new(handler),
             hub: DownlinkHub::new(),
+            respond: RespondTable::new(),
         })
     }
 
@@ -132,6 +137,12 @@ impl HostState {
     #[must_use]
     pub fn hub(&self) -> &DownlinkHub {
         &self.hub
+    }
+
+    /// Pending `client-response` table for `POST /api/respond`.
+    #[must_use]
+    pub fn respond_table(&self) -> &RespondTable {
+        &self.respond
     }
 }
 
@@ -221,11 +232,22 @@ fn api_trusted(state: &HostState, headers: &HeaderMap) -> bool {
     )
 }
 
-async fn post_respond(State(state): State<HostState>, headers: HeaderMap) -> Response {
+async fn post_respond(State(state): State<HostState>, headers: HeaderMap, body: Bytes) -> Response {
     if !api_trusted(&state, &headers) {
         return forbidden_response();
     }
-    StatusCode::NOT_IMPLEMENTED.into_response()
+    if !is_json_content_type(header_text(&headers, header::CONTENT_TYPE)) {
+        return (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "content type must be application/json",
+        )
+            .into_response();
+    }
+    let receipt = match serde_json::from_slice::<dsh_rpc::RpcMessage>(&body) {
+        Ok(message) => state.respond.apply(&message),
+        Err(_) => dsh_rpc::RpcReceipt::rejected(dsh_rpc::ReceiptReject::BadResponse),
+    };
+    (StatusCode::OK, axum::Json(receipt)).into_response()
 }
 
 async fn upgrade_required(State(state): State<HostState>, headers: HeaderMap) -> Response {
