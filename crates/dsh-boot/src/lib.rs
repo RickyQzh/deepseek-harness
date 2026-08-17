@@ -95,3 +95,17 @@ pub const PLUGIN_HEADLESS_RUNNER: &str = "headless-runner";
 pub const PLUGIN_HEADLESS_AUTO_APPROVE: &str = "headless-auto-approve";
 /// YAML `name` for the SDK JSON-RPC server plugin.
 pub const PLUGIN_SDK_JSONRPC: &str = "sdk-jsonrpc-server";
+/// YAML `name` for `@deepseek-ai/dsh-host-webserver`.
+pub const PLUGIN_HOST_WEBSERVER: &str = "@deepseek-ai/dsh-host-webserver";
+/// YAML `name` for `@deepseek-ai/dsh-host-frontend-static`.
+pub const PLUGIN_FRONTEND_STATIC: &str = "@deepseek-ai/dsh-host-frontend-static";
+/// YAML `name` for `@deepseek-ai/dsh-client-modules`.
+pub const PLUGIN_CLIENT_MODULES: &str = "@deepseek-ai/dsh-client-modules";
+/// YAML `name` for `@deepseek-ai/dsh-workspace`.
+pub const PLUGIN_WORKSPACE: &str = "@deepseek-ai/dsh-workspace";
+/// YAML `name` for `@deepseek-ai/dsh-settings`.
+pub const PLUGIN_SETTINGS: &str = "@deepseek-ai/dsh-settings";
+/// YAML `name` for `@deepseek-ai/dsh-commands`.
+pub const PLUGIN_COMMANDS: &str = "@deepseek-ai/dsh-commands";
+/// YAML `name` for the web-app plugin.
+pub const PLUGIN_WEB_APP: &str = "web-app";

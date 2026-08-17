@@ -340,6 +340,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-host"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "dsh-jobs"
 version = "0.1.0"
 dependencies = [
