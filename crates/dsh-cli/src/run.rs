@@ -1,4 +1,4 @@
-//! Boot headless or web compositions and wait for `appExit`.
+//! Boot headless, web, or ACP compositions.
 
 use std::path::{Path, PathBuf};
 
@@ -10,7 +10,7 @@ use dsh_headless::{AppExit, CmdlineArgs, HeadlessIo, MINIMAL_YAML, register_head
 use dsh_host::{WebIo, register_host_plugins};
 use dsh_kernel::Context;
 
-use crate::parse::{ParsedCli, WebLaunch, parse_cli};
+use crate::parse::{AcpLaunch, ParsedCli, WebLaunch, parse_cli};
 
 fn load_yaml() -> Result<String, String> {
     match std::env::var("DSH_CORDIS_CONFIG") {
@@ -83,6 +83,13 @@ pub async fn run_cli(args: Vec<String>) -> i32 {
                 1
             }
         },
+        ParsedCli::Acp(launch) => match run_acp(launch).await {
+            Ok(code) => code,
+            Err(message) => {
+                eprintln!("dsh: {message}");
+                1
+            }
+        },
     }
 }
 
@@ -115,6 +122,14 @@ fn load_web_yaml() -> Result<String, String> {
         Ok(path) if !path.is_empty() => std::fs::read_to_string(&path)
             .map_err(|error| format!("DSH_CORDIS_CONFIG file not found: {path}: {error}")),
         _ => Ok(dsh_host::WEB_YAML.to_string()),
+    }
+}
+
+fn load_acp_yaml() -> Result<String, String> {
+    match std::env::var("DSH_CORDIS_CONFIG") {
+        Ok(path) if !path.is_empty() => std::fs::read_to_string(&path)
+            .map_err(|error| format!("DSH_CORDIS_CONFIG file not found: {path}: {error}")),
+        _ => Ok(dsh_acp::ACP_YAML.to_string()),
     }
 }
 
@@ -260,6 +275,27 @@ async fn run_web(launch: WebLaunch) -> Result<i32, String> {
     boot_web_yaml(&ctx, &yaml, &user_patches, &overlay, &registry).await?;
     rx.await
         .map_err(|_| "web host exited without appExit".to_string())
+}
+
+async fn run_acp(launch: AcpLaunch) -> Result<i32, String> {
+    ensure_persist_env()?;
+    let yaml = load_acp_yaml()?;
+    let patches = load_patches(&launch.patches)?;
+    let ctx = Context::new();
+    let mut registry = PluginRegistry::new();
+    register_spine_plugins(&mut registry);
+    register_execution_plugins(&mut registry);
+    register_base_plugins(&mut registry);
+    dsh_acp::register_acp_plugins(&mut registry);
+    boot_yaml(&ctx, &yaml, &patches, &registry, &process_interpolate_env())
+        .await
+        .map_err(|error| error.to_string())?;
+    let bridge = ctx
+        .inject::<dsh_acp::AcpBridge>(dsh_acp::ACP_SERVER_SERVICE)
+        .await
+        .map_err(|error| error.to_string())?;
+    bridge.serve().await.map_err(|error| error.to_string())?;
+    Ok(0)
 }
 
 #[cfg(test)]

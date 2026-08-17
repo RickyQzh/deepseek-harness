@@ -26,6 +26,13 @@ pub struct WebLaunch {
     pub patches: Vec<PathBuf>,
 }
 
+/// `dsh acp` / `--profile acp` invocation after launcher flags.
+#[derive(Debug)]
+pub struct AcpLaunch {
+    /// `--patch` files in argv order.
+    pub patches: Vec<PathBuf>,
+}
+
 /// Parsed launcher action.
 #[derive(Debug)]
 pub enum ParsedCli {
@@ -33,6 +40,8 @@ pub enum ParsedCli {
     Headless(HeadlessLaunch),
     /// `dsh web` / `dsh --profile web …`.
     Web(WebLaunch),
+    /// `dsh acp` / `dsh --profile acp …`.
+    Acp(AcpLaunch),
 }
 
 /// Usage or not-implemented failure (always process exit 2).
@@ -74,7 +83,7 @@ const HOST_ALL_INTERFACES_SAFETY: &str = "is intentionally not supported yet for
 #[derive(Parser, Debug)]
 #[command(name = "dsh", about = "DeepSeek Harness", no_binary_name = false)]
 struct Cli {
-    /// Profile bundle. `headless` and `web` are implemented.
+    /// Profile bundle. `headless`, `web`, and `acp` are implemented.
     #[arg(long)]
     profile: Option<String>,
     /// Extra YAML patch documents, applied in order.
@@ -92,18 +101,19 @@ struct Cli {
     /// Web SPA dist directory. Else `DSH_WEB_DIST`, else `apps/web/dist`.
     #[arg(long)]
     dist: Option<PathBuf>,
-    /// Task words joined by spaces (headless), or leftover words (web).
+    /// Task words joined by spaces (headless), leftover words (web), or a rejected leftover (acp).
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     task: Vec<String>,
 }
 
 /// Parse `args` including argv[0].
 ///
-/// `dsh web` is an alias for `--profile web`. Neither requires a positional task.
+/// `dsh web` is an alias for `--profile web`. `dsh acp` is an alias for `--profile acp`.
+/// Web and ACP take no positional task.
 ///
 /// # Errors
 ///
-/// [`CliError`] for not-implemented verbs, missing `--profile`, unimplemented profiles, a missing headless task, or a disallowed `--host`.
+/// [`CliError`] for not-implemented verbs, missing `--profile`, unimplemented profiles, a missing headless task, a leftover ACP task, or a disallowed web `--host`.
 pub fn parse_cli<I, S>(args: I) -> Result<ParsedCli, CliError>
 where
     I: IntoIterator<Item = S>,
@@ -119,6 +129,10 @@ where
         args[1] = "--profile".into();
         args.insert(2, "web".into());
     }
+    if args.get(1).map(String::as_str) == Some("acp") {
+        args[1] = "--profile".into();
+        args.insert(2, "acp".into());
+    }
     let cli = Cli::try_parse_from(&args).map_err(|error| CliError::Usage {
         message: error.to_string().trim().to_string(),
     })?;
@@ -129,6 +143,9 @@ where
     };
     if profile == "web" {
         return parse_web_launch(cli);
+    }
+    if profile == "acp" {
+        return parse_acp_launch(cli);
     }
     if profile != "headless" {
         return Err(CliError::NotImplemented {
@@ -165,6 +182,15 @@ fn parse_web_launch(cli: Cli) -> Result<ParsedCli, CliError> {
     }))
 }
 
+fn parse_acp_launch(cli: Cli) -> Result<ParsedCli, CliError> {
+    if !cli.task.is_empty() {
+        return Err(CliError::Usage {
+            message: "acp takes no task argument".into(),
+        });
+    }
+    Ok(ParsedCli::Acp(AcpLaunch { patches: cli.patch }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ParsedCli, parse_cli};
@@ -177,7 +203,7 @@ mod tests {
                 assert_eq!(launch.task, "run the tests");
                 assert!(launch.patches.is_empty());
             }
-            ParsedCli::Web(_) => panic!("expected headless"),
+            _ => panic!("expected headless"),
         }
     }
 
@@ -205,7 +231,7 @@ mod tests {
                     ]
                 );
             }
-            ParsedCli::Web(_) => panic!("expected headless"),
+            _ => panic!("expected headless"),
         }
     }
 
@@ -219,7 +245,7 @@ mod tests {
                 assert!(launch.trusted_hosts.is_empty());
                 assert!(launch.patches.is_empty());
             }
-            ParsedCli::Headless(_) => panic!("expected web"),
+            _ => panic!("expected web"),
         }
     }
 
@@ -233,7 +259,7 @@ mod tests {
                 assert!(launch.trusted_hosts.is_empty());
                 assert!(launch.patches.is_empty());
             }
-            ParsedCli::Headless(_) => panic!("expected web"),
+            _ => panic!("expected web"),
         }
     }
 
@@ -258,7 +284,7 @@ mod tests {
                 assert_eq!(launch.port, 3080);
                 assert!(launch.trusted_hosts.is_empty());
             }
-            ParsedCli::Headless(_) => panic!("expected web"),
+            _ => panic!("expected web"),
         }
     }
 
@@ -289,7 +315,7 @@ mod tests {
                 assert_eq!(launch.patches, vec![std::path::PathBuf::from("a.yml")]);
                 assert_eq!(launch.dist, Some(std::path::PathBuf::from("/tmp/dist")));
             }
-            ParsedCli::Headless(_) => panic!("expected web"),
+            _ => panic!("expected web"),
         }
     }
 
@@ -301,10 +327,46 @@ mod tests {
     }
 
     #[test]
-    fn unknown_profile_is_not_implemented_exit_2() {
-        let err = parse_cli(["dsh", "--profile", "acp", "x"]).unwrap_err();
+    fn acp_as_argv1_parses_acp_launch() {
+        let parsed = parse_cli(["dsh", "acp"]).unwrap();
+        match parsed {
+            ParsedCli::Acp(launch) => {
+                assert!(launch.patches.is_empty());
+            }
+            _ => panic!("expected acp"),
+        }
+    }
+
+    #[test]
+    fn profile_acp_parses_acp_launch() {
+        let parsed = parse_cli(["dsh", "--profile", "acp"]).unwrap();
+        match parsed {
+            ParsedCli::Acp(launch) => {
+                assert!(launch.patches.is_empty());
+            }
+            _ => panic!("expected acp"),
+        }
+        let parsed = parse_cli(["dsh", "--profile", "acp", "--patch", "a.yml"]).unwrap();
+        match parsed {
+            ParsedCli::Acp(launch) => {
+                assert_eq!(launch.patches, vec![std::path::PathBuf::from("a.yml")]);
+            }
+            _ => panic!("expected acp"),
+        }
+    }
+
+    #[test]
+    fn acp_rejects_task_argument() {
+        let err = parse_cli(["dsh", "--profile", "acp", "hello"]).unwrap_err();
         assert_eq!(err.exit_code(), 2);
-        assert_eq!(err.to_stderr_line(), "dsh: acp is not implemented\n");
+        assert_eq!(err.to_stderr_line(), "dsh: acp takes no task argument\n");
+    }
+
+    #[test]
+    fn unknown_profile_is_not_implemented_exit_2() {
+        let err = parse_cli(["dsh", "--profile", "tui", "x"]).unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        assert_eq!(err.to_stderr_line(), "dsh: tui is not implemented\n");
     }
 
     #[test]

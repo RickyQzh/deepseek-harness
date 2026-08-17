@@ -53,7 +53,7 @@ Rust workspace members for the DeepSeek Harness host process. Layout, keep-or-dr
 | [`dsh-acp`](dsh-acp/README.md) | ACP stdio adapter: NDJSON JSON-RPC, not the SDK JSON-RPC server. |
 | [`dsh-headless`](dsh-headless/README.md) | One-shot headless runner: last assistant text plus newline; exit 0 iff `turn/end` is `completed`. |
 | [`dsh-base`](dsh-base/README.md) | Phase 6 product plugin aggregator (`register_base_plugins`) and static headless/jsonrpc `base.cordis.yml`. |
-| [`dsh-cli`](dsh-cli/README.md) | `dsh` clap launcher: `--profile headless` / `web`, `dsh web` alias, `--patch`. |
+| [`dsh-cli`](dsh-cli/README.md) | `dsh` clap launcher: `--profile headless` / `web` / `acp`, `dsh web` / `dsh acp` aliases, `--patch`. |
 | [`dsh-rpc`](dsh-rpc/README.md) | GUI four-quadrant envelopes (`RpcMessage`, `RpcResult`, `RpcReceipt`) and closed kebab-case error codes. |
 | [`dsh-workspace`](dsh-workspace/README.md) | Durable JSON workspace registry (`workspaces.json`): path, title, session account, and archive set. |
 | [`dsh-host`](dsh-host/README.md) | GUI loopback HTTP listener, unary `/api` dotted and slash RPC, trust fence, SPA, and `/plugins`. |

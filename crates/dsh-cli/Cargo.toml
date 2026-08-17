@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 clap = { workspace = true }
+dsh-acp = { path = "../dsh-acp" }
 dsh-agent = { path = "../dsh-agent" }
 dsh-base = { path = "../dsh-base" }
 dsh-boot = { path = "../dsh-boot" }
