@@ -35,10 +35,11 @@ pub fn register(registry: &mut PluginRegistry) {
                 .get::<Mutex<TerminalSessionService>>("terminals")
                 .ok_or_else(|| setup_err("terminals provide vanished"))?;
             ctx.effect(move || async move {
-                terminals
+                let service = terminals
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
-                    .dispose_all();
+                    .clone();
+                service.dispose_all().await;
             })
             .map_err(|error| setup_err(error.to_string()))?;
             Ok(())
@@ -153,12 +154,14 @@ mod tests {
             .expect("terminals");
         let service = terminals
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         let spawned = service
             .spawn(
                 SessionId::new("owner-a"),
                 TerminalSpawnRequest::new("shell"),
             )
+            .await
             .expect("spawn through snapshot backend");
         assert_eq!(spawned.session_id().as_str(), "pty-1");
         assert_eq!(spawned.motd(), "dsh> ");

@@ -1,14 +1,16 @@
 //! In-memory PTY backend for named ACP `pty-tools` snapshots.
 
 use std::future;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::{
-    TerminalBackend, TerminalBackendSession, TerminalBackendSpawnSpec, TerminalError,
-    TerminalReadRequest, TerminalReadResult, TerminalSendOperation, TerminalSendRead,
-    TerminalSendRequest, TerminalSendResult, TerminalSessionStatus, TerminalSignal,
-    TerminalSignalResult, TerminalWaitReason,
+    TerminalBackend, TerminalBackendSession, TerminalBackendSpawnFuture, TerminalBackendSpawnSpec,
+    TerminalError, TerminalReadRequest, TerminalReadResult, TerminalSendOperation,
+    TerminalSendRead, TerminalSendRequest, TerminalSendResult, TerminalSessionStatus,
+    TerminalSignal, TerminalSignalResult, TerminalWaitReason,
 };
 
 const MOTD: &str = "dsh> ";
@@ -41,11 +43,10 @@ impl SnapshotSession {
 }
 
 impl TerminalBackend for SnapshotBackend {
-    fn spawn(
-        &self,
-        _spec: TerminalBackendSpawnSpec,
-    ) -> Result<Box<dyn TerminalBackendSession>, TerminalError> {
-        Ok(Box::new(SnapshotSession::new()))
+    fn spawn(&self, _spec: TerminalBackendSpawnSpec) -> TerminalBackendSpawnFuture {
+        Box::pin(std::future::ready(Ok(
+            Box::new(SnapshotSession::new()) as Box<dyn TerminalBackendSession>
+        )))
     }
 }
 
@@ -95,19 +96,25 @@ impl TerminalBackendSession for SnapshotSession {
         TerminalReadResult::new(text, lines.len(), offset, line_end, false)
     }
 
-    fn signal(&self, _signal: TerminalSignal) -> TerminalSignalResult {
-        TerminalSignalResult::new(true, 1)
+    fn signal(
+        &self,
+        _signal: TerminalSignal,
+    ) -> Pin<Box<dyn Future<Output = TerminalSignalResult> + Send>> {
+        Box::pin(std::future::ready(TerminalSignalResult::new(true, 1)))
     }
 
     fn status(&self) -> TerminalSessionStatus {
         self.lock_status().clone()
     }
 
-    fn close(&self, _reason: &str) -> Result<(), TerminalError> {
+    fn close(
+        &self,
+        _reason: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), TerminalError>> + Send>> {
         *self.lock_status() = TerminalSessionStatus::Exited {
             exit_code: Some(0),
             signal: None,
         };
-        Ok(())
+        Box::pin(std::future::ready(Ok(())))
     }
 }

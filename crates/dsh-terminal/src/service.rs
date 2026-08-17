@@ -1140,8 +1140,11 @@ pub trait TerminalBackendSession: Send + Sync {
     ///
     /// # Returns
     ///
-    /// Delivered foreground process-group identity.
-    fn signal(&self, signal: TerminalSignal) -> TerminalSignalResult;
+    /// Object-safe boxed future that settles to the delivered foreground process-group identity.
+    fn signal(
+        &self,
+        signal: TerminalSignal,
+    ) -> Pin<Box<dyn Future<Output = TerminalSignalResult> + Send>>;
 
     /// Observe top-level process status.
     ///
@@ -1162,13 +1165,20 @@ pub trait TerminalBackendSession: Send + Sync {
     ///
     /// # Returns
     ///
-    /// `Ok(())` after cleanup.
+    /// Object-safe boxed future that settles to `Ok(())` after cleanup.
     ///
     /// # Errors
     ///
     /// Backend cleanup failure.
-    fn close(&self, reason: &str) -> Result<(), TerminalError>;
+    fn close(
+        &self,
+        reason: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), TerminalError>> + Send>>;
 }
+
+/// Object-safe boxed future returned by [`TerminalBackend::spawn`].
+pub type TerminalBackendSpawnFuture =
+    Pin<Box<dyn Future<Output = Result<Box<dyn TerminalBackendSession>, TerminalError>> + Send>>;
 
 /// Replaceable provider for one PTY session type.
 pub trait TerminalBackend: Send + Sync {
@@ -1180,15 +1190,12 @@ pub trait TerminalBackend: Send + Sync {
     ///
     /// # Returns
     ///
-    /// The unpublished backend session.
+    /// Object-safe boxed future that settles to the unpublished backend session.
     ///
     /// # Errors
     ///
     /// Backend setup failure.
-    fn spawn(
-        &self,
-        spec: TerminalBackendSpawnSpec,
-    ) -> Result<Box<dyn TerminalBackendSession>, TerminalError>;
+    fn spawn(&self, spec: TerminalBackendSpawnSpec) -> TerminalBackendSpawnFuture;
 }
 
 struct SessionRecord {
@@ -1196,7 +1203,7 @@ struct SessionRecord {
     owner: SessionId,
     name: Option<String>,
     backend_type: String,
-    session: Box<dyn TerminalBackendSession>,
+    session: Arc<dyn TerminalBackendSession>,
     active: bool,
 }
 
@@ -1209,6 +1216,11 @@ struct Inner {
 }
 
 /// In-process registry for replaceable PTY backends and owner-scoped sessions.
+///
+/// Clone shares the inner registry. Clone out of the provided
+/// [`Mutex<TerminalSessionService>`] before awaiting [`Self::spawn`], [`Self::signal`],
+/// or [`Self::kill`].
+#[derive(Clone)]
 pub struct TerminalSessionService {
     inner: Arc<Mutex<Inner>>,
 }
@@ -1280,7 +1292,8 @@ impl TerminalSessionService {
     /// Create and publish one owner-scoped session after backend setup succeeds.
     ///
     /// Mints `pty-1`, `pty-2`, … . [`Self::has_owner_activity`] is true from this
-    /// unpublished reservation through close.
+    /// unpublished reservation through close. Drops the inner mutex, awaits the
+    /// backend spawn future, then re-locks to publish.
     ///
     /// # Parameters
     ///
@@ -1294,7 +1307,7 @@ impl TerminalSessionService {
     /// # Errors
     ///
     /// [`TerminalErrorCode::NoBackend`], [`TerminalErrorCode::DuplicateName`], or a backend failure.
-    pub fn spawn(
+    pub async fn spawn(
         &self,
         owner: SessionId,
         request: TerminalSpawnRequest,
@@ -1350,7 +1363,7 @@ impl TerminalSessionService {
             request.name().map(str::to_string),
             request.cwd().map(str::to_string),
         );
-        let session = backend.spawn(spec)?;
+        let session: Arc<dyn TerminalBackendSession> = Arc::from(backend.spawn(spec).await?);
         let motd = session.motd().to_string();
         let pid = session.pid();
         let status = session.status();
@@ -1465,6 +1478,8 @@ impl TerminalSessionService {
 
     /// Deliver an allowed signal through an owned backend session.
     ///
+    /// Drops the inner mutex before awaiting the backend signal future.
+    ///
     /// # Parameters
     ///
     /// * `owner` - Session owner.
@@ -1478,18 +1493,23 @@ impl TerminalSessionService {
     /// # Errors
     ///
     /// [`TerminalErrorCode::NoSession`] or [`TerminalErrorCode::ForeignSession`].
-    pub fn signal(
+    pub async fn signal(
         &self,
         owner: &SessionId,
         id: &TerminalSessionId,
         signal: TerminalSignal,
     ) -> Result<TerminalSignalResult, TerminalError> {
-        let inner = self.lock();
-        let record = expect_owned_ref(&inner, owner, id)?;
-        Ok(record.session.signal(signal))
+        let session = {
+            let inner = self.lock();
+            Arc::clone(&expect_owned_ref(&inner, owner, id)?.session)
+        };
+        Ok(session.signal(signal).await)
     }
 
     /// Close one owned session and remove it after backend cleanup.
+    ///
+    /// Drops the inner mutex before awaiting the backend close future, then
+    /// re-locks to unpublish.
     ///
     /// # Parameters
     ///
@@ -1504,17 +1524,18 @@ impl TerminalSessionService {
     /// # Errors
     ///
     /// [`TerminalErrorCode::NoSession`], [`TerminalErrorCode::ForeignSession`], or backend close failure.
-    pub fn kill(
+    pub async fn kill(
         &self,
         owner: &SessionId,
         id: &TerminalSessionId,
         reason: &str,
     ) -> Result<bool, TerminalError> {
+        let session = {
+            let inner = self.lock();
+            Arc::clone(&expect_owned_ref(&inner, owner, id)?.session)
+        };
+        session.close(reason).await?;
         let mut inner = self.lock();
-        {
-            let record = expect_owned(&mut inner, owner, id)?;
-            record.session.close(reason)?;
-        }
         inner.sessions.remove(id);
         inner.order.retain(|published| published != id);
         Ok(true)
@@ -1548,15 +1569,16 @@ impl TerminalSessionService {
     }
 
     /// Close every published session. Used by plugin dispose.
-    pub(crate) fn dispose_all(&self) {
-        let mut inner = self.lock();
-        let records: Vec<SessionRecord> =
-            inner.sessions.drain().map(|(_, record)| record).collect();
-        inner.order.clear();
-        inner.pending.clear();
-        drop(inner);
+    pub(crate) async fn dispose_all(&self) {
+        let records: Vec<SessionRecord> = {
+            let mut inner = self.lock();
+            let drained = inner.sessions.drain().map(|(_, record)| record).collect();
+            inner.order.clear();
+            inner.pending.clear();
+            drained
+        };
         for record in records {
-            let _ = record.session.close("PTY service disposed");
+            let _ = record.session.close("PTY service disposed").await;
         }
     }
 }
@@ -1635,14 +1657,16 @@ fn expect_owned_ref<'a>(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex, PoisonError};
     use std::task::{Context, Poll, Waker};
+    use std::time::Duration;
 
     use dsh_session::SessionId;
 
     use super::{
-        TerminalErrorCode, TerminalSendRequest, TerminalSessionId, TerminalSessionService,
-        TerminalSessionStatus, TerminalSpawnRequest, TerminalWaitReason,
+        TerminalBackend, TerminalBackendSpawnFuture, TerminalBackendSpawnSpec, TerminalErrorCode,
+        TerminalSendRequest, TerminalSessionId, TerminalSessionService, TerminalSessionStatus,
+        TerminalSignal, TerminalSpawnRequest, TerminalWaitReason,
     };
     use crate::SnapshotBackend;
 
@@ -1664,27 +1688,30 @@ mod tests {
         service
     }
 
-    #[test]
-    fn mints_pty_1() {
+    #[tokio::test]
+    async fn mints_pty_1() {
         let service = service_with_shell();
         let owner = SessionId::new("owner-a");
         let first = service
             .spawn(owner.clone(), TerminalSpawnRequest::new("shell"))
+            .await
             .expect("first spawn");
         assert_eq!(first.session_id().as_str(), "pty-1");
         assert!(service.has_owner_activity(&owner));
         let second = service
             .spawn(owner, TerminalSpawnRequest::new("shell"))
+            .await
             .expect("second spawn");
         assert_eq!(second.session_id().as_str(), "pty-2");
     }
 
-    #[test]
-    fn snapshot_backend_send_pty_ok() {
+    #[tokio::test]
+    async fn snapshot_backend_send_pty_ok() {
         let service = service_with_shell();
         let owner = SessionId::new("owner-a");
         let spawned = service
             .spawn(owner.clone(), TerminalSpawnRequest::new("shell"))
+            .await
             .expect("spawn");
         assert_eq!(spawned.motd(), "dsh> ");
         let operation = service
@@ -1704,12 +1731,13 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn start_send_send_active_display() {
+    #[tokio::test]
+    async fn start_send_send_active_display() {
         let service = service_with_shell();
         let owner = SessionId::new("owner-a");
         let spawned = service
             .spawn(owner.clone(), TerminalSpawnRequest::new("shell"))
+            .await
             .expect("spawn");
         let _live = service
             .start_send(
@@ -1747,13 +1775,14 @@ mod tests {
         assert_eq!(err.to_string(), "unknown PTY session pty-99");
     }
 
-    #[test]
-    fn foreign_session_display() {
+    #[tokio::test]
+    async fn foreign_session_display() {
         let service = service_with_shell();
         let owner = SessionId::new("owner-a");
         let foreign = SessionId::new("owner-b");
         let spawned = service
             .spawn(owner, TerminalSpawnRequest::new("shell"))
+            .await
             .expect("spawn");
         let err = service
             .start_send(
@@ -1766,8 +1795,8 @@ mod tests {
         assert!(err.to_string().contains(spawned.session_id().as_str()));
     }
 
-    #[test]
-    fn duplicate_backend_and_missing_type() {
+    #[tokio::test]
+    async fn duplicate_backend_and_missing_type() {
         let service = service_with_shell();
         let err = service
             .register_backend("shell", Arc::new(SnapshotBackend))
@@ -1784,11 +1813,93 @@ mod tests {
         let owner = SessionId::new("owner-a");
         let missing = TerminalSessionService::new()
             .spawn(owner, TerminalSpawnRequest::new("shell"))
+            .await
             .expect_err("no backend");
         assert_eq!(missing.code(), TerminalErrorCode::NoBackend);
         assert_eq!(
             missing.to_string(),
             "no PTY backend registered for \"shell\""
         );
+    }
+
+    struct HoldSpawn {
+        release: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    }
+
+    impl TerminalBackend for HoldSpawn {
+        fn spawn(&self, spec: TerminalBackendSpawnSpec) -> TerminalBackendSpawnFuture {
+            let rx = self
+                .release
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+                .expect("one spawn");
+            Box::pin(async move {
+                let _ = rx.await;
+                SnapshotBackend.spawn(spec).await
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_keeps_pending_across_backend_await() {
+        let service = TerminalSessionService::new();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        service
+            .register_backend(
+                "held",
+                Arc::new(HoldSpawn {
+                    release: Mutex::new(Some(rx)),
+                }),
+            )
+            .expect("register held backend");
+        let owner = SessionId::new("owner-a");
+        let task = tokio::spawn({
+            let service = service.clone();
+            let owner = owner.clone();
+            async move {
+                service
+                    .spawn(owner, TerminalSpawnRequest::new("held"))
+                    .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if service.has_owner_activity(&owner) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("pending reservation visible before backend spawn settles");
+        assert!(service.list(&owner).is_empty());
+        tx.send(()).expect("release spawn");
+        let spawned = task.await.expect("join spawn").expect("spawn");
+        assert_eq!(spawned.session_id().as_str(), "pty-1");
+        assert_eq!(spawned.motd(), "dsh> ");
+    }
+
+    #[tokio::test]
+    async fn snapshot_signal_and_kill_await() {
+        let service = service_with_shell();
+        let owner = SessionId::new("owner-a");
+        let spawned = service
+            .spawn(owner.clone(), TerminalSpawnRequest::new("shell"))
+            .await
+            .expect("spawn");
+        let delivered = service
+            .signal(&owner, spawned.session_id(), TerminalSignal::Sigint)
+            .await
+            .expect("signal");
+        assert!(delivered.delivered());
+        assert_eq!(delivered.target_pgid(), 1);
+        assert!(
+            service
+                .kill(&owner, spawned.session_id(), "test close")
+                .await
+                .expect("kill")
+        );
+        assert!(!service.has_owner_activity(&owner));
     }
 }
