@@ -774,6 +774,7 @@ fn lock_poison<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+#[cfg(unix)]
 fn unix_signal_number(name: &str) -> Option<i32> {
     match name {
         "SIGINT" => Some(libc::SIGINT),
@@ -845,11 +846,11 @@ impl ProcessInspectorInternals for DefaultInternals {
     }
 
     fn kill(&self, pid: i32, signal: &str) {
-        let Some(sig) = unix_signal_number(signal) else {
-            return;
-        };
         #[cfg(unix)]
         {
+            let Some(sig) = unix_signal_number(signal) else {
+                return;
+            };
             // SAFETY: pid is a live process or negated process-group id from this inspector;
             // ESRCH/EPERM are ignored so signal delivery stays idempotent.
             unsafe {
@@ -858,7 +859,7 @@ impl ProcessInspectorInternals for DefaultInternals {
         }
         #[cfg(not(unix))]
         {
-            let _ = (pid, sig);
+            let _ = (pid, signal);
         }
     }
 }
