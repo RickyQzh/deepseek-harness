@@ -1,5 +1,4 @@
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { once } from 'node:events'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join, relative, sep } from 'node:path'
@@ -10,6 +9,9 @@ import { runScenario, snapshotSpillRoot, type AgentUnderTest, type InputStep } f
 import { launchAcpTestAgent } from '../src/launcher.ts'
 
 const fsControl = vi.hoisted(() => ({ cleanupFailure: undefined as Error | undefined }))
+const rustSpawn = vi.hoisted(() => ({
+  last: undefined as { command: string; args: string[]; env: NodeJS.ProcessEnv | undefined } | undefined,
+}))
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
@@ -23,6 +25,25 @@ vi.mock('node:fs/promises', async (importOriginal) => {
         throw failure
       }
       await actual.rm(...args)
+    },
+  }
+})
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>()
+  return {
+    ...actual,
+    spawn(
+      command: string,
+      args?: readonly string[] | import('node:child_process').SpawnOptions,
+      options?: import('node:child_process').SpawnOptions,
+    ): ReturnType<typeof actual.spawn> {
+      if (process.env.DSH_RUNTIME === 'rust') {
+        const argv = Array.isArray(args) ? args.map(String) : []
+        const opts = Array.isArray(args) ? options : args
+        rustSpawn.last = { command, args: argv, env: opts?.env }
+      }
+      return actual.spawn(command, args as never, options as never)
     },
   }
 })
@@ -1270,32 +1291,24 @@ describe('launchAcpTestAgent rust runtime', () => {
     const dir = await mkdtemp(join(tmpdir(), 'acp-snap-rust-spawn-'))
     tempDirs.push(dir)
     const rustYaml = join(dir, 'rust.snapshot.cordis.yml')
-    const dumpPath = join(dir, 'cordis-config.dump')
-    const wrapper = join(dir, 'fake-rust-dsh')
-    const tsxLoader = import.meta.resolve('tsx')
+    const shouldNotWin = join(dir, 'should-not-win.yml')
     await writeFile(rustYaml, '# rust snapshot yaml\n')
-    await writeFile(wrapper, [
-      '#!/bin/sh',
-      'printf \'%s\\n\' "$DSH_CORDIS_CONFIG" > "$ACP_SNAPSHOT_CORDIS_DUMP"',
-      `exec ${JSON.stringify(process.execPath)} --import ${JSON.stringify(tsxLoader)} ${JSON.stringify(fakeAgent)}`,
-      '',
-    ].join('\n'))
-    await chmod(wrapper, 0o755)
+    // Windows CreateProcess ignores shebang; process.execPath is a PE there and an ELF here.
+    // `node --profile acp` exits 9 — assert the captured spawn, not an ACP handshake.
 
     const previousRuntime = process.env.DSH_RUNTIME
     const previousBin = process.env.DSH_RUNTIME_BIN
+    rustSpawn.last = undefined
     let launched: ReturnType<typeof launchAcpTestAgent> | undefined
     try {
       process.env.DSH_RUNTIME = 'rust'
-      process.env.DSH_RUNTIME_BIN = wrapper
+      process.env.DSH_RUNTIME_BIN = process.execPath
       launched = launchAcpTestAgent({
         agent: { ...AGENT, configPath: join(dir, 'cordis.yml') },
         cwd: dir,
         configPath: join(dir, 'overlay.cordis.yml'),
         env: {
-          DSH_CORDIS_CONFIG: join(dir, 'should-not-win.yml'),
-          ACP_SNAPSHOT_CORDIS_DUMP: dumpPath,
-          TSX_TSCONFIG_PATH: AGENT.tsconfigPath,
+          DSH_CORDIS_CONFIG: shouldNotWin,
         },
       })
     } finally {
@@ -1305,16 +1318,17 @@ describe('launchAcpTestAgent rust runtime', () => {
     if (launched === undefined) throw new Error('expected rust spawn to return a handle')
     try {
       await launched.spawned
-      expect(launched.child.spawnargs.slice(1)).toEqual(['--profile', 'acp'])
-      expect(launched.child.spawnargs).not.toContain('--config')
-      await vi.waitFor(async () => {
-        expect(existsSync(dumpPath)).toBe(true)
-        expect((await readFile(dumpPath, 'utf8')).trim()).toBe(rustYaml)
-      })
+      const captured = rustSpawn.last
+      expect(captured).toBeDefined()
+      expect(captured?.command).toBe(process.execPath)
+      expect(captured?.args).toEqual(['--profile', 'acp'])
+      expect(captured?.args).not.toContain('--config')
+      expect(captured?.command).not.toContain('--config')
+      expect(captured?.env?.DSH_CORDIS_CONFIG).toBe(rustYaml)
+      expect(captured?.env?.DSH_CORDIS_CONFIG).not.toBe(shouldNotWin)
       expect(dirname(rustYaml)).toBe(dir)
-      await launched.client.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
     } finally {
-      await launched?.close()
+      await launched.close()
     }
   })
 })
