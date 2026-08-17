@@ -11,8 +11,10 @@ use serde_json::{Map, Value};
 use tokio::process::Child;
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::spawn_stdio;
-use crate::sync::swap_generation;
+use crate::connection::{
+    ConnectionOutcome, ResolvedReconnectPolicy, StdioConnectSpec, resolve_reconnect_policy,
+    start_connection,
+};
 
 const CONFIG_KEYS: &[&str] = &[
     "transport",
@@ -43,12 +45,13 @@ struct StdioPluginConfig {
     cwd: String,
     tool_call_timeout_ms: u64,
     fail_on_startup_error: bool,
+    reconnect: ResolvedReconnectPolicy,
 }
 
 /// Register YAML `@deepseek-ai/dsh-mcp-client`.
 ///
 /// Parses stdio config, reserves `serverName` on the injected `tools` runtime,
-/// spawns the child, initializes, and registers tools under `mcp__` public names.
+/// starts the reconnect supervisor, and awaits the first generation `ready`.
 ///
 /// # Parameters
 ///
@@ -67,30 +70,40 @@ pub fn register(registry: &mut PluginRegistry) {
             let owned_names = Arc::new(Mutex::new(Vec::<String>::new()));
             let child_slot: Arc<AsyncMutex<Option<Child>>> = Arc::new(AsyncMutex::new(None));
             let release_name = parsed.server_name.clone();
-            let release_tools = Arc::clone(&tools);
-            let release_owned = Arc::clone(&owned_names);
-            let release_child = Arc::clone(&child_slot);
+            let spec = StdioConnectSpec {
+                server_name: parsed.server_name.clone(),
+                command: parsed.command,
+                args: parsed.args,
+                env: parsed.env,
+                cwd: parsed.cwd,
+                tool_call_timeout_ms: parsed.tool_call_timeout_ms,
+            };
+            let (ready, disposer) = start_connection(
+                spec,
+                parsed.reconnect,
+                Arc::clone(&tools),
+                Arc::clone(&owned_names),
+                Arc::clone(&child_slot),
+            );
             ctx.effect(move || async move {
+                disposer.dispose().await;
                 release_server_name(key, &release_name);
-                let names = release_owned
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone();
-                {
-                    let mut runtime = release_tools
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    for name in names {
-                        runtime.unregister(&name);
-                    }
-                }
-                let mut slot = release_child.lock().await;
-                if let Some(mut child) = slot.take() {
-                    let _ = child.start_kill();
-                    let _ = child.wait().await;
-                }
             })?;
-            connect_and_sync(parsed, tools, owned_names, child_slot).await
+            let outcome = ready.await.unwrap_or_else(|_| ConnectionOutcome {
+                error: Some(format!(
+                    "mcp-client({}): initial connection failed",
+                    parsed.server_name
+                )),
+            });
+            if let Some(err) = outcome.error {
+                if parsed.fail_on_startup_error {
+                    return Err(setup_err(format!(
+                        "mcp-client({}): initial connection or tool synchronization failed: {err}",
+                        parsed.server_name
+                    )));
+                }
+            }
+            Ok(())
         })
     });
     registry.register(dsh_boot::PLUGIN_MCP_CLIENT, setup);
@@ -155,6 +168,10 @@ fn parse_stdio_config(config: &Value) -> Result<StdioPluginConfig, String> {
         Some(Value::Bool(value)) => *value,
         Some(_) => return Err("mcp-client: failOnStartupError must be a boolean".into()),
     };
+    let reconnect = resolve_reconnect_policy(
+        map.get("reconnect"),
+        &format!("mcp-client({server_name}): reconnect"),
+    )?;
     Ok(StdioPluginConfig {
         server_name,
         command,
@@ -163,6 +180,7 @@ fn parse_stdio_config(config: &Value) -> Result<StdioPluginConfig, String> {
         cwd,
         tool_call_timeout_ms,
         fail_on_startup_error,
+        reconnect,
     })
 }
 
@@ -260,70 +278,5 @@ fn release_server_name(key: usize, name: &str) {
     };
     if empty {
         table.remove(&key);
-    }
-}
-
-fn startup_failed(
-    fail_on_startup_error: bool,
-    server_name: &str,
-    err: impl std::fmt::Display,
-) -> Result<(), KernelError> {
-    if fail_on_startup_error {
-        return Err(setup_err(format!(
-            "mcp-client({server_name}): initial connection or tool synchronization failed: {err}"
-        )));
-    }
-    eprintln!("mcp-client({server_name}): {err}");
-    Ok(())
-}
-
-async fn connect_and_sync(
-    parsed: StdioPluginConfig,
-    tools: Arc<Mutex<ToolRuntime>>,
-    owned_names: Arc<Mutex<Vec<String>>>,
-    child_slot: Arc<AsyncMutex<Option<Child>>>,
-) -> Result<(), KernelError> {
-    let cwd = if parsed.cwd.is_empty() {
-        None
-    } else {
-        Some(parsed.cwd.as_str())
-    };
-    let (mut session, child) = match spawn_stdio(&parsed.command, &parsed.args, &parsed.env, cwd) {
-        Ok(pair) => pair,
-        Err(err) => {
-            return startup_failed(parsed.fail_on_startup_error, &parsed.server_name, err);
-        }
-    };
-    *child_slot.lock().await = Some(child);
-    session.set_tool_call_timeout_ms(parsed.tool_call_timeout_ms);
-    if let Err(err) = session.initialize().await {
-        return startup_failed(parsed.fail_on_startup_error, &parsed.server_name, err);
-    }
-    let drafts = match session.list_tools().await {
-        Ok(drafts) => drafts,
-        Err(err) => {
-            return startup_failed(parsed.fail_on_startup_error, &parsed.server_name, err);
-        }
-    };
-    let names = {
-        let mut runtime = tools
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        swap_generation(
-            &session,
-            &mut runtime,
-            &parsed.server_name,
-            Vec::new(),
-            drafts,
-        )
-    };
-    match names {
-        Ok(names) => {
-            *owned_names
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = names;
-            Ok(())
-        }
-        Err(err) => startup_failed(parsed.fail_on_startup_error, &parsed.server_name, err),
     }
 }

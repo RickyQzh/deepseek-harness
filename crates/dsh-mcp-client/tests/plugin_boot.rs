@@ -47,6 +47,7 @@ fn kill_remaining_fixture_children() {
 
 #[tokio::test]
 async fn duplicate_server_name_fails_second_instance() {
+    let _lock = dsh_mcp_client::lock_stdio_fixture_tests().await;
     let command = env!("CARGO_BIN_EXE_dsh-mcp-fixture");
     let yaml = format!(
         "- name: '@deepseek-ai/dsh-tools'\n{}{}",

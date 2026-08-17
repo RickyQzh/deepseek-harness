@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 
 #[tokio::test]
 async fn stdio_child_add_round_trip() {
+    let _lock = dsh_mcp_client::lock_stdio_fixture_tests().await;
     let program = env!("CARGO_BIN_EXE_dsh-mcp-fixture");
     let (mut session, mut child) = spawn_stdio(program, &[], &[], None).expect("spawn fixture");
     session.initialize().await.expect("initialize");

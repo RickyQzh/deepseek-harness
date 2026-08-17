@@ -38,7 +38,12 @@ fn main() {
                 let Some(id) = id else {
                     continue;
                 };
+                let name = params.get("name").and_then(Value::as_str).unwrap_or("");
                 write_result(&mut writer, id, call_tool_result(&params));
+                if name == "crash" {
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                    std::process::exit(7);
+                }
             }
             _ => {}
         }
@@ -140,6 +145,11 @@ fn list_tools_result() -> Value {
                 "name": "fail",
                 "description": "Always returns an error.",
                 "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
+                "name": "crash",
+                "description": "Replies, then exits the server process (crash-recovery test).",
+                "inputSchema": { "type": "object", "properties": {} }
             }
         ]
     })
@@ -162,6 +172,9 @@ fn call_tool_result(params: &Value) -> Value {
         "fail" => json!({
             "content": [{ "type": "text", "text": "Something went wrong" }],
             "isError": true
+        }),
+        "crash" => json!({
+            "content": [{ "type": "text", "text": "crashing" }]
         }),
         _ => json!({
             "content": [{ "type": "text", "text": "unknown tool" }],
