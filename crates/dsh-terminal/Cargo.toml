@@ -15,6 +15,7 @@ dsh-kernel = { path = "../dsh-kernel" }
 dsh-session = { path = "../dsh-session" }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

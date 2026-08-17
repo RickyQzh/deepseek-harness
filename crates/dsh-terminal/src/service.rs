@@ -1260,13 +1260,15 @@ impl Future for SharedCloseWait {
             .inner
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        inner.wakers.push(cx.waker().clone());
         match &inner.result {
             Some(Ok(())) => std::task::Poll::Ready(Ok(())),
             Some(Err((message, code))) => {
                 std::task::Poll::Ready(Err(TerminalError::new(message.clone(), *code)))
             }
-            None => std::task::Poll::Pending,
+            None => {
+                inner.wakers.push(cx.waker().clone());
+                std::task::Poll::Pending
+            }
         }
     }
 }
@@ -1573,10 +1575,12 @@ impl TerminalSessionService {
 
     /// Close one owned session and remove it after backend cleanup.
     ///
-    /// Drops the inner mutex before awaiting the backend close future, then
-    /// re-locks to unpublish. The first closer awaits backend `close`, unpublishes,
-    /// and returns `true`. A concurrent closer awaits that same close and returns
-    /// `false`. After unpublish, a late kill is `unknown PTY session {id}`.
+    /// Drops the inner mutex before the close work. The first closer claims the
+    /// slot and `tokio::spawn`s backend `close`, unpublish (or clear-`closing` on
+    /// failure), and waiter completion; that task runs to completion if this
+    /// `kill` future is dropped. Every caller awaits the shared close: the first
+    /// returns `true` on success, and a concurrent closer returns `false`. After
+    /// unpublish, a late kill is `unknown PTY session {id}`.
     ///
     /// # Parameters
     ///
@@ -1615,37 +1619,41 @@ impl TerminalSessionService {
                 first = true;
             }
         }
-        if !first {
-            shared.wait().await?;
-            return Ok(false);
-        }
-        let session = session.expect("first closer owns the backend session");
-        let close_result = session.close(reason).await;
-        match &close_result {
-            Ok(()) => {
-                let mut inner = self.lock();
-                inner.sessions.remove(id);
-                inner.order.retain(|published| published != id);
-            }
-            Err(_) => {
-                let mut inner = self.lock();
-                if let Some(record) = inner.sessions.get_mut(id) {
-                    let still_ours = record
-                        .closing
-                        .as_ref()
-                        .is_some_and(|slot| Arc::ptr_eq(slot, &shared));
-                    if still_ours {
-                        record.closing = None;
+        if let Some(session) = session {
+            let reason = reason.to_string();
+            let id = id.clone();
+            let registry = Arc::clone(&self.inner);
+            let closer = Arc::clone(&shared);
+            let _close = tokio::spawn(async move {
+                let close_result = session.close(&reason).await;
+                match &close_result {
+                    Ok(()) => {
+                        let mut inner = registry.lock().unwrap_or_else(PoisonError::into_inner);
+                        inner.sessions.remove(&id);
+                        inner.order.retain(|published| published != &id);
+                    }
+                    Err(_) => {
+                        let mut inner = registry.lock().unwrap_or_else(PoisonError::into_inner);
+                        if let Some(record) = inner.sessions.get_mut(&id) {
+                            let still_ours = record
+                                .closing
+                                .as_ref()
+                                .is_some_and(|slot| Arc::ptr_eq(slot, &closer));
+                            if still_ours {
+                                record.closing = None;
+                            }
+                        }
                     }
                 }
-            }
+                let shared_result = match &close_result {
+                    Ok(()) => Ok(()),
+                    Err(err) => Err(TerminalError::new(err.to_string(), err.code())),
+                };
+                closer.complete(shared_result);
+            });
         }
-        let shared_result = match &close_result {
-            Ok(()) => Ok(()),
-            Err(err) => Err(TerminalError::new(err.to_string(), err.code())),
-        };
-        shared.complete(shared_result);
-        close_result.map(|()| true)
+        shared.wait().await?;
+        Ok(first)
     }
 
     /// List fresh snapshots for exactly one owner.
@@ -2144,6 +2152,70 @@ mod tests {
         assert!(first.await.expect("join first").expect("first kill"));
         let second = second.await.expect("join second").expect("second kill");
         assert!(!second);
+        let late = service
+            .kill(&owner, spawned.session_id(), "model request")
+            .await
+            .expect_err("unpublished");
+        assert_eq!(late.code(), TerminalErrorCode::NoSession);
+        assert_eq!(
+            late.to_string(),
+            format!("unknown PTY session {}", spawned.session_id())
+        );
+    }
+
+    #[tokio::test]
+    async fn dropped_first_kill_does_not_hang_later_close() {
+        let service = TerminalSessionService::new();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        service
+            .register_backend(
+                "held",
+                Arc::new(HoldClose {
+                    started: Arc::new(Mutex::new(Some(started_tx))),
+                    release: Arc::new(Mutex::new(Some(release_rx))),
+                }),
+            )
+            .expect("register held");
+        let owner = SessionId::new("owner-a");
+        let spawned = service
+            .spawn(owner.clone(), TerminalSpawnRequest::new("held"))
+            .await
+            .expect("spawn");
+        let first = tokio::spawn({
+            let service = service.clone();
+            let owner = owner.clone();
+            let id = spawned.session_id().clone();
+            async move { service.kill(&owner, &id, "model request").await }
+        });
+        tokio::time::timeout(Duration::from_secs(2), started_rx)
+            .await
+            .expect("first closer called backend close")
+            .expect("close started");
+        first.abort();
+        assert!(
+            first.await.expect_err("first kill cancelled").is_cancelled(),
+            "first kill task should be cancelled"
+        );
+        let _ = release_tx.send(());
+        let second = tokio::time::timeout(Duration::from_secs(2), async {
+            service
+                .kill(&owner, spawned.session_id(), "model request")
+                .await
+        })
+        .await
+        .expect("second kill must not hang after dropped first closer");
+        match second {
+            Ok(false) => {}
+            Err(err) => {
+                assert_eq!(err.code(), TerminalErrorCode::NoSession);
+                assert_eq!(
+                    err.to_string(),
+                    format!("unknown PTY session {}", spawned.session_id())
+                );
+            }
+            other => panic!("unexpected second kill result: {other:?}"),
+        }
         let late = service
             .kill(&owner, spawned.session_id(), "model request")
             .await
