@@ -6,6 +6,9 @@ mod pipeline;
 pub mod plugin;
 mod types;
 
+#[cfg(test)]
+mod phase8_mcp_exit;
+
 pub use error::{TOOL_ABORTED, TOOL_ABORTED_BEFORE_DISPATCH, ToolError};
 pub use freeze::{freeze_args, freeze_args_from_raw};
 pub use pipeline::{

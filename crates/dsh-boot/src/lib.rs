@@ -10,6 +10,9 @@ mod phase5_exit;
 #[cfg(test)]
 mod phase8_exit;
 
+#[cfg(test)]
+mod phase8_mcp_exit;
+
 pub use error::BootError;
 pub use mount::{boot_yaml, mount_entries, process_interpolate_env};
 pub use registry::{PluginRegistry, PluginSetup};

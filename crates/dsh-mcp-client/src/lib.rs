@@ -10,6 +10,9 @@ mod stdio;
 mod sync;
 
 #[cfg(test)]
+mod phase8_mcp_exit;
+
+#[cfg(test)]
 mod test_server;
 
 pub use client::{McpSession, McpToolDraft};

@@ -38,6 +38,9 @@ pub fn register_base_plugins(registry: &mut PluginRegistry) {
 mod phase6_exit;
 
 #[cfg(test)]
+mod phase8_mcp_exit;
+
+#[cfg(test)]
 mod tests {
     use super::register_base_plugins;
     use dsh_agent::{register_execution_plugins, register_spine_plugins};
