@@ -261,6 +261,13 @@ impl PrepareSnapshot {
     }
 }
 
+/// Why [`ToolRuntime::try_register`] refused a definition.
+#[derive(Debug, Eq, PartialEq)]
+pub enum RegisterError {
+    /// `definition.name` is already registered.
+    Duplicate(String),
+}
+
 /// Flat-map tool registry that runs the policy and dispatch pipeline.
 pub struct ToolRuntime {
     mode: ToolPresentationMode,
@@ -313,6 +320,26 @@ impl ToolRuntime {
                 is_concurrency_safe: definition.is_concurrency_safe.map(Arc::from),
             },
         );
+    }
+
+    /// Register `definition` only when `definition.name` is absent.
+    ///
+    /// Does not replace an existing tool. Use [`Self::register`] to overwrite.
+    ///
+    /// # Errors
+    ///
+    /// [`RegisterError::Duplicate`] when `definition.name` is already registered.
+    pub fn try_register(&mut self, definition: ToolDefinition) -> Result<(), RegisterError> {
+        if self.tools.contains_key(&definition.name) {
+            return Err(RegisterError::Duplicate(definition.name));
+        }
+        self.register(definition);
+        Ok(())
+    }
+
+    /// Remove `name`. Returns whether a tool was present.
+    pub fn unregister(&mut self, name: &str) -> bool {
+        self.tools.remove(name).is_some()
     }
 
     /// Model-facing names currently registered.
@@ -866,8 +893,9 @@ fn aborted_after_body() -> ToolExecutionResult {
 mod tests {
     use crate::{
         AbortFlag, ApprovalOutcome, Approver, PostToolDecision, PreToolDecision, RUN_CODE_NAME,
-        TOOL_ABORTED, TOOL_ABORTED_BEFORE_DISPATCH, ToolDefinition, ToolError, ToolExecutionInput,
-        ToolExecutionMode, ToolExecutionResult, ToolPresentationMode, ToolRuntime,
+        RegisterError, TOOL_ABORTED, TOOL_ABORTED_BEFORE_DISPATCH, ToolDefinition, ToolError,
+        ToolExecutionInput, ToolExecutionMode, ToolExecutionResult, ToolPresentationMode,
+        ToolRuntime,
     };
     use dsh_session::{
         CallId, ContentBlock, SESSION_FORMAT_VERSION, Session, SessionHeader, SessionId,
@@ -891,6 +919,17 @@ mod tests {
                     text: format!("echo: {}", value.as_str().unwrap_or("")),
                 }]
             }),
+            is_concurrency_safe: None,
+        }
+    }
+
+    fn dummy(name: &str) -> ToolDefinition {
+        ToolDefinition {
+            name: name.into(),
+            description: name.into(),
+            parameters: json!({}),
+            execute: Box::new(|_args, _exec| Box::pin(async move { Ok(json!({})) })),
+            render: Box::new(|_args, _value| vec![]),
             is_concurrency_safe: None,
         }
     }
@@ -1352,5 +1391,32 @@ mod tests {
         };
         let _ = ToolError::UnknownTool("ghost".into());
         assert_eq!(RUN_CODE_NAME, "run_code");
+    }
+
+    #[test]
+    fn try_register_rejects_duplicate_name() {
+        let mut tools = ToolRuntime::new(ToolPresentationMode::Native);
+        let def = dummy("dup");
+        tools.try_register(def).expect("first");
+        let err = tools.try_register(dummy("dup")).expect_err("dup");
+        assert!(matches!(err, RegisterError::Duplicate(name) if name == "dup"));
+        assert_eq!(tools.registered_names(), vec!["dup".to_string()]);
+    }
+
+    #[test]
+    fn unregister_removes_name() {
+        let mut tools = ToolRuntime::new(ToolPresentationMode::Native);
+        tools.try_register(dummy("gone")).unwrap();
+        assert!(tools.unregister("gone"));
+        assert!(!tools.unregister("gone"));
+        assert!(tools.registered_names().is_empty());
+    }
+
+    #[test]
+    fn register_still_overwrites_duplicate_name() {
+        let mut tools = ToolRuntime::new(ToolPresentationMode::Native);
+        tools.register(dummy("x"));
+        tools.register(dummy("x"));
+        assert_eq!(tools.registered_names(), vec!["x".to_string()]);
     }
 }

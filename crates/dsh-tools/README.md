@@ -8,7 +8,7 @@ Tool execution types, lossless-JSON argument freeze, and the pre-execute / appro
 
 `freeze_args` clones a `serde_json::Value` so policy listeners receive a detached copy. `freeze_args_from_raw` maps an empty model string to `{}` and keeps invalid JSON as a string, matching the TypeScript loop's `parseArguments`. Product call ids are `dsh_session::CallId`. `ToolRuntime` `Clone` copies registered tools, pre/post listeners, mode, and `next_token`, and drops Box guards and the `Approver`. Ask with no `Approver` denies with `tool "{name}" requires approval, but no approval channel is available`. `set_approver` installs the session-aware decision path; `set_approval` wraps a session-free hook.
 
-`plugin::register` provides `tools` as an empty native `ToolRuntime`. `registered_names` returns the sorted model-facing names currently registered.
+`plugin::register` provides `tools` as an empty native `ToolRuntime`. `register` overwrites a duplicate name; `try_register` leaves the existing tool and returns `RegisterError::Duplicate`; `unregister` removes a name and returns whether it was present. `registered_names` returns the sorted model-facing names currently registered.
 
 ## Known Limitations and Deferred Work
 
