@@ -65,8 +65,7 @@ impl LocalSubprocessRuntime {
 
     /// Spawn one POSIX PTY child and retain a clone until [`Self::dispose`].
     ///
-    /// Inspect, signal, and terminate are omitted. `dispose` drops tracked clones and does not
-    /// wait for PTY children. Last-handle drop closes the PTY master and signals the child.
+    /// `dispose` calls [`SubprocessTerminalHandle::terminate`] on each tracked handle.
     ///
     /// # Parameters
     ///
@@ -91,11 +90,10 @@ impl LocalSubprocessRuntime {
         Ok(handle)
     }
 
-    /// Terminate every live pipe tree and drop tracked PTY handle clones.
+    /// Terminate every live pipe tree and every tracked PTY session.
     ///
-    /// Pipe trees receive SIGTERM then SIGKILL after `grace_ms`, then `wait_for_exit`. PTY
-    /// inspect/signal/terminate are omitted, so this method does not wait for PTY children.
-    /// Dropping the last handle closes the PTY master and signals the child.
+    /// Pipe trees receive SIGTERM then SIGKILL after `grace_ms`, then `wait_for_exit`. Each PTY
+    /// handle is [`SubprocessTerminalHandle::terminate`]d and awaited.
     ///
     /// # Parameters
     ///
@@ -125,7 +123,9 @@ impl LocalSubprocessRuntime {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             std::mem::take(&mut *live)
         };
-        drop(terminals);
+        for terminal in &terminals {
+            let _ = terminal.terminate().await;
+        }
     }
 }
 
@@ -215,5 +215,45 @@ mod tests {
         let path = rt.resolve_executable("true", None).await.unwrap();
         assert!(path.ends_with("/true") || path.ends_with("/true.exe"));
         assert!(std::path::Path::new(&path).is_absolute());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dispose_terminates_tracked_pty() {
+        use crate::inspector::create_process_inspector;
+        use crate::terminal::SubprocessTerminalSpawnSpec;
+        use std::path::PathBuf;
+        use std::time::Duration;
+
+        let _guard = crate::terminal::lock_pty_tests().await;
+        let rt = LocalSubprocessRuntime::new();
+        let spec = SubprocessTerminalSpawnSpec::new(
+            vec!["/bin/sh".into(), "-c".into(), "sleep 60; true".into()],
+            PathBuf::from("/"),
+            Vec::new(),
+            40,
+            160,
+            3_000,
+        )
+        .unwrap();
+        let handle = rt.spawn_terminal(spec).unwrap();
+        let inspector = create_process_inspector().unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut sleep_identity = None;
+        while tokio::time::Instant::now() < deadline {
+            let tree = inspector.process_tree(handle.pid());
+            if let Some(child) = tree.into_iter().find(|member| member.pid() != handle.pid()) {
+                sleep_identity = Some(child);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let sleep_identity = sleep_identity.expect("sleep descendant");
+        rt.dispose().await;
+        tokio::time::timeout(Duration::from_secs(5), handle.done())
+            .await
+            .expect("done")
+            .unwrap();
+        assert!(!inspector.is_alive(&sleep_identity));
     }
 }

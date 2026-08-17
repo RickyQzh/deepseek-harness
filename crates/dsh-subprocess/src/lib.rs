@@ -23,7 +23,10 @@ pub use inspector::{
 };
 pub use runtime::LocalSubprocessRuntime;
 pub use spawn::{SubprocessHandle, kill_group, spawn_subprocess, spawn_subprocess_with_spill_dir};
-pub use terminal::{SubprocessTerminalHandle, SubprocessTerminalSpawnSpec, spawn_terminal};
+pub use terminal::{
+    SubprocessTerminalForeground, SubprocessTerminalHandle, SubprocessTerminalSpawnSpec,
+    spawn_terminal,
+};
 pub use types::{
     CollectedOutput, SubprocessCollect, SubprocessOutcome, SubprocessOutput, SubprocessOutputRead,
     SubprocessSpawnSpec, SubprocessStdin, SubprocessStdio,

@@ -41,4 +41,28 @@ pub enum SubprocessError {
         /// OS name that has no inspector (`std::env::consts::OS` or a test platform string).
         platform: String,
     },
+    /// `SIGKILL` targeted the terminal shell's own process group.
+    #[error("refusing to SIGKILL the terminal shell; terminate the terminal session instead")]
+    RefusingSigkillShell,
+    /// Foreground process group could not be resolved for `signal_foreground`.
+    #[error("cannot resolve foreground process group for terminal {pid}")]
+    CannotResolveForeground {
+        /// Top-level PTY child pid interpolated into the error Display.
+        pid: i32,
+    },
+    /// A PTY write ran after the top-level child had already exited.
+    #[error("terminal process has exited")]
+    TerminalExited,
+    /// `terminate` found live descendant identities after SIGKILL.
+    #[error("terminal cleanup failed; surviving pids: {pids}")]
+    TerminalCleanupSurvivingPids {
+        /// Comma-separated descendant pids that remained non-zombie.
+        pids: String,
+    },
+    /// `terminate` found the top-level PTY child still running after SIGKILL.
+    #[error("terminal cleanup failed; surviving pid: {pid}")]
+    TerminalCleanupSurvivingPid {
+        /// Top-level PTY child pid that ignored SIGTERM and SIGKILL.
+        pid: i32,
+    },
 }

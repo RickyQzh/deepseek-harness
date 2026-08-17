@@ -1609,21 +1609,4 @@ mod tests {
             }
         }
     }
-
-    #[test]
-    fn terminal_handle_does_not_expose_inspect_signal_terminate() {
-        let terminal = include_str!("terminal.rs");
-        assert!(
-            !terminal.contains("fn inspect_foreground"),
-            "inspect_foreground is not a SubprocessTerminalHandle method"
-        );
-        assert!(
-            !terminal.contains("fn signal_foreground"),
-            "signal_foreground is not a SubprocessTerminalHandle method"
-        );
-        assert!(
-            !terminal.contains("fn terminate"),
-            "terminate is not a SubprocessTerminalHandle method"
-        );
-    }
 }
