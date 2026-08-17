@@ -19,6 +19,7 @@ pub use client::{McpSession, McpToolDraft};
 pub use name::public_tool_name;
 pub use result::extract_text;
 pub use rpc::{McpRpcError, encode_frame, read_frame};
+pub use stdio::{StdioSpawnError, spawn_stdio, stdio_child_env, stdio_command};
 
 /// Register YAML `@deepseek-ai/dsh-mcp-client`. Setup returns `Ok(())` without connecting.
 pub fn register(registry: &mut dsh_boot::PluginRegistry) {

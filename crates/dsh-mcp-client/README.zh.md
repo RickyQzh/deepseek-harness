@@ -6,7 +6,7 @@ DeepSeek Harness Rust 宿主的 MCP 客户端。本 crate 是作为 MCP 客户�
 
 `register` 挂载 YAML `@deepseek-ai/dsh-mcp-client`（`dsh_boot::PLUGIN_MCP_CLIENT`）。`register_mcp_plugins` 调用 `register`。插件 setup 返回 `Ok(())`，不建立连接。
 
-`McpSession` 发送 `initialize`（`protocolVersion` 为 `2025-03-26`，`capabilities` 为 `{}`，`clientInfo` 为 `dsh-mcp-client`/`0.0.1`），随后发送通知 `notifications/initialized`（有 method、无 `id`）；`list_tools` 重复 `tools/list` 直到 `nextCursor` 缺席；`call_tool` 在 `tools/call` 上发送原始 MCP 名称。`McpToolDraft` 访问器返回列出的名称、描述、输入 schema，以及 `task_required`（仅当服务器声明 execution taskSupport 为 `required` 时为 true）。`McpSession::from_stdio` 绑定已打开的服务器 stdout 与 stdin 字节流。
+`McpSession` 发送 `initialize`（`protocolVersion` 为 `2025-03-26`，`capabilities` 为 `{}`，`clientInfo` 为 `dsh-mcp-client`/`0.0.1`），随后发送通知 `notifications/initialized`（有 method、无 `id`）；`list_tools` 重复 `tools/list` 直到 `nextCursor` 缺席；`call_tool` 在 `tools/call` 上发送原始 MCP 名称。`McpToolDraft` 访问器返回列出的名称、描述、输入 schema，以及 `task_required`（仅当服务器声明 execution taskSupport 为 `required` 时为 true）。`McpSession::from_stdio` 绑定已打开的服务器 stdout 与 stdin 字节流。`stdio_child_env` 是对 `config.env` overlay 调用 `dsh_subprocess::child_env`，因此父进程中形似凭据的名称（如 `DEEPSEEK_API_KEY`）不会出现，除非 overlay 将其恢复。`stdio_command` 构建 `Command::new(program).args(args)`（不经过 shell），并使用 `env_clear().envs(env)`；`cwd` 为空或省略时继承。`spawn_stdio` 按该命令 spawn，取出子进程 stdin（写入）与 stdout（读取），并用 `from_stdio` 包装。
 
 `public_tool_name(server_name, raw_name)` 是 TypeScript `publicToolName(serverName, rawName)`：当 `mcp__<serverName>__<rawName>` 已满足 `[A-Za-z0-9_-]` 且长度不超过 64 时原样返回；否则把字符集规范化后的形式截到 51 个字符，再追加 `_` 与 `serverName + NUL + rawName` 的 12 位十六进制 SHA-256。`extract_text` 用换行拼接 MCP `text` 块，并把 image、audio、resource 及其他块换成占位符；空内容为 `(<tool_name> returned no text content)`。
 
