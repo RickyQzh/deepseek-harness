@@ -456,8 +456,11 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "dsh-agent",
+ "dsh-base",
+ "dsh-boot",
  "dsh-commands",
  "dsh-credentials",
+ "dsh-kernel",
  "dsh-llm",
  "dsh-rpc",
  "dsh-session",

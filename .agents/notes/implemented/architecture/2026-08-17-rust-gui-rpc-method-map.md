@@ -36,4 +36,4 @@ The wire freeze, including slash-namespace 404 and the privileged set, remains i
 
 ## Consequences
 
-Uninstalled slash namespaces degrade the TypeScript UI instead of dual-running a fake host. Privileged `settings.describe` from a trusted non-loopback Host stays HTTP 403. `web.cordis.yml` and `dsh-cli web` remain later Phase 7 tasks.
+Uninstalled slash namespaces degrade the TypeScript UI instead of dual-running a fake host. Privileged `settings.describe` from a trusted non-loopback Host stays HTTP 403. The bundled `web.cordis.yml` graph is owned by [the web plugin graph note](2026-08-17-rust-web-plugin-graph.md); `dsh-cli web` remains a later Phase 7 task.

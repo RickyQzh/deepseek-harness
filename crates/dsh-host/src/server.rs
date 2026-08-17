@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::Router;
 use axum::body::Bytes;
@@ -151,8 +151,8 @@ impl HostState {
 pub struct ListeningHost {
     local_addr: SocketAddr,
     hub: DownlinkHub,
-    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
-    join: Option<tokio::task::JoinHandle<Result<(), std::io::Error>>>,
+    shutdown: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    join: Mutex<Option<tokio::task::JoinHandle<Result<(), std::io::Error>>>>,
 }
 
 impl ListeningHost {
@@ -169,11 +169,13 @@ impl ListeningHost {
     }
 
     /// Stop accepting and wait for in-flight requests to finish.
-    pub async fn shutdown(mut self) {
-        if let Some(tx) = self.shutdown.take() {
+    pub async fn shutdown(&self) {
+        let tx = self.shutdown.lock().expect("listeningHost").take();
+        if let Some(tx) = tx {
             let _ = tx.send(());
         }
-        if let Some(join) = self.join.take() {
+        let join = self.join.lock().expect("listeningHost").take();
+        if let Some(join) = join {
             let _ = join.await;
         }
     }
@@ -201,8 +203,8 @@ pub async fn serve(state: HostState) -> Result<ListeningHost, HostError> {
     Ok(ListeningHost {
         local_addr,
         hub,
-        shutdown: Some(shutdown_tx),
-        join: Some(join),
+        shutdown: Mutex::new(Some(shutdown_tx)),
+        join: Mutex::new(Some(join)),
     })
 }
 

@@ -11,8 +11,10 @@ repository.workspace = true
 [dependencies]
 axum = { workspace = true }
 dsh-agent = { path = "../dsh-agent" }
+dsh-boot = { path = "../dsh-boot" }
 dsh-commands = { path = "../dsh-commands" }
 dsh-credentials = { path = "../dsh-credentials" }
+dsh-kernel = { path = "../dsh-kernel" }
 dsh-rpc = { path = "../dsh-rpc" }
 dsh-session = { path = "../dsh-session" }
 dsh-session-persist = { path = "../dsh-session-persist" }
@@ -27,6 +29,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+dsh-base = { path = "../dsh-base" }
 dsh-llm = { path = "../dsh-llm" }
 dsh-system-prompt = { path = "../dsh-system-prompt" }
 dsh-tools = { path = "../dsh-tools" }

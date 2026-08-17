@@ -36,4 +36,4 @@ slash Remote 只有 payload 为 `{ args }` 的 `commands/list` 与 `commands/exe
 
 ## 后果
 
-未安装的 slash 命名空间会让 TypeScript UI 降级，而不是与假宿主双跑。来自受信任非 loopback Host 的特权 `settings.describe` 仍是 HTTP 403。`web.cordis.yml` 与 `dsh-cli web` 仍是后续第 7 阶段任务。
+未安装的 slash 命名空间会让 TypeScript UI 降级，而不是与假宿主双跑。来自受信任非 loopback Host 的特权 `settings.describe` 仍是 HTTP 403。捆绑的 `web.cordis.yml` 图由[web 插件图笔记](2026-08-17-rust-web-plugin-graph.md)持有；`dsh-cli web` 仍是后续第 7 阶段任务。

@@ -21,6 +21,8 @@ DeepSeek Harness Rust 进程的 GUI 宿主 crate。它只在 `127.0.0.1` 上绑�
 
 `inject_boot_manifest` 在 `</head>`（任意大小写）之前插入 `<script>window.__DSH_BOOT__ = {…}</script>`；若没有该标签则前置。JSON 序列化之后，每个 `<` 都会替换为 `\u003c`。每条记录的 `url` 是 `/plugins/<id>/client.js?rev=<hex>`。条目 `rev` 是该包 `lib/client.js` 字节的小写十六进制 SHA-256。图的 `rev` 是按 `id` 排序后，将每条记录的 `id` 再接 `rev` 做 UTF-8 拼接，再取小写十六进制 SHA-256。
 
+`WEB_YAML` 即 `web.cordis.yml`：第 6 阶段无头 base 行去掉 `headless-startup`、`headless-runner`、`headless-auto-approve` 与 `sdk-jsonrpc-server`，再加上 `@deepseek-ai/dsh-workspace`、`@deepseek-ai/dsh-settings`、`@deepseek-ai/dsh-commands`、`@deepseek-ai/dsh-host-webserver`（`host` 为 `127.0.0.1`，`port` 为 `3080`）、`@deepseek-ai/dsh-host-frontend-static`、`@deepseek-ai/dsh-client-modules` 与 `web-app`（`printUrl: true`）。文件中没有 `!!js`。用户审批 `policy` 为 `ask`。保留 mock LLM（大语言模型）行，以便无密钥启动也能挂载。`register_host_plugins` 只注册这七个名字；启动该图的调用方还要自行调用 `register_spine_plugins`、`register_execution_plugins` 与 `register_base_plugins`。host-webserver 提供 `hostBind`（`HostBind`；主机不是 `127.0.0.1` 时加载失败）。frontend-static 要求配置 `dist` 为已存在的目录，并提供 `webDist`。client-modules 要求配置 `dir` 为已存在的目录（空目录得到空图），并提供 `clientPackages`。`web-app` 注入上述服务以及 `agents` 与 `sessions`，可选地 `get` `workspaces` / `settings` / `commands` / `credentials` / `skills`，经 `HostState` 用 `GuiHandler` 提供服务，在 `printUrl` 为 true（默认）时通过 `WebIo`（若提供了 `webIo` 则用它，否则用进程 stdout）打印 `dsh web: http://127.0.0.1:<bound-port>`，并提供 `listeningHost`。测试通过 `WebIo::capture()` / `take_stdout()` 捕获。
+
 本 crate 依赖 `dsh-rpc` 的信封类型与访问器（`rpc_id`、`method`、`payload`、`result`、`as_ok`）。它不依赖 `dsh-cli` 或 `dsh-headless`。`dsh-agent` 不得依赖本 crate。
 
 ## 已知限制与暂缓事项
@@ -29,4 +31,4 @@ DeepSeek Harness Rust 进程的 GUI 宿主 crate。它只在 `127.0.0.1` 上绑�
 - 第 7 阶段的 slash Remote 只有 `commands/list` 与 `commands/execute`；其它 `/api/foo/bar`（含 `goals/create`）为 HTTP 404。点分 `goal.*` 回答 `internal`，消息为 `goals are not implemented in Phase 7`。
 - `POST /api/respond` 把回执存在 `RespondTable` 中，不会恢复 `dsh-user-approval` 瀑布，也不会发布 `approval/requested` mux 帧。
 - `StubHandler` 只回答 `host.describe`；`GuiHandler` 承担第 7 阶段其余 dotted 映射。`host.openPath` 仍不可用（`canOpenPath` 为 false）。`subagent.list` 返回 `{ items: [] }`，不发明 ACP（Agent Client Protocol）。
-- Web 组合的 plugin YAML 名称作为字符串常量放在 `dsh-boot`；本 crate 尚未注册它们。
+- `WEB_YAML` 省略 frontend-static 的 `dist` 与 client-modules 的 `dir`；在配置给出已存在的目录之前，这些行会加载失败。持久化插件仍需要 `DSH_HOME` / `DSH_SESSION_ROOT`，或它们的 `path` / `dir` / `root` 配置。`dsh web` 不在本 crate 中。
