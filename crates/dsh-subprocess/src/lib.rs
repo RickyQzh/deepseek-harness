@@ -13,6 +13,9 @@ mod types;
 #[cfg(test)]
 mod phase4_exit;
 
+#[cfg(test)]
+mod phase8_pty_exit;
+
 pub use collect::OutputCollector;
 pub use env::{DSH_ENV_PREFIX, EnvEntry, child_env, scrubbed_parent_env, sensitive_env_name};
 pub use error::{MAX_GRACE_MS, SubprocessError};

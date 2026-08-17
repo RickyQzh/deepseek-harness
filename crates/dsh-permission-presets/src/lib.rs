@@ -6,6 +6,9 @@ mod service;
 #[cfg(test)]
 mod phase6_exit;
 
+#[cfg(test)]
+mod phase8_pty_exit;
+
 pub use service::{
     CUSTOM_PRESET, PermissionError, PermissionPresetConfig, PermissionPresetService, PresetSpec,
     effective_permission_preset, effective_sandbox_mode, set_sandbox_mode,

@@ -4,6 +4,9 @@ pub mod plugin;
 mod render;
 mod tools;
 
+#[cfg(test)]
+mod phase8_pty_exit;
+
 pub use plugin::register;
 pub use render::{
     PresentCall, RenderedReadResult, RenderedSendRead, RenderedSendResult, RenderedSessionSnapshot,

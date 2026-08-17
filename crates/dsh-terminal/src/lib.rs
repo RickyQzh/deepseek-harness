@@ -5,6 +5,9 @@ mod plugin;
 mod service;
 mod snapshot;
 
+#[cfg(test)]
+mod phase8_pty_exit;
+
 pub use id::{TerminalSessionId, TerminalSessionIdTag};
 pub use plugin::{register, register_snapshot_backend, register_terminal_plugins};
 pub use service::{

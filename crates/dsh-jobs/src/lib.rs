@@ -5,6 +5,9 @@
 pub mod brand;
 pub mod types;
 
+#[cfg(test)]
+mod phase8_pty_exit;
+
 pub use brand::{JobId, JobIdTag};
 pub use types::{
     JobError, JobHooks, JobKind, JobOutcome, JobRead, JobRegistry, JobSnapshot, JobStart,
