@@ -1,6 +1,7 @@
 //! Ordered prompt assembly, tool order, and context-snapshot helpers.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::PromptError;
 use crate::interpolate::{interpolate, is_variable_name};
@@ -187,9 +188,7 @@ pub fn render_context_snapshot(assembly: &PromptAssembly) -> Result<String, Prom
     Ok(join_context_sections(&render_context_sections(assembly)?))
 }
 
-/// Registry for ordered sections, contexts, tools, variables, and assemble listeners.
-#[derive(Clone)]
-pub struct SystemPrompt {
+struct Inner {
     sections: Vec<PromptSection>,
     contexts: Vec<PromptContext>,
     variables: BTreeMap<String, fn(&AssembleContext) -> Option<String>>,
@@ -199,7 +198,19 @@ pub struct SystemPrompt {
     runtime_context_suppressed: bool,
 }
 
+/// Registry for ordered sections, contexts, tools, variables, and assemble listeners.
+///
+/// [`Clone`] shares the live registry so later [`Self::section`] calls stay visible to [`Self::assemble`].
+#[derive(Clone)]
+pub struct SystemPrompt {
+    inner: Arc<Mutex<Inner>>,
+}
+
 impl SystemPrompt {
+    fn lock(&self) -> MutexGuard<'_, Inner> {
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Register harness identity (when configured), the persona, and optional context suppression.
     ///
     /// # Errors
@@ -207,14 +218,16 @@ impl SystemPrompt {
     /// Returns when `tool_order` lists a name more than once or omits [`TOOL_ORDER_REST`].
     pub fn new(config: SystemPromptConfig) -> Result<Self, PromptError> {
         let tool_order = validate_tool_order(config.tool_order)?;
-        let mut prompt = Self {
-            sections: Vec::new(),
-            contexts: Vec::new(),
-            variables: BTreeMap::new(),
-            tool_providers: Vec::new(),
-            assemble_listeners: Vec::new(),
-            tool_order,
-            runtime_context_suppressed: false,
+        let prompt = Self {
+            inner: Arc::new(Mutex::new(Inner {
+                sections: Vec::new(),
+                contexts: Vec::new(),
+                variables: BTreeMap::new(),
+                tool_providers: Vec::new(),
+                assemble_listeners: Vec::new(),
+                tool_order,
+                runtime_context_suppressed: false,
+            })),
         };
         if config.include_harness_identity {
             prompt.section(PromptSection {
@@ -241,8 +254,9 @@ impl SystemPrompt {
     /// # Errors
     ///
     /// Returns when a section with the same name is already registered.
-    pub fn section(&mut self, section: PromptSection) -> Result<(), PromptError> {
-        if self
+    pub fn section(&self, section: PromptSection) -> Result<(), PromptError> {
+        let mut inner = self.lock();
+        if inner
             .sections
             .iter()
             .any(|existing| existing.name == section.name)
@@ -252,7 +266,7 @@ impl SystemPrompt {
                 section.name
             )));
         }
-        self.sections.push(section);
+        inner.sections.push(section);
         Ok(())
     }
 
@@ -261,8 +275,9 @@ impl SystemPrompt {
     /// # Errors
     ///
     /// Returns when a context with the same name is already registered.
-    pub fn context(&mut self, context: PromptContext) -> Result<(), PromptError> {
-        if self
+    pub fn context(&self, context: PromptContext) -> Result<(), PromptError> {
+        let mut inner = self.lock();
+        if inner
             .contexts
             .iter()
             .any(|existing| existing.name == context.name)
@@ -272,18 +287,18 @@ impl SystemPrompt {
                 context.name
             )));
         }
-        self.contexts.push(context);
+        inner.contexts.push(context);
         Ok(())
     }
 
     /// Drop every runtime-context contribution from later assemblies.
-    pub fn suppress_runtime_context(&mut self) {
-        self.runtime_context_suppressed = true;
+    pub fn suppress_runtime_context(&self) {
+        self.lock().runtime_context_suppressed = true;
     }
 
     /// Register a tool-schema provider evaluated at each assemble.
-    pub fn tools(&mut self, provider: fn(&AssembleContext) -> Vec<ToolSchema>) {
-        self.tool_providers.push(provider);
+    pub fn tools(&self, provider: fn(&AssembleContext) -> Vec<ToolSchema>) {
+        self.lock().tool_providers.push(provider);
     }
 
     /// Register a prompt variable. Duplicate or invalid names fail.
@@ -292,7 +307,7 @@ impl SystemPrompt {
     ///
     /// Returns when `name` fails `^[a-z][a-z0-9_]*$` or is already registered.
     pub fn variable(
-        &mut self,
+        &self,
         name: &str,
         provider: fn(&AssembleContext) -> Option<String>,
     ) -> Result<(), PromptError> {
@@ -301,21 +316,19 @@ impl SystemPrompt {
                 "invalid prompt variable name \"{name}\" (must match /^[a-z][a-z0-9_]*$/)"
             )));
         }
-        if self.variables.contains_key(name) {
+        let mut inner = self.lock();
+        if inner.variables.contains_key(name) {
             return Err(PromptError::Invalid(format!(
                 "prompt variable \"{name}\" is already registered"
             )));
         }
-        self.variables.insert(name.to_string(), provider);
+        inner.variables.insert(name.to_string(), provider);
         Ok(())
     }
 
     /// Append an assemble listener. Listeners run left-to-right; the returned assembly is authoritative.
-    pub fn on_assemble(
-        &mut self,
-        listener: fn(PromptAssembly, &AssembleContext) -> PromptAssembly,
-    ) {
-        self.assemble_listeners.push(listener);
+    pub fn on_assemble(&self, listener: fn(PromptAssembly, &AssembleContext) -> PromptAssembly) {
+        self.lock().assemble_listeners.push(listener);
     }
 
     /// Evaluate providers, order tools, run listeners, then restore a complete section when present.
@@ -328,12 +341,13 @@ impl SystemPrompt {
     /// Returns when more than one complete section is active, a tool provider uses
     /// [`TOOL_ORDER_REST`] as a tool name, or `tool_order` lists unknown names.
     pub fn assemble(&self, context: &AssembleContext) -> Result<PromptAssembly, PromptError> {
+        let inner = self.lock();
         let mut variables = BTreeMap::new();
-        for (name, provider) in &self.variables {
+        for (name, provider) in &inner.variables {
             variables.insert(name.clone(), provider(context));
         }
 
-        let mut section_defs: Vec<&PromptSection> = self.sections.iter().collect();
+        let mut section_defs: Vec<&PromptSection> = inner.sections.iter().collect();
         section_defs.sort_by_key(|section| section.order);
         let complete_defs: Vec<&&PromptSection> = section_defs
             .iter()
@@ -365,10 +379,10 @@ impl SystemPrompt {
             })
             .collect();
 
-        let contexts = if self.runtime_context_suppressed {
+        let contexts = if inner.runtime_context_suppressed {
             Vec::new()
         } else {
-            let mut context_defs: Vec<&PromptContext> = self.contexts.iter().collect();
+            let mut context_defs: Vec<&PromptContext> = inner.contexts.iter().collect();
             context_defs.sort_by_key(|entry| entry.order);
             context_defs
                 .iter()
@@ -380,10 +394,10 @@ impl SystemPrompt {
         };
 
         let mut collected = Vec::new();
-        for provider in &self.tool_providers {
+        for provider in &inner.tool_providers {
             collected.extend(provider(context));
         }
-        let tools = order_tools(collected, self.tool_order.as_deref())?;
+        let tools = order_tools(collected, inner.tool_order.as_deref())?;
 
         let mut assembly = PromptAssembly {
             sections,
@@ -391,17 +405,17 @@ impl SystemPrompt {
             tools,
             variables,
         };
-        for listener in &self.assemble_listeners {
+        for listener in &inner.assemble_listeners {
             assembly = listener(assembly, context);
         }
 
-        if complete_section.is_none() && !self.runtime_context_suppressed {
+        if complete_section.is_none() && !inner.runtime_context_suppressed {
             return Ok(assembly);
         }
         if let Some(complete) = complete_section {
             assembly.sections = vec![complete];
         }
-        if self.runtime_context_suppressed {
+        if inner.runtime_context_suppressed {
             assembly.contexts = Vec::new();
         }
         Ok(assembly)
@@ -522,7 +536,7 @@ mod tests {
 
     #[test]
     fn identity_then_persona_then_guidance() {
-        let mut sp = prompt("You are a test agent on {{model}}.");
+        let sp = prompt("You are a test agent on {{model}}.");
         sp.section(PromptSection {
             name: "tool:noop".into(),
             order: 100,
@@ -542,7 +556,7 @@ mod tests {
 
     #[test]
     fn snapshot_prefix_and_identity_skip_when_unchanged_is_join_only() {
-        let mut sp = prompt("");
+        let sp = prompt("");
         sp.context(PromptContext {
             name: "cwd".into(),
             order: 0,
@@ -566,7 +580,7 @@ mod tests {
 
     #[test]
     fn tool_order_inserts_rest_lexicographically() {
-        let mut sp = SystemPrompt::new(SystemPromptConfig {
+        let sp = SystemPrompt::new(SystemPromptConfig {
             tool_order: Some(vec!["zeta".into(), TOOL_ORDER_REST.into(), "alpha".into()]),
             ..SystemPromptConfig::default()
         })
@@ -584,7 +598,7 @@ mod tests {
 
     #[test]
     fn omitted_tool_order_is_lexicographic() {
-        let mut sp = prompt("");
+        let sp = prompt("");
         sp.tools(|_| vec![tool("zeta"), tool("alpha")]);
         let names: Vec<_> = sp
             .assemble(&AssembleContext::default())
@@ -598,7 +612,7 @@ mod tests {
 
     #[test]
     fn complete_section_is_restored_after_listeners() {
-        let mut sp = prompt("");
+        let sp = prompt("");
         sp.section(PromptSection {
             name: "only".into(),
             order: 50,
@@ -621,7 +635,7 @@ mod tests {
 
     #[test]
     fn two_complete_sections_fail() {
-        let mut sp = prompt("");
+        let sp = prompt("");
         sp.section(PromptSection {
             name: "a".into(),
             order: 1,
@@ -649,7 +663,7 @@ mod tests {
 
     #[test]
     fn suppress_runtime_context_drops_contexts() {
-        let mut sp = SystemPrompt::new(SystemPromptConfig {
+        let sp = SystemPrompt::new(SystemPromptConfig {
             include_runtime_context: false,
             ..SystemPromptConfig::default()
         })
@@ -673,6 +687,27 @@ mod tests {
                 .sections
                 .iter()
                 .any(|s| s.name == PERSONA_SECTION && s.text == "hi")
+        );
+    }
+
+    #[test]
+    fn clone_shares_later_section_registration() {
+        let prompt = prompt("");
+        let cloned = prompt.clone();
+        prompt
+            .section(PromptSection {
+                name: "tool:pty".into(),
+                order: 106,
+                text: SectionText::Static("later".into()),
+                complete: false,
+            })
+            .unwrap();
+        let assembly = cloned.assemble(&AssembleContext::default()).unwrap();
+        assert!(
+            assembly
+                .sections
+                .iter()
+                .any(|section| section.name == "tool:pty" && section.text == "later")
         );
     }
 }

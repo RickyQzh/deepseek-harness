@@ -604,10 +604,9 @@ impl TerminalSendOperation {
     /// # Returns
     ///
     /// The settled send result. Clears the session's exclusive-send flag.
-    pub async fn done(self) -> TerminalSendResult {
-        let mut this = self;
-        let result = this.done.as_mut().await;
-        this.settle();
+    pub async fn done(&mut self) -> TerminalSendResult {
+        let result = self.done.as_mut().await;
+        self.settle();
         result
     }
 
@@ -1205,6 +1204,71 @@ struct SessionRecord {
     backend_type: String,
     session: Arc<dyn TerminalBackendSession>,
     active: bool,
+    closing: Option<Arc<SharedClose>>,
+}
+
+struct SharedCloseInner {
+    result: Option<Result<(), (String, TerminalErrorCode)>>,
+    wakers: Vec<std::task::Waker>,
+}
+
+struct SharedClose {
+    inner: Mutex<SharedCloseInner>,
+}
+
+struct SharedCloseWait {
+    shared: Arc<SharedClose>,
+}
+
+impl SharedClose {
+    fn new() -> Self {
+        Self {
+            inner: Mutex::new(SharedCloseInner {
+                result: None,
+                wakers: Vec::new(),
+            }),
+        }
+    }
+
+    fn wait(self: &Arc<Self>) -> SharedCloseWait {
+        SharedCloseWait {
+            shared: Arc::clone(self),
+        }
+    }
+
+    fn complete(&self, result: Result<(), TerminalError>) {
+        let stored = result.map_err(|err| (err.to_string(), err.code()));
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        inner.result = Some(stored);
+        let wakers = std::mem::take(&mut inner.wakers);
+        drop(inner);
+        for waker in wakers {
+            waker.wake();
+        }
+    }
+}
+
+impl Future for SharedCloseWait {
+    type Output = Result<(), TerminalError>;
+
+    fn poll(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let mut inner = self
+            .shared
+            .inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        inner.wakers.push(cx.waker().clone());
+        match &inner.result {
+            Some(Ok(())) => std::task::Poll::Ready(Ok(())),
+            Some(Err((message, code))) => {
+                std::task::Poll::Ready(Err(TerminalError::new(message.clone(), *code)))
+            }
+            None => std::task::Poll::Pending,
+        }
+    }
 }
 
 struct Inner {
@@ -1377,6 +1441,7 @@ impl TerminalSessionService {
                 backend_type: request.backend_type().to_string(),
                 session,
                 active: false,
+                closing: None,
             },
         );
         inner.order.push(session_id.clone());
@@ -1509,7 +1574,9 @@ impl TerminalSessionService {
     /// Close one owned session and remove it after backend cleanup.
     ///
     /// Drops the inner mutex before awaiting the backend close future, then
-    /// re-locks to unpublish.
+    /// re-locks to unpublish. The first closer awaits backend `close`, unpublishes,
+    /// and returns `true`. A concurrent closer awaits that same close and returns
+    /// `false`. After unpublish, a late kill is `unknown PTY session {id}`.
     ///
     /// # Parameters
     ///
@@ -1519,7 +1586,7 @@ impl TerminalSessionService {
     ///
     /// # Returns
     ///
-    /// `true` for a newly closed session.
+    /// `true` for a newly closed session, `false` when the same close is already in flight.
     ///
     /// # Errors
     ///
@@ -1530,15 +1597,55 @@ impl TerminalSessionService {
         id: &TerminalSessionId,
         reason: &str,
     ) -> Result<bool, TerminalError> {
-        let session = {
-            let inner = self.lock();
-            Arc::clone(&expect_owned_ref(&inner, owner, id)?.session)
+        let session;
+        let shared;
+        let first;
+        {
+            let mut inner = self.lock();
+            let record = expect_owned(&mut inner, owner, id)?;
+            if let Some(in_flight) = record.closing.clone() {
+                session = None;
+                shared = in_flight;
+                first = false;
+            } else {
+                let in_flight = Arc::new(SharedClose::new());
+                record.closing = Some(Arc::clone(&in_flight));
+                session = Some(Arc::clone(&record.session));
+                shared = in_flight;
+                first = true;
+            }
+        }
+        if !first {
+            shared.wait().await?;
+            return Ok(false);
+        }
+        let session = session.expect("first closer owns the backend session");
+        let close_result = session.close(reason).await;
+        match &close_result {
+            Ok(()) => {
+                let mut inner = self.lock();
+                inner.sessions.remove(id);
+                inner.order.retain(|published| published != id);
+            }
+            Err(_) => {
+                let mut inner = self.lock();
+                if let Some(record) = inner.sessions.get_mut(id) {
+                    let still_ours = record
+                        .closing
+                        .as_ref()
+                        .is_some_and(|slot| Arc::ptr_eq(slot, &shared));
+                    if still_ours {
+                        record.closing = None;
+                    }
+                }
+            }
+        }
+        let shared_result = match &close_result {
+            Ok(()) => Ok(()),
+            Err(err) => Err(TerminalError::new(err.to_string(), err.code())),
         };
-        session.close(reason).await?;
-        let mut inner = self.lock();
-        inner.sessions.remove(id);
-        inner.order.retain(|published| published != id);
-        Ok(true)
+        shared.complete(shared_result);
+        close_result.map(|()| true)
     }
 
     /// List fresh snapshots for exactly one owner.
@@ -1657,6 +1764,7 @@ fn expect_owned_ref<'a>(
 
 #[cfg(test)]
 mod tests {
+    use std::pin::Pin;
     use std::sync::{Arc, Mutex, PoisonError};
     use std::task::{Context, Poll, Waker};
     use std::time::Duration;
@@ -1714,7 +1822,7 @@ mod tests {
             .await
             .expect("spawn");
         assert_eq!(spawned.motd(), "dsh> ");
-        let operation = service
+        let mut operation = service
             .start_send(
                 &owner,
                 spawned.session_id(),
@@ -1901,5 +2009,149 @@ mod tests {
                 .expect("kill")
         );
         assert!(!service.has_owner_activity(&owner));
+    }
+
+    struct HoldClose {
+        started: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+        release: Arc<Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
+    }
+
+    struct HoldSession {
+        started: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+        release: Arc<Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
+    }
+
+    impl super::TerminalBackendSession for HoldSession {
+        fn motd(&self) -> &str {
+            "held"
+        }
+
+        fn pid(&self) -> Option<i32> {
+            None
+        }
+
+        fn start_send(&self, request: super::TerminalSendRequest) -> super::TerminalSendOperation {
+            let result = super::TerminalSendResult::new(
+                request.text().to_string(),
+                super::TerminalWaitReason::Timeout,
+                TerminalSessionStatus::Running,
+                false,
+            );
+            super::TerminalSendOperation::new(
+                Box::pin(std::future::ready(result)),
+                Box::new(|| super::TerminalSendRead::new(String::new(), false)),
+                Box::new(|| false),
+            )
+        }
+
+        fn read(&self, _request: super::TerminalReadRequest) -> super::TerminalReadResult {
+            super::TerminalReadResult::new("", 0, 0, 0, false)
+        }
+
+        fn signal(
+            &self,
+            _signal: TerminalSignal,
+        ) -> Pin<Box<dyn std::future::Future<Output = super::TerminalSignalResult> + Send>>
+        {
+            Box::pin(std::future::ready(super::TerminalSignalResult::new(
+                true, 1,
+            )))
+        }
+
+        fn status(&self) -> TerminalSessionStatus {
+            TerminalSessionStatus::Running
+        }
+
+        fn close(
+            &self,
+            _reason: &str,
+        ) -> Pin<Box<dyn std::future::Future<Output = Result<(), super::TerminalError>> + Send>>
+        {
+            let started = self
+                .started
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            let release = self
+                .release
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            Box::pin(async move {
+                if let Some(tx) = started {
+                    let _ = tx.send(());
+                }
+                if let Some(rx) = release {
+                    let _ = rx.await;
+                }
+                Ok(())
+            })
+        }
+    }
+
+    impl TerminalBackend for HoldClose {
+        fn spawn(&self, _spec: TerminalBackendSpawnSpec) -> TerminalBackendSpawnFuture {
+            let started = Arc::clone(&self.started);
+            let release = Arc::clone(&self.release);
+            Box::pin(async move {
+                Ok(Box::new(HoldSession { started, release })
+                    as Box<dyn super::TerminalBackendSession>)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_kill_already_closing_returns_false() {
+        let service = TerminalSessionService::new();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        service
+            .register_backend(
+                "held",
+                Arc::new(HoldClose {
+                    started: Arc::new(Mutex::new(Some(started_tx))),
+                    release: Arc::new(Mutex::new(Some(release_rx))),
+                }),
+            )
+            .expect("register held");
+        let owner = SessionId::new("owner-a");
+        let spawned = service
+            .spawn(owner.clone(), TerminalSpawnRequest::new("held"))
+            .await
+            .expect("spawn");
+        let first = tokio::spawn({
+            let service = service.clone();
+            let owner = owner.clone();
+            let id = spawned.session_id().clone();
+            async move { service.kill(&owner, &id, "model request").await }
+        });
+        tokio::time::timeout(Duration::from_secs(2), started_rx)
+            .await
+            .expect("first closer called backend close")
+            .expect("close started");
+        let mut second = tokio::spawn({
+            let service = service.clone();
+            let owner = owner.clone();
+            let id = spawned.session_id().clone();
+            async move { service.kill(&owner, &id, "model request").await }
+        });
+        tokio::select! {
+            biased;
+            result = &mut second => panic!("second kill finished before release: {result:?}"),
+            () = tokio::task::yield_now() => {}
+        }
+        release_tx.send(()).expect("release close");
+        assert!(first.await.expect("join first").expect("first kill"));
+        let second = second.await.expect("join second").expect("second kill");
+        assert!(!second);
+        let late = service
+            .kill(&owner, spawned.session_id(), "model request")
+            .await
+            .expect_err("unpublished");
+        assert_eq!(late.code(), TerminalErrorCode::NoSession);
+        assert_eq!(
+            late.to_string(),
+            format!("unknown PTY session {}", spawned.session_id())
+        );
     }
 }

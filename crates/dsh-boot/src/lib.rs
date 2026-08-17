@@ -109,6 +109,8 @@ pub const PLUGIN_MCP_CLIENT: &str = "@deepseek-ai/dsh-mcp-client";
 pub const PLUGIN_TERMINAL: &str = "@deepseek-ai/dsh-terminal";
 /// YAML `name` for `@deepseek-ai/dsh-terminal-bash`.
 pub const PLUGIN_TERMINAL_BASH: &str = "@deepseek-ai/dsh-terminal-bash";
+/// YAML `name` for `@deepseek-ai/dsh-tool-terminal`.
+pub const PLUGIN_TOOL_TERMINAL: &str = "@deepseek-ai/dsh-tool-terminal";
 /// YAML `name` for the deterministic PTY snapshot backend.
 pub const PLUGIN_PTY_SNAPSHOT_BACKEND: &str = "pty-snapshot-backend";
 /// YAML `name` for `@deepseek-ai/dsh-host-webserver`.

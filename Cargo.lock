@@ -939,6 +939,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-tool-terminal"
+version = "0.1.0"
+dependencies = [
+ "dsh-boot",
+ "dsh-kernel",
+ "dsh-session",
+ "dsh-system-prompt",
+ "dsh-terminal",
+ "dsh-tools",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "dsh-tool-web"
 version = "0.1.0"
 dependencies = [

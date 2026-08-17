@@ -54,6 +54,7 @@ Rust workspace members for the DeepSeek Harness host process. Layout, keep-or-dr
 | [`dsh-mcp-client`](dsh-mcp-client/README.md) | MCP client: `mcp__` public tool names, `extract_text`, and YAML `@deepseek-ai/dsh-mcp-client`. |
 | [`dsh-terminal`](dsh-terminal/README.md) | Owner-scoped PTY registry, branded ids, and in-memory YAML `pty-snapshot-backend`. |
 | [`dsh-terminal-bash`](dsh-terminal-bash/README.md) | Interactive bash PTY backend: config, env overlays, and prompt/silence/timeout readiness. |
+| [`dsh-tool-terminal`](dsh-tool-terminal/README.md) | Six model-facing `terminal_*` tools, render, and `tool:pty` guidance. |
 | [`dsh-headless`](dsh-headless/README.md) | One-shot headless runner: last assistant text plus newline; exit 0 iff `turn/end` is `completed`. |
 | [`dsh-base`](dsh-base/README.md) | Phase 6 product plugin aggregator (`register_base_plugins`) and static headless/jsonrpc `base.cordis.yml`. |
 | [`dsh-cli`](dsh-cli/README.md) | `dsh` clap launcher: `--profile headless` / `web` / `acp`, `dsh web` / `dsh acp` aliases, `--patch`. |

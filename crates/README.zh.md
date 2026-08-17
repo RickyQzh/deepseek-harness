@@ -54,6 +54,7 @@ DeepSeek Harness 宿主进程的 Rust workspace 成员。布局、保留/放弃�
 | [`dsh-mcp-client`](dsh-mcp-client/README.md) | MCP 客户端：`mcp__` 公开工具名、`extract_text`，以及 YAML `@deepseek-ai/dsh-mcp-client`。 |
 | [`dsh-terminal`](dsh-terminal/README.md) | 按 owner 隔离的 PTY 注册表、品牌 id，以及内存 YAML `pty-snapshot-backend`。 |
 | [`dsh-terminal-bash`](dsh-terminal-bash/README.md) | 交互式 bash PTY 后端：配置、环境覆盖，以及 prompt/silence/timeout 就绪检测。 |
+| [`dsh-tool-terminal`](dsh-tool-terminal/README.md) | 六个面向模型的 `terminal_*` 工具、render，以及 `tool:pty` 指引。 |
 | [`dsh-headless`](dsh-headless/README.md) | 一次性 headless 运行器：打印最后一段 assistant 文本加换行；仅当 `turn/end` 为 `completed` 时退出码 0。 |
 | [`dsh-base`](dsh-base/README.md) | 第 6 阶段产品插件聚合器（`register_base_plugins`）以及 headless/jsonrpc 的静态 `base.cordis.yml`。 |
 | [`dsh-cli`](dsh-cli/README.md) | `dsh` clap 启动器：`--profile headless` / `web` / `acp`、`dsh web` / `dsh acp` 别名、`--patch`。 |

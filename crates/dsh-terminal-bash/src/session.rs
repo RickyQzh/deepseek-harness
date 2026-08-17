@@ -213,7 +213,7 @@ impl LocalPtySession {
             let mut inner = self.lock();
             inner.initializing = true;
         }
-        let operation = self.start_send(TerminalSendRequest::new("", false));
+        let mut operation = self.start_send(TerminalSendRequest::new("", false));
         let result = operation.done().await;
         {
             let mut inner = self.lock();
@@ -965,7 +965,7 @@ mod tests {
     async fn tier1_stdin_wait_is_stdin_read() {
         let inspector = ScriptedInspector::new(Some(456), true);
         let (session, _handle) = make_session(Arc::clone(&inspector));
-        let operation = session.start_send(TerminalSendRequest::new("cat", true));
+        let mut operation = session.start_send(TerminalSendRequest::new("cat", true));
         let (tx, mut rx) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
             let _ = tx.send(operation.done().await);
@@ -1000,7 +1000,7 @@ mod tests {
         let unknown = ScriptedInspector::new(Some(456), true);
         unknown.set_pgid(None);
         let (session2, _) = make_session(Arc::clone(&unknown));
-        let operation2 = session2.start_send(TerminalSendRequest::new("cat", true));
+        let mut operation2 = session2.start_send(TerminalSendRequest::new("cat", true));
         if let Ok(result) =
             tokio::time::timeout(Duration::from_millis(400), operation2.done()).await
         {
@@ -1020,7 +1020,7 @@ mod tests {
     async fn tier1_stdin_wait_prompt_same_shell_pgid_is_stdin_read() {
         let inspector = ScriptedInspector::new(Some(456), false);
         let (session, handle) = make_session(Arc::clone(&inspector));
-        let operation = session.start_send(TerminalSendRequest::new("true", true));
+        let mut operation = session.start_send(TerminalSendRequest::new("true", true));
         tokio::time::sleep(Duration::from_millis(20)).await;
         handle.emit_output("\x1b]133;D;0\x07dsh> ");
         let result = tokio::time::timeout(Duration::from_millis(200), operation.done())
