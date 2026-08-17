@@ -13,6 +13,7 @@ dsh-agent = { path = "../dsh-agent" }
 dsh-boot = { path = "../dsh-boot" }
 dsh-kernel = { path = "../dsh-kernel" }
 dsh-session = { path = "../dsh-session" }
+dsh-session-persist = { path = "../dsh-session-persist" }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }
 thiserror = { workspace = true }

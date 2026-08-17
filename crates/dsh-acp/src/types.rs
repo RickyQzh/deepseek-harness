@@ -1,7 +1,9 @@
-//! ACP handshake and `session/new` wire types. [`InitializeResult`] field order is `protocolVersion`, `agentInfo`, `agentCapabilities`, `authMethods`.
+//! ACP handshake, `session/new`, `session/prompt`, and `session/update` wire types. [`InitializeResult`] field order is `protocolVersion`, `agentInfo`, `agentCapabilities`, `authMethods`.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::codec::{AcpContentBlock, StopReason};
 
 /// ACP protocol version this server advertises. Client `protocolVersion` is ignored.
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -136,5 +138,80 @@ impl NewSessionResult {
     #[must_use]
     pub(crate) fn new(session_id: String) -> Self {
         Self { session_id }
+    }
+}
+
+/// Inbound `session/prompt` params. Unknown keys are ignored.
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PromptRequest {
+    #[serde(default)]
+    session_id: String,
+    #[serde(default)]
+    prompt: Vec<AcpContentBlock>,
+}
+
+impl PromptRequest {
+    /// Session id to prompt, or `""` when missing.
+    pub(crate) fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    /// Prompt content blocks in wire order.
+    pub(crate) fn prompt(&self) -> &[AcpContentBlock] {
+        &self.prompt
+    }
+}
+
+/// Outbound `session/prompt` result. Field order is `stopReason`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PromptResult {
+    stop_reason: StopReason,
+}
+
+impl PromptResult {
+    /// Wrap the settled ACP stop reason.
+    #[must_use]
+    pub(crate) fn new(stop_reason: StopReason) -> Self {
+        Self { stop_reason }
+    }
+}
+
+/// Outbound `session/update` params. Field order is `sessionId`, `update`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SessionUpdateParams {
+    session_id: String,
+    update: AgentMessageChunk,
+}
+
+/// `agent_message_chunk` payload. Field order is `sessionUpdate`, `content`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentMessageChunk {
+    session_update: &'static str,
+    content: TextContent,
+}
+
+/// Text content block. Field order is `type`, `text`.
+#[derive(Serialize)]
+struct TextContent {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    text: String,
+}
+
+impl SessionUpdateParams {
+    /// One committed assistant text chunk for `session/update`.
+    #[must_use]
+    pub(crate) fn agent_message_chunk(session_id: String, text: String) -> Self {
+        Self {
+            session_id,
+            update: AgentMessageChunk {
+                session_update: "agent_message_chunk",
+                content: TextContent { kind: "text", text },
+            },
+        }
     }
 }

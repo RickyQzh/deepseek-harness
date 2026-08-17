@@ -237,6 +237,7 @@ dependencies = [
  "dsh-kernel",
  "dsh-llm",
  "dsh-session",
+ "dsh-session-persist",
  "dsh-system-prompt",
  "dsh-tools",
  "serde",

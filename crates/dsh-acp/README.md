@@ -10,6 +10,8 @@ ACP stdio adapter for the DeepSeek Harness Rust host. This crate is not the SDK 
 
 `acp_prompt_to_text` concatenates `text` blocks verbatim and renders each `resource_link` as a bracketed `[resource_link name=<json-string> uri=<json-string>]` reference; other blocks contribute nothing. `prompt_has_unsupported_content` is true when any block is neither `text` nor `resource_link`. `turn_end_to_stop_reason` maps harness `TurnEndReason` to ACP `StopReason` (`MaxTokens` → `max_tokens`). `prompt_stop_reason` is the prompt-RPC map: missing end reason → `cancelled`, `MaxTokens` → `end_turn`, otherwise `turn_end_to_stop_reason`.
 
+`session/prompt` waits for whole-agent idle, emits committed `agent_message_chunk` text, and reports `end_turn` (token-limit included).
+
 ## Known Limitations and Deferred Work
 
 - Session load, list, resume, delete, and fork are unsupported.

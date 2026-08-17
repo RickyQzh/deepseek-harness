@@ -124,10 +124,10 @@ struct RequestFrame<'a> {
 }
 
 #[derive(Serialize)]
-struct NotificationFrame<'a> {
+struct NotificationFrame<'a, T> {
     jsonrpc: &'static str,
     method: &'a str,
-    params: &'a Value,
+    params: &'a T,
 }
 
 #[derive(Serialize)]
@@ -159,7 +159,7 @@ fn encode_request(id: &JsonRpcId, method: &str, params: &Value) -> String {
     })
 }
 
-fn encode_notification(method: &str, params: &Value) -> String {
+fn encode_notification<T: Serialize>(method: &str, params: &T) -> String {
     frame_line(&NotificationFrame {
         jsonrpc: JSONRPC_VERSION,
         method,
@@ -350,13 +350,17 @@ impl AcpNdjsonTransport {
         let _ = waiter.send(Ok(result.unwrap_or(Value::Null)));
     }
 
-    /// Send a notification.
+    /// Send a notification. `params` is serialized in struct field order when `T` is a struct.
     ///
     /// # Errors
     ///
     /// Transport write failure.
-    pub async fn notify(&self, method: &str, params: Value) -> Result<(), AcpTransportError> {
-        self.write_frame(encode_notification(method, &params)).await
+    pub async fn notify<T: Serialize>(
+        &self,
+        method: &str,
+        params: &T,
+    ) -> Result<(), AcpTransportError> {
+        self.write_frame(encode_notification(method, params)).await
     }
 
     /// Send a request with id `req_{n}` starting at 1 and await its response.

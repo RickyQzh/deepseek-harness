@@ -10,6 +10,8 @@ DeepSeek Harness Rust 宿主的 ACP（Agent Client Protocol）stdio 适配器。
 
 `acp_prompt_to_text` 按原样拼接 `text` 块，并把每个 `resource_link` 渲染为带方括号的 `[resource_link name=<json-string> uri=<json-string>]` 引用；其他块不贡献文本。`prompt_has_unsupported_content` 在任一块既不是 `text` 也不是 `resource_link` 时为 true。`turn_end_to_stop_reason` 把 harness 的 `TurnEndReason` 映射为 ACP `StopReason`（`MaxTokens` → `max_tokens`）。`prompt_stop_reason` 是 prompt RPC 映射：缺失结束原因 → `cancelled`，`MaxTokens` → `end_turn`，其余走 `turn_end_to_stop_reason`。
 
+`session/prompt` 等待整个 agent 空闲，发出已提交的 `agent_message_chunk` 文本，并报告 `end_turn`（包含 token 上限结束）。
+
 ## 已知限制与暂缓事项
 
 - 不支持会话 load、list、resume、delete 与 fork。
