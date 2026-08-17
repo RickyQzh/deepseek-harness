@@ -1,7 +1,12 @@
 //! MCP JSON-RPC session: `initialize`, `tools/list`, and `tools/call`.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::sync::Mutex;
 
 use crate::rpc::{McpRpcError, encode_frame, read_frame};
 
@@ -9,12 +14,22 @@ const JSONRPC_VERSION: &str = "2.0";
 const PROTOCOL_VERSION: &str = "2025-03-26";
 const CLIENT_NAME: &str = "dsh-mcp-client";
 const CLIENT_VERSION: &str = "0.0.1";
+const DEFAULT_TOOL_CALL_TIMEOUT_MS: u64 = 60_000;
 
-/// MCP client session over Content-Length JSON-RPC byte streams.
-pub struct McpSession {
+struct McpSessionInner {
     reader: BufReader<Box<dyn AsyncRead + Unpin + Send>>,
     writer: Box<dyn AsyncWrite + Unpin + Send>,
     next_id: u64,
+}
+
+/// MCP client session over Content-Length JSON-RPC byte streams.
+///
+/// Clone shares the byte streams so tool executors can call `tools/call` while
+/// `sync_tools` still takes `&mut Self`.
+#[derive(Clone)]
+pub struct McpSession {
+    inner: Arc<Mutex<McpSessionInner>>,
+    tool_call_timeout_ms: Arc<AtomicU64>,
 }
 
 impl McpSession {
@@ -23,10 +38,32 @@ impl McpSession {
         server_stdin: impl AsyncWrite + Unpin + Send + 'static,
     ) -> Self {
         Self {
-            reader: BufReader::new(Box::new(server_stdout)),
-            writer: Box::new(server_stdin),
-            next_id: 0,
+            inner: Arc::new(Mutex::new(McpSessionInner {
+                reader: BufReader::new(Box::new(server_stdout)),
+                writer: Box::new(server_stdin),
+                next_id: 0,
+            })),
+            tool_call_timeout_ms: Arc::new(AtomicU64::new(DEFAULT_TOOL_CALL_TIMEOUT_MS)),
         }
+    }
+
+    /// Per-call timeout applied by MCP tool executors.
+    ///
+    /// # Returns
+    ///
+    /// Duration from `toolCallTimeoutMs` (default 60000 ms).
+    #[must_use]
+    pub(crate) fn tool_call_timeout(&self) -> Duration {
+        Duration::from_millis(self.tool_call_timeout_ms.load(Ordering::Relaxed))
+    }
+
+    /// Store YAML `toolCallTimeoutMs` for later `tools/call` executors.
+    ///
+    /// # Parameters
+    ///
+    /// * `ms` - Timeout in milliseconds.
+    pub(crate) fn set_tool_call_timeout_ms(&self, ms: u64) {
+        self.tool_call_timeout_ms.store(ms, Ordering::Relaxed);
     }
 
     /// Send MCP `initialize`, then `notifications/initialized`.
@@ -44,7 +81,8 @@ impl McpSession {
     ///
     /// [`McpRpcError`] when framing, JSON, or a JSON-RPC error object fails.
     pub async fn initialize(&mut self) -> Result<Value, McpRpcError> {
-        let result = self
+        let mut inner = self.inner.lock().await;
+        let result = inner
             .request(
                 "initialize",
                 json!({
@@ -57,11 +95,12 @@ impl McpSession {
                 }),
             )
             .await?;
-        self.write_json(&json!({
-            "jsonrpc": JSONRPC_VERSION,
-            "method": "notifications/initialized",
-        }))
-        .await?;
+        inner
+            .write_json(&json!({
+                "jsonrpc": JSONRPC_VERSION,
+                "method": "notifications/initialized",
+            }))
+            .await?;
         Ok(result)
     }
 
@@ -134,6 +173,12 @@ impl McpSession {
         .await
     }
 
+    async fn request(&self, method: &str, params: Value) -> Result<Value, McpRpcError> {
+        self.inner.lock().await.request(method, params).await
+    }
+}
+
+impl McpSessionInner {
     async fn request(&mut self, method: &str, params: Value) -> Result<Value, McpRpcError> {
         self.next_id += 1;
         let id = self.next_id;

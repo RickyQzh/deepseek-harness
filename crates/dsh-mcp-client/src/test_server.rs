@@ -40,13 +40,25 @@ impl LoopbackFixture {
 
 /// Two duplex pairs: client write → server read, server write → client read.
 pub fn spawn_loopback() -> (McpSession, LoopbackFixture) {
+    spawn_loopback_with_list(list_tools_result())
+}
+
+/// Loopback whose `tools/list` result is `list_result`.
+pub fn spawn_loopback_with_list(list_result: Value) -> (McpSession, LoopbackFixture) {
     let (client_write, server_read) = duplex(DUPLEX_BUF);
     let (server_write, client_read) = duplex(DUPLEX_BUF);
     let initialize_params = Arc::new(Mutex::new(None));
     let (initialized_tx, initialized_rx) = watch::channel(false);
     let params_for_server = Arc::clone(&initialize_params);
     tokio::spawn(async move {
-        run_fixture(server_read, server_write, params_for_server, initialized_tx).await;
+        run_fixture(
+            server_read,
+            server_write,
+            params_for_server,
+            initialized_tx,
+            list_result,
+        )
+        .await;
     });
     let session = McpSession::from_stdio(client_read, client_write);
     (
@@ -63,6 +75,7 @@ async fn run_fixture(
     mut server_write: tokio::io::DuplexStream,
     initialize_params: Arc<Mutex<Option<Value>>>,
     initialized_tx: watch::Sender<bool>,
+    list_result: Value,
 ) {
     let mut reader = BufReader::new(server_read);
     loop {
@@ -97,7 +110,7 @@ async fn run_fixture(
                 let Some(id) = id else {
                     continue;
                 };
-                write_result(&mut server_write, id, list_tools_result()).await;
+                write_result(&mut server_write, id, list_result.clone()).await;
             }
             "tools/call" => {
                 let Some(id) = id else {

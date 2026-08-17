@@ -11,7 +11,9 @@ repository.workspace = true
 [dependencies]
 dsh-boot = { path = "../dsh-boot" }
 dsh-kernel = { path = "../dsh-kernel" }
+dsh-session = { path = "../dsh-session" }
 dsh-subprocess = { path = "../dsh-subprocess" }
+dsh-tools = { path = "../dsh-tools" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

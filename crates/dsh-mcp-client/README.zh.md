@@ -4,7 +4,9 @@
 
 DeepSeek Harness Rust 宿主的 MCP 客户端。本 crate 是作为 MCP 客户端的 harness，不是 MCP 服务器，也不是 ACP（Agent Client Protocol）适配器（`dsh-acp`）。MCP stdio 使用 LSP Content-Length JSON-RPC 2.0，不是 ACP 或 SDK NDJSON。
 
-`register` 挂载 YAML `@deepseek-ai/dsh-mcp-client`（`dsh_boot::PLUGIN_MCP_CLIENT`）。`register_mcp_plugins` 调用 `register`。插件 setup 返回 `Ok(())`，不建立连接。
+`register` 挂载 YAML `@deepseek-ai/dsh-mcp-client`（`dsh_boot::PLUGIN_MCP_CLIENT`）。`register_mcp_plugins` 调用 `register`。插件 setup 解析 stdio 配置（未知键导致加载失败；`transport: streamable-http` 以 `mcp-client: streamable-http is not supported in Phase 8 item 2` 失败），注入 `tools`，在该运行时上预留 `serverName`，spawn 子进程，发送 `initialize`，并按 `mcp__` 公开名称注册工具。第二个仍存活的相同 `serverName` 导致加载失败。`failOnStartupError` 默认为 false：spawn、initialize 与同步失败会记录日志并返回 `Ok(())`。配置、预留与 HTTP 错误始终导致加载失败。可选 `reconnect` 必须是对象；本项不解析其字段。
+
+`sync_tools` 列出工具；若原始名称重复则拒绝且不改动 `previous`；若公开名称被外部占用则拒绝且不改动 `previous`；否则注销 `previous` 并对每个 `mcp__` 名称调用 `try_register`。执行器在 `tools/call` 上发送原始名称（非对象参数变为 `{}`）；`isError: true` 变为来自 `extract_text` 的 `ToolError::Other`（空内容回退使用公开名称）；`taskSupport: required` 变为 `ToolError::Other`，文案为 `Tool "RAW" requires task-based execution, which this bridge does not support`。Native `render` 把 `extract_text` 做成一个文本内容块。
 
 `McpSession` 发送 `initialize`（`protocolVersion` 为 `2025-03-26`，`capabilities` 为 `{}`，`clientInfo` 为 `dsh-mcp-client`/`0.0.1`），随后发送通知 `notifications/initialized`（有 method、无 `id`）；`list_tools` 重复 `tools/list` 直到 `nextCursor` 缺席；`call_tool` 在 `tools/call` 上发送原始 MCP 名称。`McpToolDraft` 访问器返回列出的名称、描述、输入 schema，以及 `task_required`（仅当服务器声明 execution taskSupport 为 `required` 时为 true）。`McpSession::from_stdio` 绑定已打开的服务器 stdout 与 stdin 字节流。`stdio_child_env` 是对 `config.env` overlay 调用 `dsh_subprocess::child_env`，因此父进程中形似凭据的名称（如 `DEEPSEEK_API_KEY`）不会出现，除非 overlay 将其恢复。`stdio_command` 构建 `Command::new(program).args(args)`（不经过 shell），并使用 `env_clear().envs(env)`；`cwd` 为空或省略时继承。`spawn_stdio` 按该命令 spawn，取出子进程 stdin（写入）与 stdout（读取），并用 `from_stdio` 包装。
 

@@ -573,7 +573,9 @@ version = "0.1.0"
 dependencies = [
  "dsh-boot",
  "dsh-kernel",
+ "dsh-session",
  "dsh-subprocess",
+ "dsh-tools",
  "serde",
  "serde_json",
  "sha2",
