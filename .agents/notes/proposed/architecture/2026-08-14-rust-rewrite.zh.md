@@ -412,6 +412,7 @@ TypeScript 包仍在交付时，其 Vitest + 覆盖率仍为必需。快照与 e
 | [2026-08-14-rust-tooling-and-gates.md](../process/2026-08-14-rust-tooling-and-gates.md) | 阶段 0 的钉住、CI 路径过滤与覆盖率后续 |
 | [2026-08-15-rust-snapshot-harness.md](../testing/2026-08-15-rust-snapshot-harness.md) | 阶段 5 快照驱动：保留 Vitest；为阶段 5 子集生成 Rust 二进制 |
 | [2026-08-16-rust-gui-host-wire.md](2026-08-16-rust-gui-host-wire.md) | 阶段 7 冻结的四象限 HTTP/WS 线路与具名 Vitest 子集 |
+| [2026-08-17-rust-acp-server.md](2026-08-17-rust-acp-server.md) | 阶段 8 第 1 项：ACP NDJSON 子集与具名 Vitest 场景 |
 | `proposed/architecture/…-dynamic-plugins.md` | 仅当重新引入自修改时 |
 
 本笔记在 Rust 宿主上部分回答了[带类型的事件 schema](2026-06-16-typed-event-schemas.md)：第一方事件是封闭 enum；`ignorable` 覆盖未知项；依赖组合的运行时注册表对第一方读取器仍被否决。该提案在宿主切换之前对 TypeScript 树保持开放。

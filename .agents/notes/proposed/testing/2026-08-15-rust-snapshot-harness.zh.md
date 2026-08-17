@@ -30,6 +30,10 @@ Cordis、Landlock、`!!js` 与会话格式的保留或放弃引用重写笔记�
 
 当 `DSH_RUNTIME=rust` 时，那些具名 web 驱动 spawn `target/debug/dsh`（若设置了 `DSH_RUNTIME_BIN` 则用该路径），argv 为 `web --port 0 --dist <dir>`。未设置 `DSH_RUNTIME` 时保持进程内 Cordis scaffold。`built-boot.snapshot.ts` 仍为 jsdom/`FixtureApiClient`（无宿主）。
 
+第 8 阶段第 1 项在 Rust `dsh` 二进制上的具名 ACP（Agent Client Protocol）场景是 `handshake`、`reject-extra-dirs` 与 `text-turn`。其余 `examples/acp-agent` 场景留在 Node `dsh-acp-demo` 二进制上。对着 Rust 跑完整的 `pnpm run test:snapshot` 不是第 8 阶段第 1 项的退出条件。
+
+当 `DSH_RUNTIME=rust` 时，那些具名 ACP 驱动 spawn `target/debug/dsh`（若设置了 `DSH_RUNTIME_BIN` 则用该路径），并带上 `--profile acp`。未设置 `DSH_RUNTIME` 时保持 Node `dsh-acp-demo` 二进制。
+
 ## 第 6 阶段子集
 
 | 场景 | 驱动 | 二进制 | Fixture 目录 |
@@ -52,6 +56,17 @@ Cordis、Landlock、`!!js` 与会话格式的保留或放弃引用重写笔记�
 | web `cold-blank-session` | Vitest `cold-blank-session.e2e.ts` | `DSH_RUNTIME=rust` 时为 Rust；否则为 Node scaffold | `apps/web/tests/snapshots/cold-blank-session/` |
 | 其余 `test:web` 文件 | 现有 Vitest | Node scaffold / jsdom | 现有目录 |
 
+## 第 8 阶段 ACP 子集
+
+| 场景 | 驱动 | 二进制 | Fixture 目录 |
+|---|---|---|---|
+| ACP `handshake` | Vitest `examples/acp-agent/tests/acp.snapshot.ts` | `DSH_RUNTIME=rust` 时为 Rust；否则为 Node | `examples/acp-agent/tests/snapshots/handshake/` |
+| ACP `reject-extra-dirs` | 同上 | `DSH_RUNTIME=rust` 时为 Rust；否则为 Node | `examples/acp-agent/tests/snapshots/reject-extra-dirs/` |
+| ACP `text-turn` | 同上 | `DSH_RUNTIME=rust` 时为 Rust；否则为 Node | `examples/acp-agent/tests/snapshots/text-turn/` |
+| 其余 ACP 场景 | 同一套件 | 仅 Node | 现有目录 |
+
+`DSH_RUNTIME=rust` 不得从表中丢掉场景（orphan-dir 守卫），并且必须跳过非子集的 **运行**。本笔记不声称在 Rust 上跑完整的 `pnpm run test:snapshot`。
+
 ## 曾考虑的替代方案
 
 **把快照驱动改写成 Rust（`cargo test` 不生成进程，或 Rust NDJSON 客户端）。** 否决：产品测试是组装后的应用转录；针对不同组合的第二套测试正是重写笔记所点名的双跑失败。Vitest 已经拥有归一化、`llm-replay` 灌入与期望输出比较。
@@ -64,6 +79,8 @@ Cordis、Landlock、`!!js` 与会话格式的保留或放弃引用重写笔记�
 
 **在第 7 阶段为每一个 `test:web` 文件 spawn Rust 二进制。** 否决：具名子集是 `rust-host-smoke` 与 `cold-blank-session`。其余文件留在 Node。对着 Rust 跑完整的 `pnpm run test:web` 是重写计划的退出条件。
 
+**在第 8 阶段第 1 项为每一个 `examples/acp-agent` 场景 spawn Rust 二进制。** 否决：具名子集是 `handshake`、`reject-extra-dirs` 与 `text-turn`。其余 ACP 场景留在 Node。对着 Rust 跑完整的 `pnpm run test:snapshot` 不是第 8 阶段第 1 项的退出条件。
+
 ## 验收标准
 
 - 重写笔记的后续表链接到本文件，而不是占位符 ``proposed/testing/…-rust-snapshot-harness.md``。
@@ -71,6 +88,7 @@ Cordis、Landlock、`!!js` 与会话格式的保留或放弃引用重写笔记�
 - 第 6 阶段将四个 headless 场景与 jsonrpc `subagent-spawn-in-process` 命名为 Rust 子集。
 - Fixture 目录被复用；计划不增加并行的 `*.rust.expected.jsonl` 文件。
 - 第 7 阶段将 web `rust-host-smoke` 与 `cold-blank-session` 命名为 Rust 子集；其余 `test:web` 文件留在 Node。本笔记不声称在 Rust 上跑完整的 `pnpm run test:web`。
+- 第 8 阶段第 1 项将 ACP `handshake`、`reject-extra-dirs` 与 `text-turn` 命名为 Rust 子集；其余 ACP 场景留在 Node。本笔记不声称在 Rust 上跑完整的 `pnpm run test:snapshot`。
 - 不编辑 `docs/architecture.md`。
 
 ## 风险
@@ -78,3 +96,5 @@ Cordis、Landlock、`!!js` 与会话格式的保留或放弃引用重写笔记�
 评审者可能把 Rust 路径上跳过 Node 的 `stream-json.expected.jsonl` 与通知 JSONL 全量相等视为削弱快照门。Node 默认仍钉住完整转录；Rust 路径钉住场景特定的持久化事实、进程退出码 0、最后一段 assistant / stdout，以及 jsonrpc 的 `finalResponse`、idle 状态、持久化路径和 `serverInfo.name`。第 6 阶段组合并不匹配 Node 事件流。
 
 评审者可能把具名 web 子集当作在 Rust 上跑完整的 `pnpm run test:web`。其余 web e2e 留在 Node。
+
+评审者可能把具名 ACP 子集当作在 Rust 上跑完整的 `pnpm run test:snapshot`。其余 ACP 场景留在 Node。

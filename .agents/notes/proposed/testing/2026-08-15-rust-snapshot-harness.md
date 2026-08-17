@@ -30,6 +30,10 @@ Phase 7 named web scenarios on the Rust `dsh` bin are `rust-host-smoke` and `col
 
 When `DSH_RUNTIME=rust`, those named web drivers spawn `target/debug/dsh` (or `DSH_RUNTIME_BIN`) with argv `web --port 0 --dist <dir>`. Unset `DSH_RUNTIME` keeps the in-process Cordis scaffold. `built-boot.snapshot.ts` stays jsdom/`FixtureApiClient` (no host).
 
+Phase 8 item 1 named ACP scenarios on the Rust `dsh` bin are `handshake`, `reject-extra-dirs`, and `text-turn`. Remaining `examples/acp-agent` scenarios stay on the Node `dsh-acp-demo` bin. Full `pnpm run test:snapshot` against Rust is not Phase 8 item 1's exit.
+
+When `DSH_RUNTIME=rust`, those named ACP drivers spawn `target/debug/dsh` (or `DSH_RUNTIME_BIN`) with `--profile acp`. Unset `DSH_RUNTIME` keeps the Node `dsh-acp-demo` bin.
+
 ## Phase 6 subset
 
 | Scenario | Driver | Bin | Fixture dir |
@@ -52,6 +56,17 @@ When `DSH_RUNTIME=rust`, those named web drivers spawn `target/debug/dsh` (or `D
 | web `cold-blank-session` | Vitest `cold-blank-session.e2e.ts` | Rust when `DSH_RUNTIME=rust`; Node scaffold otherwise | `apps/web/tests/snapshots/cold-blank-session/` |
 | remaining `test:web` files | existing Vitest | Node scaffold / jsdom | existing dirs |
 
+## Phase 8 ACP subset
+
+| Scenario | Driver | Bin | Fixture dir |
+|---|---|---|---|
+| ACP `handshake` | Vitest `examples/acp-agent/tests/acp.snapshot.ts` | Rust when `DSH_RUNTIME=rust`; Node otherwise | `examples/acp-agent/tests/snapshots/handshake/` |
+| ACP `reject-extra-dirs` | same | Rust when `DSH_RUNTIME=rust`; Node otherwise | `examples/acp-agent/tests/snapshots/reject-extra-dirs/` |
+| ACP `text-turn` | same | Rust when `DSH_RUNTIME=rust`; Node otherwise | `examples/acp-agent/tests/snapshots/text-turn/` |
+| remaining ACP scenarios | same suite | Node only | existing dirs |
+
+`DSH_RUNTIME=rust` must not drop scenarios from the table (orphan-dir guard) and must skip non-subset **runs**. This note does not claim full `pnpm run test:snapshot` on Rust.
+
 ## Alternatives considered
 
 **Rewrite snapshot drivers in Rust (`cargo test` spawning nothing, or a Rust NDJSON client).** Rejected: the product test is the assembled application transcript; a second suite against a different composition is the dual-run failure the rewrite note names. Vitest already owns normalization, `llm-replay` hydration, and expected-output comparison.
@@ -64,6 +79,8 @@ When `DSH_RUNTIME=rust`, those named web drivers spawn `target/debug/dsh` (or `D
 
 **Spawn the Rust bin for every `test:web` file in Phase 7.** Rejected: named subset is `rust-host-smoke` and `cold-blank-session`. Remaining files stay Node. Full `pnpm run test:web` against Rust is the rewrite-program exit.
 
+**Spawn the Rust bin for every `examples/acp-agent` scenario in Phase 8 item 1.** Rejected: named subset is `handshake`, `reject-extra-dirs`, and `text-turn`. Remaining ACP scenarios stay Node. Full `pnpm run test:snapshot` against Rust is not Phase 8 item 1's exit.
+
 ## Acceptance criteria
 
 - The rewrite note follow-up table links to this file instead of the placeholder ``proposed/testing/…-rust-snapshot-harness.md``.
@@ -71,6 +88,7 @@ When `DSH_RUNTIME=rust`, those named web drivers spawn `target/debug/dsh` (or `D
 - Phase 6 names the four headless scenarios and jsonrpc `subagent-spawn-in-process` as the Rust subset.
 - Fixture directories are reused; the plan does not add parallel `*.rust.expected.jsonl` files.
 - Phase 7 names web `rust-host-smoke` and `cold-blank-session` as the Rust subset; remaining `test:web` files stay Node. This note does not claim full `pnpm run test:web` on Rust.
+- Phase 8 item 1 names ACP `handshake`, `reject-extra-dirs`, and `text-turn` as the Rust subset; remaining ACP scenarios stay Node. This note does not claim full `pnpm run test:snapshot` on Rust.
 - `docs/architecture.md` is not edited.
 
 ## Risks
@@ -78,3 +96,5 @@ When `DSH_RUNTIME=rust`, those named web drivers spawn `target/debug/dsh` (or `D
 A reviewer may treat skipped Node `stream-json.expected.jsonl` and notification-JSONL equality on the Rust path as weakening the snapshot gate. The Node default still pins the full transcript; the Rust path pins scenario-specific durable facts, process exit 0, last assistant / stdout, and jsonrpc `finalResponse`, idle status, persist path, and `serverInfo.name`. Phase 6 composition does not match the Node event stream.
 
 A reviewer may treat the named web subset as full `pnpm run test:web` on Rust. Remaining web e2e stay Node.
+
+A reviewer may treat the named ACP subset as full `pnpm run test:snapshot` on Rust. Remaining ACP scenarios stay Node.
