@@ -1,12 +1,16 @@
-//! Boot the headless composition and wait for `appExit`.
+//! Boot headless or web compositions and wait for `appExit`.
+
+use std::path::{Path, PathBuf};
 
 use dsh_agent::{register_execution_plugins, register_spine_plugins};
 use dsh_base::register_base_plugins;
-use dsh_boot::{PluginRegistry, boot_yaml, process_interpolate_env};
+use dsh_boot::{PluginRegistry, boot_yaml, mount_entries, process_interpolate_env};
+use dsh_compose::{Entry, apply_entry_patches, parse_yaml_entries, parse_yaml_patches};
 use dsh_headless::{AppExit, CmdlineArgs, HeadlessIo, MINIMAL_YAML, register_headless_plugins};
+use dsh_host::{WebIo, register_host_plugins};
 use dsh_kernel::Context;
 
-use crate::parse::{ParsedCli, parse_cli};
+use crate::parse::{ParsedCli, WebLaunch, parse_cli};
 
 fn load_yaml() -> Result<String, String> {
     match std::env::var("DSH_CORDIS_CONFIG") {
@@ -72,6 +76,13 @@ pub async fn run_cli(args: Vec<String>) -> i32 {
                 1
             }
         },
+        ParsedCli::Web(launch) => match run_web(launch).await {
+            Ok(code) => code,
+            Err(message) => {
+                eprintln!("dsh: {message}");
+                1
+            }
+        },
     }
 }
 
@@ -97,6 +108,158 @@ async fn run_headless(task: String, patch_paths: Vec<std::path::PathBuf>) -> Res
         .map_err(|error| error.to_string())?;
     rx.await
         .map_err(|_| "headless runner exited without appExit".to_string())
+}
+
+fn load_web_yaml() -> Result<String, String> {
+    match std::env::var("DSH_CORDIS_CONFIG") {
+        Ok(path) if !path.is_empty() => std::fs::read_to_string(&path)
+            .map_err(|error| format!("DSH_CORDIS_CONFIG file not found: {path}: {error}")),
+        _ => Ok(dsh_host::WEB_YAML.to_string()),
+    }
+}
+
+fn yaml_quoted(value: &str) -> Result<String, String> {
+    serde_json::to_string(value).map_err(|error| error.to_string())
+}
+
+fn resolve_web_dist(flag: Option<PathBuf>) -> Result<PathBuf, String> {
+    let path = match flag {
+        Some(path) => path,
+        None => match std::env::var("DSH_WEB_DIST") {
+            Ok(path) if !path.is_empty() => PathBuf::from(path),
+            _ => {
+                let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+                cwd.join("apps/web/dist")
+            }
+        },
+    };
+    if path.is_dir() {
+        Ok(path)
+    } else {
+        Err(format!("dist is not a directory: {}", path.display()))
+    }
+}
+
+fn resolve_client_packages() -> Result<PathBuf, String> {
+    match std::env::var("DSH_CLIENT_PACKAGES") {
+        Ok(path) if !path.is_empty() => {
+            let path = PathBuf::from(path);
+            if path.is_dir() {
+                Ok(path)
+            } else {
+                Err(format!(
+                    "DSH_CLIENT_PACKAGES is not a directory: {}",
+                    path.display()
+                ))
+            }
+        }
+        _ => {
+            let dir = std::env::temp_dir().join(format!(
+                "dsh-client-packages-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|error| error.to_string())?
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+            Ok(dir)
+        }
+    }
+}
+
+fn web_overlay_yaml(
+    port: u16,
+    dist: &Path,
+    client_packages: &Path,
+    trusted_hosts: &[String],
+) -> Result<String, String> {
+    let dist = yaml_quoted(&dist.to_string_lossy())?;
+    let dir = yaml_quoted(&client_packages.to_string_lossy())?;
+    let mut trusted = String::new();
+    if !trusted_hosts.is_empty() {
+        trusted.push_str("\n    trustedHosts:");
+        for host in trusted_hosts {
+            let quoted = yaml_quoted(host)?;
+            trusted.push_str("\n      - ");
+            trusted.push_str(&quoted);
+        }
+    }
+    Ok(format!(
+        "- name: '@deepseek-ai/dsh-host-webserver'\n  config:\n    host: \"127.0.0.1\"\n    port: {port}{trusted}\n- name: '@deepseek-ai/dsh-host-frontend-static'\n  config:\n    dist: {dist}\n- name: '@deepseek-ai/dsh-client-modules'\n  config:\n    dir: {dir}\n"
+    ))
+}
+
+fn find_entry_mut<'a>(entries: &'a mut [Entry], name: &str) -> Option<&'a mut Entry> {
+    for entry in entries.iter_mut() {
+        if entry.name == name {
+            return Some(entry);
+        }
+        if let Some(found) = find_entry_mut(&mut entry.children, name) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn overlay_by_name(entries: &mut [Entry], overlay: &[Entry]) -> Result<(), String> {
+    for over in overlay {
+        match find_entry_mut(entries, &over.name) {
+            Some(target) => target.config = over.config.clone(),
+            None => {
+                return Err(format!(
+                    "overlay plugin {} is not in the composition",
+                    over.name
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn boot_web_yaml(
+    ctx: &Context,
+    yaml: &str,
+    user_patches: &[String],
+    overlay: &str,
+    registry: &PluginRegistry,
+) -> Result<(), String> {
+    let mut entries = parse_yaml_entries(yaml).map_err(|error| error.to_string())?;
+    for patch_src in user_patches {
+        let patch_list = parse_yaml_patches(patch_src).map_err(|error| error.to_string())?;
+        entries = apply_entry_patches(&entries, &patch_list).map_err(|error| error.to_string())?;
+    }
+    let overlay_entries = parse_yaml_entries(overlay).map_err(|error| error.to_string())?;
+    overlay_by_name(&mut entries, &overlay_entries)?;
+    mount_entries(ctx, &entries, registry, &process_interpolate_env())
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+async fn run_web(launch: WebLaunch) -> Result<i32, String> {
+    ensure_persist_env()?;
+    let yaml = load_web_yaml()?;
+    let dist = resolve_web_dist(launch.dist)?;
+    let client_packages = resolve_client_packages()?;
+    let user_patches = load_patches(&launch.patches)?;
+    let overlay = web_overlay_yaml(launch.port, &dist, &client_packages, &launch.trusted_hosts)?;
+    let ctx = Context::new();
+    let (exit, rx) = AppExit::pair();
+    ctx.provide("appExit", exit)
+        .map_err(|error| error.to_string())?;
+    ctx.provide("cmdlineArgs", CmdlineArgs::new(Vec::new()))
+        .map_err(|error| error.to_string())?;
+    ctx.provide("webIo", WebIo::stdio())
+        .map_err(|error| error.to_string())?;
+    let mut registry = PluginRegistry::new();
+    register_spine_plugins(&mut registry);
+    register_execution_plugins(&mut registry);
+    register_base_plugins(&mut registry);
+    register_host_plugins(&mut registry);
+    boot_web_yaml(&ctx, &yaml, &user_patches, &overlay, &registry).await?;
+    rx.await
+        .map_err(|_| "web host exited without appExit".to_string())
 }
 
 #[cfg(test)]

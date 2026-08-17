@@ -14,7 +14,7 @@ Phase 7 already binds the loopback listener, unary `/api` carrier, WebSocket dow
 
 `register_host_plugins` registers only those seven names. It does not call `register_spine_plugins`, `register_execution_plugins`, or `register_base_plugins`. `dsh-host` does not depend on `dsh-cli` or `dsh-headless`. `dsh-headless` does not depend on `dsh-host`. `dsh-agent` does not depend on `dsh-host`.
 
-Stdout capture is `WebIo` in `dsh-host` (`stdio`, `capture`, `stdout`, `take_stdout`). `web-app` uses inject `"webIo"` when present, otherwise `WebIo::stdio()`. After `serve`, it writes exactly `dsh web: http://127.0.0.1:<bound-port>\n` when `printUrl` is true (default) and provides `listeningHost`. Host-webserver provides `hostBind`; a host other than `127.0.0.1` fails load. Frontend-static provides `webDist` and fails load when `dist` is not an existing directory. Client-modules provides `clientPackages`; an empty directory is an empty graph.
+Stdout capture is `WebIo` in `dsh-host` (`stdio`, `capture`, `stdout`, `take_stdout`). `web-app` uses inject `"webIo"` when present, otherwise `WebIo::stdio()`. After `serve`, it writes exactly `dsh web: http://127.0.0.1:<bound-port>\n` when `printUrl` is true (default) and provides `listeningHost`. Host-webserver provides `hostBind` and `trustedHosts` (string array; omitted is empty); a host other than `127.0.0.1` fails load. Frontend-static provides `webDist` and fails load when `dist` is not an existing directory. Client-modules provides `clientPackages`; an empty directory is an empty graph. `web-app` injects `trustedHosts` into `HostState`.
 
 The dotted map remains in [Phase 7 GUI RpcMethodMap](2026-08-17-rust-gui-rpc-method-map.md). The HTTP/WS wire freeze remains in [Freeze the Rust GUI host four-quadrant wire](../../proposed/architecture/2026-08-16-rust-gui-host-wire.md). `dsh web` is not in this crate.
 
@@ -32,4 +32,4 @@ The dotted map remains in [Phase 7 GUI RpcMethodMap](2026-08-17-rust-gui-rpc-met
 
 ## Consequences
 
-`WEB_YAML` omits frontend-static `dist` and client-modules `dir`, so a boot of the bundled file without those configs fails load. That is fail-loud until `dsh web` supplies directories. Workspace and settings still need `DSH_HOME` / `DSH_SESSION_ROOT` or `path` / `dir` config. The ready line is a stdout contract for supervisors; tests must capture `WebIo` rather than process stdout.
+`WEB_YAML` omits frontend-static `dist` and client-modules `dir`, so a boot of the bundled file without those configs fails load. That is fail-loud until a caller such as [Run dsh web on the Rust host](2026-08-17-rust-dsh-cli-web.md) supplies directories. Workspace and settings still need `DSH_HOME` / `DSH_SESSION_ROOT` or `path` / `dir` config. The ready line is a stdout contract for supervisors; tests must capture `WebIo` rather than process stdout.

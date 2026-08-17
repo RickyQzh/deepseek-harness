@@ -6,5 +6,5 @@ mod run;
 #[cfg(test)]
 mod phase5_exit;
 
-pub use parse::{CliError, HeadlessLaunch, ParsedCli, parse_cli};
+pub use parse::{CliError, HeadlessLaunch, ParsedCli, WebLaunch, parse_cli};
 pub use run::run_cli;

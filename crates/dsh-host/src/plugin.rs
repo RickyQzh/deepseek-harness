@@ -111,8 +111,36 @@ fn required_path(config: &Value, key: &str, name: &str) -> Result<PathBuf, Kerne
     }
 }
 
+fn trusted_hosts_from_config(config: &Value) -> Result<Vec<String>, KernelError> {
+    match config.get("trustedHosts") {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(items)) => {
+            let mut hosts = Vec::new();
+            for item in items {
+                match item {
+                    Value::String(host) if !host.is_empty() => hosts.push(host.clone()),
+                    Value::String(_) => {
+                        return Err(setup_err(
+                            "WebserverConfig.trustedHosts entries must be non-empty strings",
+                        ));
+                    }
+                    _ => {
+                        return Err(setup_err(
+                            "WebserverConfig.trustedHosts must be an array of strings",
+                        ));
+                    }
+                }
+            }
+            Ok(hosts)
+        }
+        Some(_) => Err(setup_err(
+            "WebserverConfig.trustedHosts must be an array of strings",
+        )),
+    }
+}
+
 fn host_bind_from_config(config: &Value) -> Result<HostBind, KernelError> {
-    reject_unknown_keys(config, &["host", "port"], "WebserverConfig")?;
+    reject_unknown_keys(config, &["host", "port", "trustedHosts"], "WebserverConfig")?;
     let host = match config.get("host") {
         Some(Value::String(host)) if !host.is_empty() => host.clone(),
         Some(_) => return Err(setup_err("WebserverConfig.host must be a string")),
@@ -154,7 +182,10 @@ fn register_webserver(registry: &mut PluginRegistry) {
     let setup: PluginSetup = Arc::new(|ctx, config: Value| {
         Box::pin(async move {
             let bind = host_bind_from_config(&config)?;
+            let trusted_hosts = trusted_hosts_from_config(&config)?;
             ctx.provide("hostBind", bind)
+                .map_err(|error| setup_err(error.to_string()))?;
+            ctx.provide("trustedHosts", trusted_hosts)
                 .map_err(|error| setup_err(error.to_string()))?;
             Ok(())
         })
@@ -213,10 +244,11 @@ fn register_web_app(registry: &mut PluginRegistry) {
             if let Some(value) = ctx.get::<SkillRegistry>("skills") {
                 services = services.skills(value);
             }
+            let trusted_hosts = ctx.inject::<Vec<String>>("trustedHosts").await?;
             let lookup = AgentLookup::new(agents, sessions);
             let handler = GuiHandler::new(lookup, services);
             let paths = HostPaths::new((*dist).clone(), (*client_packages).clone());
-            let state = HostState::new((*bind).clone(), paths, Vec::new(), handler)
+            let state = HostState::new((*bind).clone(), paths, (*trusted_hosts).clone(), handler)
                 .map_err(|error| setup_err(error.to_string()))?;
             let host = serve(state)
                 .await

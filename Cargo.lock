@@ -338,8 +338,12 @@ dependencies = [
  "dsh-agent",
  "dsh-base",
  "dsh-boot",
+ "dsh-compose",
  "dsh-headless",
+ "dsh-host",
  "dsh-kernel",
+ "reqwest",
+ "serde_json",
  "tokio",
 ]
 

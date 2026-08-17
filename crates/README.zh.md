@@ -52,7 +52,7 @@ DeepSeek Harness 宿主进程的 Rust workspace 成员。布局、保留/放弃�
 | [`dsh-sdk-jsonrpc-server`](dsh-sdk-jsonrpc-server/README.md) | NDJSON JSON-RPC SDK 服务器与 `dsh-jsonrpc-agent` stdio bin。 |
 | [`dsh-headless`](dsh-headless/README.md) | 一次性 headless 运行器：打印最后一段 assistant 文本加换行；仅当 `turn/end` 为 `completed` 时退出码 0。 |
 | [`dsh-base`](dsh-base/README.md) | 第 6 阶段产品插件聚合器（`register_base_plugins`）以及 headless/jsonrpc 的静态 `base.cordis.yml`。 |
-| [`dsh-cli`](dsh-cli/README.md) | `dsh` clap 启动器：`--profile headless`、`--patch`、一个位置参数任务。 |
+| [`dsh-cli`](dsh-cli/README.md) | `dsh` clap 启动器：`--profile headless` / `web`、`dsh web` 别名、`--patch`。 |
 | [`dsh-rpc`](dsh-rpc/README.md) | GUI 四象限信封（`RpcMessage`、`RpcResult`、`RpcReceipt`）与封闭的 kebab-case 错误码。 |
 | [`dsh-workspace`](dsh-workspace/README.md) | 持久化 JSON 工作区注册表（`workspaces.json`）：路径、标题、会话账本与归档集合。 |
 | [`dsh-host`](dsh-host/README.md) | GUI loopback HTTP 监听器、一元 `/api` dotted 与 slash RPC、信任围栏、SPA 与 `/plugins`。 |

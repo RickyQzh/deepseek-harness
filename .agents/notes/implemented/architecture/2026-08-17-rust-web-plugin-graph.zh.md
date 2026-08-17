@@ -14,7 +14,7 @@ Status: implemented
 
 `register_host_plugins` 只注册这七个名字。它不调用 `register_spine_plugins`、`register_execution_plugins` 或 `register_base_plugins`。`dsh-host` 不依赖 `dsh-cli` 或 `dsh-headless`。`dsh-headless` 不依赖 `dsh-host`。`dsh-agent` 不依赖 `dsh-host`。
 
-stdout 捕获是 `dsh-host` 中的 `WebIo`（`stdio`、`capture`、`stdout`、`take_stdout`）。`web-app` 在存在时 inject `"webIo"`，否则用 `WebIo::stdio()`。`serve` 之后，当 `printUrl` 为 true（默认）时，它恰好写入 `dsh web: http://127.0.0.1:<bound-port>\n`，并提供 `listeningHost`。host-webserver 提供 `hostBind`；主机不是 `127.0.0.1` 时加载失败。frontend-static 提供 `webDist`，当 `dist` 不是已存在的目录时加载失败。client-modules 提供 `clientPackages`；空目录得到空图。
+stdout 捕获是 `dsh-host` 中的 `WebIo`（`stdio`、`capture`、`stdout`、`take_stdout`）。`web-app` 在存在时 inject `"webIo"`，否则用 `WebIo::stdio()`。`serve` 之后，当 `printUrl` 为 true（默认）时，它恰好写入 `dsh web: http://127.0.0.1:<bound-port>\n`，并提供 `listeningHost`。host-webserver 提供 `hostBind` 与 `trustedHosts`（字符串数组；省略则为空）；主机不是 `127.0.0.1` 时加载失败。frontend-static 提供 `webDist`，当 `dist` 不是已存在的目录时加载失败。client-modules 提供 `clientPackages`；空目录得到空图。`web-app` 把 `trustedHosts` 注入 `HostState`。
 
 点分映射仍在[第 7 阶段 GUI RpcMethodMap](2026-08-17-rust-gui-rpc-method-map.md)。HTTP/WS 线路冻结仍在[冻结 Rust GUI 宿主的四象限线路](../../proposed/architecture/2026-08-16-rust-gui-host-wire.md)。`dsh web` 不在本 crate 中。
 
@@ -32,4 +32,4 @@ stdout 捕获是 `dsh-host` 中的 `WebIo`（`stdio`、`capture`、`stdout`、`t
 
 ## 后果
 
-`WEB_YAML` 省略 frontend-static 的 `dist` 与 client-modules 的 `dir`，因此不带这些配置启动捆绑文件会加载失败。这是在 `dsh web` 提供目录之前的明确失败。workspace 与 settings 仍需要 `DSH_HOME` / `DSH_SESSION_ROOT` 或 `path` / `dir` 配置。就绪行是给 supervisor 的 stdout 约定；测试必须捕获 `WebIo`，而不是进程 stdout。
+`WEB_YAML` 省略 frontend-static 的 `dist` 与 client-modules 的 `dir`，因此不带这些配置启动捆绑文件会加载失败。这是明确失败，直到像[在 Rust 宿主上运行 dsh web](2026-08-17-rust-dsh-cli-web.md) 这样的调用方提供目录。workspace 与 settings 仍需要 `DSH_HOME` / `DSH_SESSION_ROOT` 或 `path` / `dir` 配置。就绪行是给 supervisor 的 stdout 约定；测试必须捕获 `WebIo`，而不是进程 stdout。

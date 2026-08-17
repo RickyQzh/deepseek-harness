@@ -13,8 +13,15 @@ clap = { workspace = true }
 dsh-agent = { path = "../dsh-agent" }
 dsh-base = { path = "../dsh-base" }
 dsh-boot = { path = "../dsh-boot" }
+dsh-compose = { path = "../dsh-compose" }
 dsh-headless = { path = "../dsh-headless" }
+dsh-host = { path = "../dsh-host" }
 dsh-kernel = { path = "../dsh-kernel" }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+reqwest = { workspace = true }
 tokio = { workspace = true }
 
 [[bin]]

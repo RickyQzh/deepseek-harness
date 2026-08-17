@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-08-17-rust-web-plugin-graph.md
-2026-08-17-rust-web-plugin-graph.md: b9b8a6fa18bdf5bc019ebc6d314acf1ee467da43
-2026-08-17-rust-web-plugin-graph.zh.md: d91d2721f30e62d28d6b68f2d97976eff57da0db
+2026-08-17-rust-web-plugin-graph.md: ee0d699b236db13ff15df9353514ef8c6a373993
+2026-08-17-rust-web-plugin-graph.zh.md: b7ce5c068368566c0901819816f4fee69d372cbb
