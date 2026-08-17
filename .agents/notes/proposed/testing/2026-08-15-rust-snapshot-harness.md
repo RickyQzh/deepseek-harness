@@ -28,7 +28,7 @@ Cite the rewrite note for keep-or-drop of Cordis, Landlock, `!!js`, and session 
 
 Phase 7 named web scenarios on the Rust `dsh` bin are `rust-host-smoke` and `cold-blank-session`. Remaining `test:web` files stay on the Node scaffold or jsdom. Full `pnpm run test:web` against Rust is the rewrite-program exit named in the [rewrite note](../architecture/2026-08-14-rust-rewrite.md), not the Phase 7 cutover.
 
-When `DSH_RUNTIME=rust`, those named web drivers spawn `target/debug/dsh` (or `DSH_RUNTIME_BIN`) with argv `web --port 0`. Unset `DSH_RUNTIME` keeps the in-process Cordis scaffold. `built-boot.snapshot.ts` stays jsdom/`FixtureApiClient` (no host).
+When `DSH_RUNTIME=rust`, those named web drivers spawn `target/debug/dsh` (or `DSH_RUNTIME_BIN`) with argv `web --port 0 --dist <dir>`. Unset `DSH_RUNTIME` keeps the in-process Cordis scaffold. `built-boot.snapshot.ts` stays jsdom/`FixtureApiClient` (no host).
 
 ## Phase 6 subset
 

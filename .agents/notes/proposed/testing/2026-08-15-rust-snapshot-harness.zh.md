@@ -28,7 +28,7 @@ Cordis、Landlock、`!!js` 与会话格式的保留或放弃引用重写笔记�
 
 第 7 阶段 Rust `dsh` 二进制上的具名 web 场景是 `rust-host-smoke` 与 `cold-blank-session`。其余 `test:web` 文件留在 Node scaffold 或 jsdom。对着 Rust 跑完整的 `pnpm run test:web` 是[重写笔记](../architecture/2026-08-14-rust-rewrite.md)中的重写计划退出条件，不是第 7 阶段的切换点。
 
-当 `DSH_RUNTIME=rust` 时，那些具名 web 驱动 spawn `target/debug/dsh`（若设置了 `DSH_RUNTIME_BIN` 则用该路径），argv 为 `web --port 0`。未设置 `DSH_RUNTIME` 时保持进程内 Cordis scaffold。`built-boot.snapshot.ts` 仍为 jsdom/`FixtureApiClient`（无宿主）。
+当 `DSH_RUNTIME=rust` 时，那些具名 web 驱动 spawn `target/debug/dsh`（若设置了 `DSH_RUNTIME_BIN` 则用该路径），argv 为 `web --port 0 --dist <dir>`。未设置 `DSH_RUNTIME` 时保持进程内 Cordis scaffold。`built-boot.snapshot.ts` 仍为 jsdom/`FixtureApiClient`（无宿主）。
 
 ## 第 6 阶段子集
 
