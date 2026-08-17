@@ -13,6 +13,9 @@ mod static_files;
 mod trust;
 mod ws;
 
+#[cfg(test)]
+mod phase7_exit;
+
 pub use boot::{WebBootEntry, WebBootGraph, inject_boot_manifest};
 pub use dispatch::{RpcHandler, StubHandler};
 pub use lookup::{AgentLookup, DEFAULT_MODEL, DEFAULT_PROVIDER, LookupError};

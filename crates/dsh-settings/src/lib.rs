@@ -4,6 +4,9 @@ mod error;
 pub mod plugin;
 mod service;
 
+#[cfg(test)]
+mod phase7_exit;
+
 pub use error::SettingsError;
 pub use service::{DescribeAll, MutateOp, NamespaceView, SettingsService};
 

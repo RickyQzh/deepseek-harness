@@ -3,6 +3,9 @@
 pub mod plugin;
 mod registry;
 
+#[cfg(test)]
+mod phase7_exit;
+
 pub use registry::{
     CommandDefinition, CommandDescriptor, CommandExecution, CommandHandler, CommandRegistry,
     CommandResult, Dispose, ParsedCommand, RegisterError,

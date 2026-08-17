@@ -5,6 +5,9 @@
 mod error;
 mod message;
 
+#[cfg(test)]
+mod phase7_exit;
+
 pub use error::{RpcError, RpcErrorCode};
 pub use message::{ReceiptReject, RpcId, RpcMessage, RpcReceipt, RpcResult};
 
