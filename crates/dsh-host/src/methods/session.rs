@@ -16,6 +16,7 @@ use crate::dispatch::RpcHandler;
 use crate::lookup::{AgentLookup, DEFAULT_MODEL, DEFAULT_PROVIDER, LookupError};
 
 /// Answers `session.*` and `host.describe`.
+#[derive(Clone)]
 pub struct SessionHandler {
     lookup: AgentLookup,
     workspaces: Option<Arc<WorkspaceRegistry>>,
@@ -69,7 +70,7 @@ async fn dispatch_session(
     payload: Value,
 ) -> RpcResult {
     match method {
-        "host.describe" => RpcResult::ok(crate::dispatch::host_describe_value()),
+        "host.describe" => RpcResult::ok(host_describe_from_lookup(lookup)),
         "session.list" => session_list(lookup),
         "session.create" => session_create(lookup, workspaces, &payload),
         "session.history" => session_history(lookup, &payload).await,
@@ -96,6 +97,16 @@ async fn dispatch_session(
         )),
         _ => RpcResult::err(RpcError::internal("uninstalled dotted method")),
     }
+}
+
+fn host_describe_from_lookup(lookup: &AgentLookup) -> Value {
+    let attached = lookup.registry().list().len();
+    let providers = lookup.registry().list_providers();
+    let provider = match providers.first() {
+        Some(id) => id.as_str(),
+        None => DEFAULT_PROVIDER,
+    };
+    crate::dispatch::describe_host(attached, Some(provider), Some(DEFAULT_MODEL))
 }
 
 fn lookup_rpc(error: LookupError) -> RpcResult {

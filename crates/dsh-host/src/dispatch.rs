@@ -25,6 +25,17 @@ pub trait RpcHandler: Send + Sync {
         rpc_id: &RpcId,
         payload: serde_json::Value,
     ) -> impl Future<Output = RpcResult> + Send;
+
+    /// Run one slash remote (`commands/list`, `commands/execute`). `None` is HTTP 404.
+    fn handle_slash(
+        &self,
+        method: &str,
+        rpc_id: &RpcId,
+        payload: serde_json::Value,
+    ) -> impl Future<Output = Option<RpcResult>> + Send {
+        let _ = (method, rpc_id, payload);
+        async { None }
+    }
 }
 
 pub(crate) trait ErasedRpcHandler: Send + Sync {
@@ -35,6 +46,12 @@ pub(crate) trait ErasedRpcHandler: Send + Sync {
         rpc_id: &'a RpcId,
         payload: serde_json::Value,
     ) -> Pin<Box<dyn Future<Output = RpcResult> + Send + 'a>>;
+    fn handle_slash<'a>(
+        &'a self,
+        method: &'a str,
+        rpc_id: &'a RpcId,
+        payload: serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = Option<RpcResult>> + Send + 'a>>;
 }
 
 impl<T: RpcHandler> ErasedRpcHandler for T {
@@ -49,6 +66,15 @@ impl<T: RpcHandler> ErasedRpcHandler for T {
         payload: serde_json::Value,
     ) -> Pin<Box<dyn Future<Output = RpcResult> + Send + 'a>> {
         Box::pin(RpcHandler::handle_dotted(self, method, rpc_id, payload))
+    }
+
+    fn handle_slash<'a>(
+        &'a self,
+        method: &'a str,
+        rpc_id: &'a RpcId,
+        payload: serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = Option<RpcResult>> + Send + 'a>> {
+        Box::pin(RpcHandler::handle_slash(self, method, rpc_id, payload))
     }
 }
 
@@ -78,6 +104,14 @@ impl RpcHandler for StubHandler {
 }
 
 pub(crate) fn host_describe_value() -> serde_json::Value {
+    describe_host(0, None, None)
+}
+
+pub(crate) fn describe_host(
+    attached_sessions: usize,
+    provider: Option<&str>,
+    model: Option<&str>,
+) -> serde_json::Value {
     let cwd = match std::env::var("DSH_CWD") {
         Ok(cwd) => cwd,
         Err(_) => match std::env::current_dir() {
@@ -85,12 +119,19 @@ pub(crate) fn host_describe_value() -> serde_json::Value {
             Err(_) => String::new(),
         },
     };
-    serde_json::json!({
+    let mut value = serde_json::json!({
         "version": "0.0.1",
         "cwd": cwd,
-        "attachedSessions": 0,
+        "attachedSessions": attached_sessions,
         "canOpenPath": false,
-    })
+    });
+    if let Some(provider) = provider {
+        value["provider"] = serde_json::json!(provider);
+    }
+    if let Some(model) = model {
+        value["model"] = serde_json::json!(model);
+    }
+    value
 }
 
 pub(crate) fn forbidden_response() -> Response {
@@ -128,12 +169,26 @@ pub(crate) async fn dispatch_dotted(
     if is_privileged_method(method) && !privileged_requires_loopback(host_header) {
         return forbidden_response();
     }
-    if !handler.accepts_dotted(method) {
-        return (StatusCode::NOT_FOUND, "not found").into_response();
-    }
     let Some(payload) = message.payload() else {
         return StatusCode::BAD_REQUEST.into_response();
     };
+    if path_suffix.contains('/') {
+        match handler.handle_slash(method, &rpc_id, payload.clone()).await {
+            Some(result) => {
+                return (
+                    StatusCode::OK,
+                    axum::Json(RpcMessage::server_response(rpc_id, result)),
+                )
+                    .into_response();
+            }
+            None => {
+                return (StatusCode::NOT_FOUND, "not found").into_response();
+            }
+        }
+    }
+    if !handler.accepts_dotted(method) {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
     let result = handler
         .handle_dotted(method, &rpc_id, payload.clone())
         .await;

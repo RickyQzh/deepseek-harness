@@ -11,9 +11,13 @@ repository.workspace = true
 [dependencies]
 axum = { workspace = true }
 dsh-agent = { path = "../dsh-agent" }
+dsh-commands = { path = "../dsh-commands" }
+dsh-credentials = { path = "../dsh-credentials" }
 dsh-rpc = { path = "../dsh-rpc" }
 dsh-session = { path = "../dsh-session" }
 dsh-session-persist = { path = "../dsh-session-persist" }
+dsh-settings = { path = "../dsh-settings" }
+dsh-skill = { path = "../dsh-skill" }
 dsh-workspace = { path = "../dsh-workspace" }
 futures = { workspace = true }
 serde = { workspace = true }

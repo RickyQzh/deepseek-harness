@@ -408,6 +408,24 @@ pub(crate) async fn spawn_stub_host() -> ListeningHost {
 
 #[cfg(test)]
 pub(crate) async fn spawn_stub_host_with_trusted(trusted_hosts: &[String]) -> ListeningHost {
+    listen_with_handler(trusted_hosts, StubHandler).await
+}
+
+#[cfg(test)]
+pub(crate) async fn spawn_gui_host() -> ListeningHost {
+    spawn_gui_host_with_trusted(&[]).await
+}
+
+#[cfg(test)]
+pub(crate) async fn spawn_gui_host_with_trusted(trusted_hosts: &[String]) -> ListeningHost {
+    listen_with_handler(trusted_hosts, test_gui_handler()).await
+}
+
+#[cfg(test)]
+async fn listen_with_handler(
+    trusted_hosts: &[String],
+    handler: impl RpcHandler + 'static,
+) -> ListeningHost {
     let dist = test_temp_dir("dsh-host-dist");
     std::fs::write(
         dist.join("index.html"),
@@ -417,9 +435,38 @@ pub(crate) async fn spawn_stub_host_with_trusted(trusted_hosts: &[String]) -> Li
     let client_packages = test_temp_dir("dsh-host-pkgs");
     let bind = HostBind::new("127.0.0.1", 0).expect("loopback bind");
     let paths = HostPaths::new(dist, client_packages);
-    let state =
-        HostState::new(bind, paths, trusted_hosts.to_vec(), StubHandler).expect("host state");
+    let state = HostState::new(bind, paths, trusted_hosts.to_vec(), handler).expect("host state");
     serve(state).await.expect("listen")
+}
+
+#[cfg(test)]
+fn test_gui_handler() -> crate::GuiHandler {
+    use crate::lookup::{AgentLookup, mock_registry};
+    use crate::{GuiHandler, GuiServices};
+    use dsh_commands::CommandRegistry;
+    use dsh_credentials::LayeredCredentials;
+    use dsh_session_persist::JsonlSessionStore;
+    use dsh_settings::SettingsService;
+    use dsh_skill::SkillRegistry;
+    use dsh_workspace::WorkspaceRegistry;
+    use std::sync::Arc;
+
+    let registry = Arc::new(mock_registry());
+    let store = Arc::new(JsonlSessionStore::with_root(test_temp_dir("gui-store")));
+    let lookup = AgentLookup::new(registry, store);
+    GuiHandler::new(
+        lookup,
+        GuiServices::new()
+            .workspaces(Arc::new(WorkspaceRegistry::with_path(
+                test_temp_dir("gui-ws").join("workspaces.json"),
+            )))
+            .settings(Arc::new(SettingsService::with_dir(test_temp_dir(
+                "gui-settings",
+            ))))
+            .credentials(Arc::new(LayeredCredentials::new()))
+            .commands(Arc::new(CommandRegistry::new()))
+            .skills(Arc::new(SkillRegistry::new())),
+    )
 }
 
 #[cfg(test)]
@@ -438,7 +485,73 @@ fn test_temp_dir(prefix: &str) -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{spawn_stub_host, spawn_stub_host_with_trusted};
+    use super::{
+        spawn_gui_host, spawn_gui_host_with_trusted, spawn_stub_host, spawn_stub_host_with_trusted,
+        test_temp_dir,
+    };
+    use crate::dispatch::RpcHandler;
+    use crate::lookup::{AgentLookup, mock_registry};
+    use crate::{GuiHandler, GuiServices};
+    use dsh_rpc::RpcId;
+    use dsh_session_persist::JsonlSessionStore;
+    use dsh_skill::{SkillCandidate, SkillError, SkillProvider, SkillRegistry, SkillSummary};
+    use serde_json::{Value, json};
+    use std::sync::Arc;
+
+    fn client_body(method: &str, payload: Value) -> String {
+        json!({
+            "type": "client-request",
+            "rpcId": "r1",
+            "method": method,
+            "payload": payload,
+        })
+        .to_string()
+    }
+
+    async fn post_api(
+        host: &super::ListeningHost,
+        method: &str,
+        host_header: &str,
+        payload: Value,
+    ) -> reqwest::Response {
+        let url = format!("http://{}/api/{method}", host.local_addr());
+        reqwest::Client::new()
+            .post(&url)
+            .header("host", host_header)
+            .header("content-type", "application/json")
+            .body(client_body(method, payload))
+            .send()
+            .await
+            .unwrap()
+    }
+
+    struct OneSkill;
+
+    impl SkillProvider for OneSkill {
+        fn name(&self) -> &str {
+            "test"
+        }
+
+        fn list(&self, _cwd: Option<&str>) -> Vec<SkillCandidate> {
+            vec![SkillCandidate {
+                summary: SkillSummary {
+                    name: "demo-skill".into(),
+                    description: "a demo skill".into(),
+                    when_to_use: None,
+                    invocation: dsh_skill::SkillInvocationPolicy::default(),
+                    source: "test".into(),
+                    provider: "test".into(),
+                },
+                rank: 1,
+                locator: "demo-skill".into(),
+                path: None,
+            }]
+        }
+
+        fn get(&self, locator: &str) -> Result<dsh_skill::SkillDefinition, SkillError> {
+            Err(SkillError::unknown(locator))
+        }
+    }
 
     #[tokio::test]
     async fn host_describe_returns_server_response_200() {
@@ -525,6 +638,139 @@ mod tests {
             .send()
             .await
             .unwrap();
+        assert_eq!(response.status(), 403);
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn workspace_create_via_http() {
+        let host = spawn_gui_host().await;
+        let dir = test_temp_dir("ws-create-http");
+        let response = post_api(
+            &host,
+            "workspace.create",
+            &host.local_addr().to_string(),
+            json!({ "path": dir }),
+        )
+        .await;
+        assert_eq!(response.status(), 200);
+        let v: Value = response.json().await.unwrap();
+        assert_eq!(v["type"], "server-response");
+        assert_eq!(v["result"]["ok"], true);
+        assert_eq!(v["result"]["value"]["created"], true);
+        assert!(
+            v["result"]["value"]["workspace"]["workspaceId"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty()),
+            "{v}"
+        );
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn skill_list_returns_name_and_description() {
+        let skills = Arc::new(SkillRegistry::new());
+        skills
+            .register_provider(Arc::new(OneSkill))
+            .expect("register skill");
+        let registry = Arc::new(mock_registry());
+        let store = Arc::new(JsonlSessionStore::with_root(test_temp_dir("skill-list")));
+        let lookup = AgentLookup::new(registry, store);
+        let handler = GuiHandler::new(lookup, GuiServices::new().skills(skills));
+        let listed = handler
+            .handle_dotted(
+                "skill.list",
+                &RpcId::new("r-skill"),
+                json!({ "sessionId": "sess-skill" }),
+            )
+            .await;
+        let value = listed.as_ok().expect("skill.list ok");
+        let skills = value["skills"].as_array().expect("skills array");
+        assert!(
+            skills.iter().any(|skill| {
+                skill["name"] == "demo-skill" && skill["description"] == "a demo skill"
+            }),
+            "{skills:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_preset_list_is_standard_readonly() {
+        let registry = Arc::new(mock_registry());
+        let store = Arc::new(JsonlSessionStore::with_root(test_temp_dir("preset-list")));
+        let lookup = AgentLookup::new(registry, store);
+        let handler = GuiHandler::new(lookup, GuiServices::new());
+        let listed = handler
+            .handle_dotted("agentPreset.list", &RpcId::new("r-preset"), json!({}))
+            .await;
+        let value = listed.as_ok().expect("agentPreset.list ok");
+        assert_eq!(value["authorable"], false);
+        assert_eq!(value["hasDocument"], false);
+        assert_eq!(value["presets"][0]["id"], "standard");
+        assert_eq!(value["presets"][0]["readOnly"], true);
+    }
+
+    #[tokio::test]
+    async fn settings_describe_loopback_exposes_ui_onboarding() {
+        let host = spawn_gui_host().await;
+        let response = post_api(
+            &host,
+            "settings.describe",
+            &host.local_addr().to_string(),
+            json!({}),
+        )
+        .await;
+        assert_eq!(response.status(), 200);
+        let v: Value = response.json().await.unwrap();
+        assert_eq!(v["result"]["ok"], true);
+        assert_eq!(v["result"]["value"]["writable"], true);
+        assert_eq!(v["result"]["value"]["hasDocument"], true);
+        let namespaces = v["result"]["value"]["namespaces"]
+            .as_array()
+            .expect("namespaces");
+        assert!(
+            namespaces.iter().any(|ns| ns["ns"] == "ui-onboarding"),
+            "{namespaces:?}"
+        );
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn slash_commands_list_empty_array() {
+        let host = spawn_gui_host().await;
+        let response = post_api(
+            &host,
+            "commands/list",
+            &host.local_addr().to_string(),
+            json!({ "args": {} }),
+        )
+        .await;
+        assert_eq!(response.status(), 200);
+        let v: Value = response.json().await.unwrap();
+        assert_eq!(v["type"], "server-response");
+        assert_eq!(v["result"]["ok"], true);
+        assert_eq!(v["result"]["value"]["commands"], json!([]));
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn slash_goals_create_is_http_404() {
+        let host = spawn_gui_host().await;
+        let response = post_api(
+            &host,
+            "goals/create",
+            &host.local_addr().to_string(),
+            json!({ "args": {} }),
+        )
+        .await;
+        assert_eq!(response.status(), 404);
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn privileged_settings_describe_trusted_non_loopback_is_403() {
+        let host = spawn_gui_host_with_trusted(&["evil.example".into()]).await;
+        let response = post_api(&host, "settings.describe", "evil.example", json!({})).await;
         assert_eq!(response.status(), 403);
         host.shutdown().await;
     }
