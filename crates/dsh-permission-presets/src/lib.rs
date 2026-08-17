@@ -9,4 +9,5 @@ mod phase6_exit;
 pub use service::{
     CUSTOM_PRESET, PermissionError, PermissionPresetConfig, PermissionPresetService, PresetSpec,
     effective_permission_preset, effective_sandbox_mode, set_sandbox_mode,
+    set_sandbox_mode_in_world, set_sandbox_mode_with_terminals,
 };

@@ -621,6 +621,7 @@ dependencies = [
  "dsh-shell",
  "dsh-subprocess",
  "dsh-system-prompt",
+ "dsh-terminal",
  "dsh-tools",
  "dsh-user-approval",
  "serde_json",

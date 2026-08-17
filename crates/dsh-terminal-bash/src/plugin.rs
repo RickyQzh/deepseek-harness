@@ -19,9 +19,10 @@ fn setup_err(message: impl Into<String>) -> KernelError {
 /// Register YAML `@deepseek-ai/dsh-terminal-bash`.
 ///
 /// Parses config (unknown keys fail load), injects `terminals`, `subprocess`, and
-/// `sandboxPolicy`, and registers the configured backend type. Spawn argv is the
-/// configured shell path and args; this plugin does not wrap argv through sandbox
-/// confine.
+/// `sandboxPolicy`, and registers the configured backend type. `danger-full-access`
+/// argv is `[shellPath, ...shellArgs]`. Any other resolved mode looks up optional
+/// `sandbox` as [`dsh_sandbox::LocalSandboxProvider`] at spawn and wraps through
+/// `confine`; a missing provider fails before `spawn_terminal`.
 ///
 /// # Parameters
 ///
@@ -39,7 +40,7 @@ pub fn register(registry: &mut PluginRegistry) {
                 .await?;
             let subprocess = ctx.inject::<LocalSubprocessRuntime>("subprocess").await?;
             let sandbox_policy = ctx.inject::<SandboxPolicyResolver>("sandboxPolicy").await?;
-            let backend = BashTerminalBackend::new(parsed, subprocess, sandbox_policy);
+            let backend = BashTerminalBackend::new(parsed, subprocess, sandbox_policy, ctx.clone());
             let backend_type = backend.backend_type().to_string();
             let backend: Arc<dyn TerminalBackend> = Arc::new(backend);
             terminals
@@ -137,5 +138,99 @@ mod tests {
             .await;
         let _ = std::fs::remove_dir_all(&root);
         assert!(motd.contains("dsh> "), "motd {motd:?}");
+    }
+
+    fn leftover_pty_pids(owner: &str) -> Vec<u32> {
+        let needle = format!("DSH_SESSION_ID={owner}");
+        let mut pids = Vec::new();
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            return pids;
+        };
+        for entry in entries.flatten() {
+            let pid: u32 = match entry.file_name().to_string_lossy().parse() {
+                Ok(pid) => pid,
+                Err(_) => continue,
+            };
+            let Ok(environ) = std::fs::read(format!("/proc/{pid}/environ")) else {
+                continue;
+            };
+            if environ
+                .split(|byte| *byte == 0)
+                .any(|var| var == needle.as_bytes())
+            {
+                pids.push(pid);
+            }
+        }
+        pids
+    }
+
+    #[tokio::test]
+    async fn confined_mode_without_sandbox_fails_before_spawn() {
+        let _guard = lock_pty_tests().await;
+        let root = test_temp_dir("dsh-terminal-bash-no-sandbox");
+        let ctx = Context::new();
+        ctx.provide("terminals", Mutex::new(TerminalSessionService::new()))
+            .expect("provide terminals");
+        ctx.provide("subprocess", LocalSubprocessRuntime::new())
+            .expect("provide subprocess");
+        ctx.provide(
+            "sandboxPolicy",
+            SandboxPolicyResolver::new(
+                SandboxMode::WorkspaceWrite,
+                root.to_string_lossy().into_owned(),
+            ),
+        )
+        .expect("provide sandboxPolicy");
+        let mut registry = PluginRegistry::new();
+        register(&mut registry);
+        boot_yaml(
+            &ctx,
+            "- name: '@deepseek-ai/dsh-terminal-bash'\n  config:\n    pollIntervalMs: 10\n    exactProbeAfterMs: 20\n    idleSilenceMs: 250\n    handoffGraceMs: 50\n    timeoutMs: 5000\n    disposeGraceMs: 500\n",
+            &[],
+            &registry,
+            &process_interpolate_env(),
+        )
+        .await
+        .expect("boot terminal-bash");
+        let terminals = ctx
+            .inject::<Mutex<TerminalSessionService>>("terminals")
+            .await
+            .expect("terminals");
+        let service = terminals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let subprocess = ctx
+            .get::<LocalSubprocessRuntime>("subprocess")
+            .expect("subprocess");
+        let owner = SessionId::new("owner-confined-no-sandbox");
+        let result = service
+            .spawn(
+                owner.clone(),
+                TerminalSpawnRequest::new("shell").with_cwd(root.to_string_lossy().into_owned()),
+            )
+            .await;
+        if let Ok(spawned) = &result {
+            let _ = service
+                .kill(&owner, spawned.session_id(), "cleanup leaked spawn")
+                .await;
+        }
+        subprocess.dispose().await;
+        let leftover = leftover_pty_pids(owner.as_str());
+        let _ = std::fs::remove_dir_all(&root);
+        let err = result.expect_err("confined spawn must fail without sandbox");
+        assert_eq!(
+            err.to_string(),
+            "terminal-bash: sandbox mode \"workspace-write\" requires a ctx.sandbox provider in the execution world"
+        );
+        assert!(
+            !service.has_owner_activity(&owner),
+            "unpublished spawn reservation must be released"
+        );
+        assert!(
+            leftover.is_empty(),
+            "PTY child left behind for {}: {leftover:?}",
+            owner.as_str()
+        );
     }
 }

@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-面向 DeepSeek Harness Rust 宿主的交互式 bash PTY 后端。`register` 挂载 YAML `@deepseek-ai/dsh-terminal-bash`（`dsh_boot::PLUGIN_TERMINAL_BASH`），注入 `terminals`（`Mutex<TerminalSessionService>`）、`subprocess`（`LocalSubprocessRuntime`）和 `sandboxPolicy`（`SandboxPolicyResolver`），然后按配置的后端类型（默认 `shell`）注册。Spawn 的 argv 是 `[shellPath, ...shellArgs]`，不经过 sandbox confine 包装。本后端不依赖 `dsh-agent`、`dsh-acp`、`dsh-host`、`dsh-cli`、`dsh-headless`、`dsh-mcp-client` 或 `dsh-base`。本 crate 不挂入 `base.cordis.yml`。
+面向 DeepSeek Harness Rust 宿主的交互式 bash PTY 后端。`register` 挂载 YAML `@deepseek-ai/dsh-terminal-bash`（`dsh_boot::PLUGIN_TERMINAL_BASH`），注入 `terminals`（`Mutex<TerminalSessionService>`）、`subprocess`（`LocalSubprocessRuntime`）和 `sandboxPolicy`（`SandboxPolicyResolver`），然后按配置的后端类型（默认 `shell`）注册。在 `danger-full-access` 下，spawn 的 argv 是 `[shellPath, ...shellArgs]`。任何其他已解析模式会在 spawn 时可选查找 `sandbox`（`LocalSandboxProvider`），并经 `confine` 包装。缺少 provider 时在 `spawn_terminal` 之前失败，文案为 `terminal-bash: sandbox mode "{mode}" requires a ctx.sandbox provider in the execution world`。本后端不依赖 `dsh-agent`、`dsh-acp`、`dsh-host`、`dsh-cli`、`dsh-headless`、`dsh-mcp-client` 或 `dsh-base`。本 crate 不挂入 `base.cordis.yml`。
 
 未知配置键导致加载失败（`TerminalBashConfig: unknown key "{key}"`）。默认值：`backendType` 为 `shell`，`shellPath` 为 `/bin/bash`，`shellArgs` 为 `--noprofile --norc -i`，`rows` 为 40，`cols` 为 160，`scrollbackLines` 为 10000，`scrollbackMaxBytes` 为 4194304，`maxReadBytes` 为 262144，`pollIntervalMs` 为 50，`exactProbeAfterMs` 为 150，`idleSilenceMs` 为 3000，`handoffGraceMs` 为 500，`timeoutMs` 为 30000，`disposeGraceMs` 为 3000。空的 `backendType` 或 `shellPath` 分别以 `terminal-bash: backendType must be non-empty` / `terminal-bash: shellPath must be non-empty` 失败。非正数或非整数的数值字段以 `terminal-bash: {name} must be a positive safe integer` 失败。`maxReadBytes` 高于 `scrollbackMaxBytes` 时失败，文案为 `terminal-bash: maxReadBytes must not exceed scrollbackMaxBytes`。`handoffGraceMs` 小于 `pollIntervalMs` 时失败，文案为 `terminal-bash: handoffGraceMs must be at least pollIntervalMs so one readiness poll runs inside the grace window`。
 
@@ -20,5 +20,4 @@
 
 ## 已知限制与延后工作
 
-- Spawn 不会通过 sandbox confine 包装 argv。
 - 面向模型的 `terminal_*` 工具在 `dsh-tool-terminal`。

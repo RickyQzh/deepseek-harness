@@ -15,6 +15,7 @@ dsh-kernel = { path = "../dsh-kernel" }
 dsh-sandbox = { path = "../dsh-sandbox" }
 dsh-session = { path = "../dsh-session" }
 dsh-shell = { path = "../dsh-shell" }
+dsh-terminal = { path = "../dsh-terminal" }
 dsh-user-approval = { path = "../dsh-user-approval" }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

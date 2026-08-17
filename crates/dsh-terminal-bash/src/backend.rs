@@ -3,7 +3,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use dsh_sandbox::SandboxPolicyResolver;
+use dsh_kernel::Context;
+use dsh_sandbox::{
+    LocalSandboxProvider, SandboxExecutionPolicy, SandboxMode, SandboxPolicy, SandboxPolicyResolver,
+};
 use dsh_subprocess::{EnvEntry, LocalSubprocessRuntime, SubprocessTerminalSpawnSpec};
 use dsh_terminal::{
     TerminalBackend, TerminalBackendSession, TerminalBackendSpawnFuture, TerminalBackendSpawnSpec,
@@ -39,11 +42,40 @@ fn child_environment(spec: &TerminalBackendSpawnSpec) -> Vec<EnvEntry> {
     ]
 }
 
+fn spawn_argv(
+    ctx: &Context,
+    config: &ResolvedConfig,
+    policy: &SandboxExecutionPolicy,
+) -> Result<Vec<String>, TerminalError> {
+    let mut argv = Vec::with_capacity(config.shell_args.len().saturating_add(1));
+    argv.push(config.shell_path.clone());
+    argv.extend(config.shell_args.iter().cloned());
+    if policy.mode == SandboxMode::DangerFullAccess {
+        return Ok(argv);
+    }
+    let sandbox = match ctx.get::<LocalSandboxProvider>("sandbox") {
+        Some(provider) => provider,
+        None => {
+            return Err(pty_error(format!(
+                "terminal-bash: sandbox mode \"{}\" requires a ctx.sandbox provider in the execution world",
+                policy.mode.as_str()
+            )));
+        }
+    };
+    let confined =
+        SandboxPolicy::confined(policy.clone()).map_err(|error| pty_error(error.to_string()))?;
+    let wrapped = sandbox
+        .confine(&argv, &confined)
+        .map_err(|error| pty_error(error.to_string()))?;
+    Ok(wrapped.argv)
+}
+
 /// Local bash PTY backend.
 pub(crate) struct BashTerminalBackend {
     config: ResolvedConfig,
     subprocess: Arc<LocalSubprocessRuntime>,
     sandbox_policy: Arc<SandboxPolicyResolver>,
+    ctx: Context,
 }
 
 impl BashTerminalBackend {
@@ -51,11 +83,13 @@ impl BashTerminalBackend {
         config: ResolvedConfig,
         subprocess: Arc<LocalSubprocessRuntime>,
         sandbox_policy: Arc<SandboxPolicyResolver>,
+        ctx: Context,
     ) -> Self {
         Self {
             config,
             subprocess,
             sandbox_policy,
+            ctx,
         }
     }
 
@@ -69,7 +103,8 @@ impl TerminalBackend for BashTerminalBackend {
         let config = self.config.clone();
         let subprocess = Arc::clone(&self.subprocess);
         let sandbox_policy = Arc::clone(&self.sandbox_policy);
-        Box::pin(async move { spawn_session(config, subprocess, sandbox_policy, spec).await })
+        let ctx = self.ctx.clone();
+        Box::pin(async move { spawn_session(config, subprocess, sandbox_policy, ctx, spec).await })
     }
 }
 
@@ -77,6 +112,7 @@ async fn spawn_session(
     config: ResolvedConfig,
     subprocess: Arc<LocalSubprocessRuntime>,
     sandbox_policy: Arc<SandboxPolicyResolver>,
+    ctx: Context,
     spec: TerminalBackendSpawnSpec,
 ) -> Result<Box<dyn TerminalBackendSession>, TerminalError> {
     let policy = sandbox_policy.resolve(Some(spec.owner().clone()), None);
@@ -84,9 +120,7 @@ async fn spawn_session(
         Some(cwd) => PathBuf::from(cwd),
         None => PathBuf::from(&policy.workspace_root),
     };
-    let mut argv = Vec::with_capacity(config.shell_args.len().saturating_add(1));
-    argv.push(config.shell_path.clone());
-    argv.extend(config.shell_args.iter().cloned());
+    let argv = spawn_argv(&ctx, &config, &policy)?;
     let spawn_spec = SubprocessTerminalSpawnSpec::new(
         argv,
         cwd,

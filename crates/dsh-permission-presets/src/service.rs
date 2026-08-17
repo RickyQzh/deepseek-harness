@@ -1,9 +1,13 @@
 //! Preset table, pin-at-create, and knob folds.
 
+use std::sync::{Mutex, PoisonError};
+
+use dsh_kernel::Context;
 use dsh_sandbox::SandboxMode;
 use dsh_session::{
     LogEvent, PermissionPresetData, SandboxModeData, Session, SessionError, SessionEvent,
 };
+use dsh_terminal::TerminalSessionService;
 use dsh_user_approval::{ApprovalPolicy, effective_approval_policy, set_approval_policy};
 use serde_json::Value;
 
@@ -138,6 +142,16 @@ pub enum PermissionError {
     /// Session rejected a knob append.
     #[error(transparent)]
     Session(#[from] SessionError),
+    /// A live PTY session blocks a sandbox-mode change.
+    #[error(
+        "cannot change sandbox mode from \"{current}\" to \"{next}\" while persistent terminal sessions are open or being created; wait for creation to settle and close them first"
+    )]
+    SandboxModeLocked {
+        /// Kebab-case mode already in the session log.
+        current: &'static str,
+        /// Kebab-case mode the caller requested.
+        next: &'static str,
+    },
 }
 
 /// Deployment preset table plus the composed sandbox/approval used to fill missing knobs.
@@ -205,6 +219,38 @@ impl PermissionPresetService {
     ///
     /// [`PermissionError::Session`] when an append is rejected.
     pub fn pin_initial(&self, session: &mut Session) -> Result<(), PermissionError> {
+        self.pin_with_terminals(session, None)
+    }
+
+    /// Pin missing knobs, looking up `terminals` on `ctx` for the sandbox-mode fence.
+    ///
+    /// # Parameters
+    ///
+    /// * `ctx` - Execution world that may provide `terminals`.
+    /// * `session` - Session to pin.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` when knobs are present or were appended.
+    ///
+    /// # Errors
+    ///
+    /// [`PermissionError::Session`] when an append is rejected.
+    /// [`PermissionError::SandboxModeLocked`] when `terminals` reports owner activity and the
+    /// sandbox mode would change.
+    pub fn pin_initial_in_world(
+        &self,
+        ctx: &Context,
+        session: &mut Session,
+    ) -> Result<(), PermissionError> {
+        self.pin_with_terminals(session, terminals_from_world(ctx).as_ref())
+    }
+
+    fn pin_with_terminals(
+        &self,
+        session: &mut Session,
+        terminals: Option<&TerminalSessionService>,
+    ) -> Result<(), PermissionError> {
         let selected = effective_permission_preset(session.events());
         let sandbox = effective_sandbox_mode(session.events());
         let approval = effective_approval_policy(session.events());
@@ -212,7 +258,7 @@ impl PermissionPresetService {
         if selected.is_none() && sandbox.is_none() && approval.is_none() && !seeded {
             let spec = self.spec(&self.default_preset);
             append_preset(session, &self.default_preset)?;
-            set_sandbox_mode(session, spec.sandbox)?;
+            set_sandbox_mode_with_terminals(session, spec.sandbox, terminals)?;
             set_approval_policy(session, spec.approval)?;
             return Ok(());
         }
@@ -221,7 +267,7 @@ impl PermissionPresetService {
             append_preset(session, &effective)?;
         }
         if sandbox.is_none() {
-            set_sandbox_mode(session, self.composed_sandbox)?;
+            set_sandbox_mode_with_terminals(session, self.composed_sandbox, terminals)?;
         }
         if approval.is_none() {
             set_approval_policy(session, self.composed_approval)?;
@@ -320,6 +366,73 @@ pub fn set_sandbox_mode(session: &mut Session, mode: SandboxMode) -> Result<(), 
         ignorable: None,
     })?;
     Ok(())
+}
+
+/// Append `sandbox/mode`, refusing a change while `terminals` reports owner activity.
+///
+/// # Parameters
+///
+/// * `session` - Session whose sandbox mode is being written.
+/// * `mode` - Requested kebab-case sandbox mode.
+/// * `terminals` - Live PTY registry when present; `None` skips the activity fence.
+///
+/// # Returns
+///
+/// `Ok(())` after a successful append, including a same-mode append while PTY sessions are open.
+///
+/// # Errors
+///
+/// [`PermissionError::SandboxModeLocked`] when `terminals` is `Some`, the owner has PTY activity,
+/// and `mode` differs from the last `sandbox/mode` event. [`PermissionError::Session`] when the
+/// session rejects the append.
+pub fn set_sandbox_mode_with_terminals(
+    session: &mut Session,
+    mode: SandboxMode,
+    terminals: Option<&TerminalSessionService>,
+) -> Result<(), PermissionError> {
+    if let Some(terminals) = terminals {
+        if terminals.has_owner_activity(session.id()) {
+            if let Some(current) = effective_sandbox_mode(session.events()) {
+                if current != mode {
+                    return Err(PermissionError::SandboxModeLocked {
+                        current: current.as_str(),
+                        next: mode.as_str(),
+                    });
+                }
+            }
+        }
+    }
+    set_sandbox_mode(session, mode)?;
+    Ok(())
+}
+
+/// Append `sandbox/mode` after looking up `terminals` on `ctx`.
+///
+/// # Parameters
+///
+/// * `ctx` - Execution world that may provide `terminals` as
+///   [`Mutex<TerminalSessionService>`](std::sync::Mutex).
+/// * `session` - Session whose sandbox mode is being written.
+/// * `mode` - Requested kebab-case sandbox mode.
+///
+/// # Returns
+///
+/// `Ok(())` after a successful append, including a same-mode append while PTY sessions are open.
+///
+/// # Errors
+///
+/// Same as [`set_sandbox_mode_with_terminals`].
+pub fn set_sandbox_mode_in_world(
+    ctx: &Context,
+    session: &mut Session,
+    mode: SandboxMode,
+) -> Result<(), PermissionError> {
+    set_sandbox_mode_with_terminals(session, mode, terminals_from_world(ctx).as_ref())
+}
+
+fn terminals_from_world(ctx: &Context) -> Option<TerminalSessionService> {
+    ctx.get::<Mutex<TerminalSessionService>>("terminals")
+        .map(|mutex| mutex.lock().unwrap_or_else(PoisonError::into_inner).clone())
 }
 
 fn builtin_two() -> Vec<(String, PresetSpec)> {
@@ -437,11 +550,14 @@ mod tests {
     use super::{
         CUSTOM_PRESET, PermissionPresetConfig, PermissionPresetService, PresetSpec,
         effective_permission_preset, effective_sandbox_mode, set_sandbox_mode,
+        set_sandbox_mode_with_terminals,
     };
     use dsh_sandbox::SandboxMode;
     use dsh_session::{SESSION_FORMAT_VERSION, Session, SessionEvent, SessionHeader, SessionId};
+    use dsh_terminal::{SnapshotBackend, TerminalSessionService, TerminalSpawnRequest};
     use dsh_user_approval::{ApprovalPolicy, effective_approval_policy};
     use serde_json::json;
+    use std::sync::Arc;
 
     fn empty_header() -> SessionHeader {
         SessionHeader {
@@ -699,6 +815,47 @@ mod tests {
         assert_eq!(
             effective_permission_preset(session.events()).as_deref(),
             Some("workspace-write")
+        );
+    }
+
+    #[tokio::test]
+    async fn sandbox_mode_change_rejected_while_pty_open() {
+        let mut session = Session::new(empty_header());
+        set_sandbox_mode(&mut session, SandboxMode::DangerFullAccess).unwrap();
+        let service = TerminalSessionService::new();
+        service
+            .register_backend("shell", Arc::new(SnapshotBackend))
+            .unwrap();
+        let spawned = service
+            .spawn(session.id().clone(), TerminalSpawnRequest::new("shell"))
+            .await
+            .unwrap();
+        assert!(service.has_owner_activity(session.id()));
+        let err =
+            set_sandbox_mode_with_terminals(&mut session, SandboxMode::ReadOnly, Some(&service))
+                .expect_err("mode change while PTY open must fail");
+        assert_eq!(
+            err.to_string(),
+            "cannot change sandbox mode from \"danger-full-access\" to \"read-only\" while persistent terminal sessions are open or being created; wait for creation to settle and close them first"
+        );
+        assert_eq!(count_type(&session, "sandbox/mode"), 1);
+        set_sandbox_mode_with_terminals(
+            &mut session,
+            SandboxMode::DangerFullAccess,
+            Some(&service),
+        )
+        .unwrap();
+        assert_eq!(count_type(&session, "sandbox/mode"), 2);
+        service
+            .kill(session.id(), spawned.session_id(), "test close")
+            .await
+            .unwrap();
+        assert!(!service.has_owner_activity(session.id()));
+        set_sandbox_mode_with_terminals(&mut session, SandboxMode::ReadOnly, Some(&service))
+            .unwrap();
+        assert_eq!(
+            effective_sandbox_mode(session.events()),
+            Some(SandboxMode::ReadOnly)
         );
     }
 

@@ -21,6 +21,8 @@ fn setup_err(message: impl Into<String>) -> KernelError {
 /// Injects `agents`, `approval`, and `shell`. Composed sandbox is
 /// [`LocalBashExecutor::sandbox_mode`] or [`SandboxMode::WorkspaceWrite`] when that is [`None`].
 /// Composed approval is [`ApprovalService::effective_policy`] on an empty log.
+/// Session create looks up `terminals` as [`std::sync::Mutex<dsh_terminal::TerminalSessionService>`]
+/// and pins through [`PermissionPresetService::pin_initial_in_world`].
 pub fn register(registry: &mut PluginRegistry) {
     let setup: PluginSetup = Arc::new(|ctx, config: Value| {
         Box::pin(async move {
@@ -38,11 +40,12 @@ pub fn register(registry: &mut PluginRegistry) {
                 PermissionPresetService::from_config(parsed, composed_sandbox, composed_approval)
                     .map_err(|error| setup_err(error.to_string()))?;
             let hook_service = service.clone();
+            let world = ctx.clone();
             ctx.provide("permissionPresets", service)
                 .map_err(|error| setup_err(error.to_string()))?;
             agents.on_session_create(Arc::new(move |session| {
                 hook_service
-                    .pin_initial(session)
+                    .pin_initial_in_world(&world, session)
                     .expect("pin permission presets");
             }));
             Ok(())
