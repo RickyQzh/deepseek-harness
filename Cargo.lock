@@ -344,6 +344,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-commands"
+version = "0.1.0"
+dependencies = [
+ "dsh-boot",
+ "dsh-kernel",
+ "futures",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "dsh-compaction"
 version = "0.1.0"
 dependencies = [
