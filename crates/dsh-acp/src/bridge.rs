@@ -46,6 +46,7 @@ struct AcpBridgeInner {
     store: Mutex<Option<Arc<JsonlSessionStore>>>,
     closed: AtomicBool,
     pending_notifies: Arc<AtomicUsize>,
+    quiesce: tokio::sync::Mutex<()>,
 }
 
 /// Automation-only ACP server bound to one NDJSON transport.
@@ -303,7 +304,7 @@ impl AcpBridgeInner {
             tx: Mutex::new(Some(tx)),
             end_reason: Mutex::new(None),
         });
-        {
+        let handle = {
             let mut sessions = self.sessions.lock().expect("sessions");
             match sessions.get_mut(&session_id) {
                 None => {
@@ -316,9 +317,10 @@ impl AcpBridgeInner {
                         ));
                     }
                     record.inflight = Some(Arc::clone(&slot));
+                    record.handle.clone()
                 }
             }
-        }
+        };
         let pid = std::process::id();
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -330,11 +332,13 @@ impl AcpBridgeInner {
             content: vec![ContentBlock::Text { text }],
             source: MessageSource::User,
         };
-        if let Err(error) = self.agents.followup(&session_id, message).await {
+        if let Err(error) = handle.followup(message).await {
             self.clear_slot(&session_id, &slot);
             return Err(internal_error(&format!("prompt was not queued: {error}")));
         }
-        let _ = self.agents.when_idle(&session_id).await;
+        // Drive this handle, not registry.when_idle: unregister during quiesce
+        // would fail that method's Idle debug_assert.
+        let _ = handle.run_until_idle().await;
         {
             let mut sessions = self.sessions.lock().expect("sessions");
             if let Some(record) = sessions.get_mut(&session_id) {
@@ -423,6 +427,7 @@ impl AcpBridge {
                 store: Mutex::new(None),
                 closed: AtomicBool::new(false),
                 pending_notifies: Arc::new(AtomicUsize::new(0)),
+                quiesce: tokio::sync::Mutex::new(()),
             }),
         }
     }
@@ -531,7 +536,36 @@ impl AcpBridge {
         Ok(map_permission_result(&result))
     }
 
-    /// Read NDJSON until EOF by delegating to the transport.
+    /// Cancel in-flight prompts, flush an attached store, and unregister every
+    /// live ACP session. Does not drain continuable descendants.
+    ///
+    /// A second overlapping call waits for the first to finish, then returns
+    /// without cancelling again.
+    pub async fn quiesce(&self) {
+        let _guard = self.inner.quiesce.lock().await;
+        if self.inner.closed.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let records: Vec<SessionRecord> = {
+            let mut sessions = self.inner.sessions.lock().expect("sessions");
+            sessions.drain().map(|(_, record)| record).collect()
+        };
+        let store = self.inner.store.lock().expect("store").clone();
+        for record in records {
+            if let Some(slot) = record.inflight {
+                if let Some(tx) = slot.tx.lock().expect("inflight tx").take() {
+                    let _ = tx.send(Ok(StopReason::Cancelled));
+                }
+            }
+            let _ = record.handle.cancel().await;
+            if let Some(store) = store.as_ref() {
+                let _ = store.flush(&record.handle.lock().session);
+            }
+            self.inner.agents.unregister(record.handle.id().as_str());
+        }
+    }
+
+    /// Read NDJSON until EOF, then [`quiesce`](Self::quiesce).
     ///
     /// # Errors
     ///
@@ -539,9 +573,12 @@ impl AcpBridge {
     ///
     /// # Returns
     ///
-    /// `Ok(())` when the input stream reaches EOF.
+    /// `Ok(())` when the input stream reaches EOF. `quiesce` still runs after a
+    /// transport error.
     pub async fn serve(&self) -> Result<(), AcpTransportError> {
-        self.inner.transport.serve().await
+        let result = self.inner.transport.serve().await;
+        self.quiesce().await;
+        result
     }
 }
 
@@ -631,6 +668,7 @@ mod tests {
         tokio::io::Lines<BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>>,
         tokio::task::JoinHandle<Result<(), crate::AcpTransportError>>,
         Arc<AgentRegistry>,
+        AcpBridge,
     ) {
         let (client, server) = duplex(64 * 1024);
         let (client_read, client_write) = tokio::io::split(client);
@@ -655,6 +693,7 @@ mod tests {
             BufReader::new(client_read).lines(),
             serve,
             registry,
+            bridge,
         )
     }
 
@@ -664,7 +703,9 @@ mod tests {
         tokio::task::JoinHandle<Result<(), crate::AcpTransportError>>,
         Arc<AgentRegistry>,
     ) {
-        start_bridge_with(Arc::new(registry_with_text("unused")), None).await
+        let (writer, lines, serve, registry, _bridge) =
+            start_bridge_with(Arc::new(registry_with_text("unused")), None).await;
+        (writer, lines, serve, registry)
     }
 
     async fn write_line(writer: &mut tokio::io::WriteHalf<tokio::io::DuplexStream>, line: &str) {
@@ -672,13 +713,20 @@ mod tests {
         writer.write_all(b"\n").await.unwrap();
     }
 
-    async fn create_session(
+    async fn create_session_with_id(
         writer: &mut tokio::io::WriteHalf<tokio::io::DuplexStream>,
         lines: &mut tokio::io::Lines<BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>>,
+        id: i64,
     ) -> String {
         write_line(
             writer,
-            r#"{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}"#,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "session/new",
+                "params": { "cwd": "/tmp", "mcpServers": [] }
+            })
+            .to_string(),
         )
         .await;
         let line = lines.next_line().await.unwrap().expect("session/new");
@@ -687,6 +735,13 @@ mod tests {
             .as_str()
             .expect("sessionId")
             .to_string()
+    }
+
+    async fn create_session(
+        writer: &mut tokio::io::WriteHalf<tokio::io::DuplexStream>,
+        lines: &mut tokio::io::Lines<BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>>,
+    ) -> String {
+        create_session_with_id(writer, lines, 2).await
     }
 
     async fn read_until_id(
@@ -728,18 +783,72 @@ mod tests {
         .to_string()
     }
 
-    async fn wait_until_adapter_sees_request(adapter: &MockAdapter) {
+    async fn wait_until_adapter_sees_n_requests(adapter: &MockAdapter, n: usize) {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
-            if !adapter.requests.lock().expect("requests").is_empty() {
+            if adapter.requests.lock().expect("requests").len() >= n {
                 return;
             }
             if tokio::time::Instant::now() >= deadline {
-                panic!("timed out waiting for the model request");
+                panic!("timed out waiting for {n} model request(s)");
             }
             tokio::task::yield_now().await;
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
+    }
+
+    async fn wait_until_adapter_sees_request(adapter: &MockAdapter) {
+        wait_until_adapter_sees_n_requests(adapter, 1).await;
+    }
+
+    async fn collect_prompt_results(
+        lines: &mut tokio::io::Lines<BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>>,
+        id_a: i64,
+        id_b: i64,
+    ) -> (Vec<String>, Value, Value) {
+        let mut updates = Vec::new();
+        let mut result_a = None;
+        let mut result_b = None;
+        while result_a.is_none() || result_b.is_none() {
+            let line = lines.next_line().await.unwrap().expect("rpc line");
+            let value: Value = serde_json::from_str(&line).unwrap();
+            if value.get("id") == Some(&json!(id_a)) {
+                result_a = Some(value);
+                continue;
+            }
+            if value.get("id") == Some(&json!(id_b)) {
+                result_b = Some(value);
+                continue;
+            }
+            if value.get("method") == Some(&json!("session/update")) {
+                updates.push(line);
+            }
+        }
+        (
+            updates,
+            result_a.expect("prompt A"),
+            result_b.expect("prompt B"),
+        )
+    }
+
+    fn agent_message_text_for(updates: &[String], session_id: &str) -> String {
+        updates
+            .iter()
+            .filter_map(|line| {
+                let value: Value = serde_json::from_str(line).ok()?;
+                if value["params"]["sessionId"].as_str() != Some(session_id) {
+                    return None;
+                }
+                let update = &value["params"]["update"];
+                if update["sessionUpdate"].as_str() != Some("agent_message_chunk") {
+                    return None;
+                }
+                if update["content"]["type"].as_str() != Some("text") {
+                    return None;
+                }
+                update["content"]["text"].as_str().map(str::to_string)
+            })
+            .collect()
     }
 
     fn last_model_user_text(adapter: &MockAdapter) -> String {
@@ -986,7 +1095,7 @@ mod tests {
         );
         let root = std::env::var("DSH_SESSION_ROOT").expect("pinned root");
         let store = Arc::new(JsonlSessionStore::with_root(&root));
-        let (mut writer, mut lines, serve, _registry) =
+        let (mut writer, mut lines, serve, _registry, _bridge) =
             start_bridge_with(Arc::new(registry), Some(Arc::clone(&store))).await;
         handshake(&mut writer, &mut lines).await;
         let session_id = create_session(&mut writer, &mut lines).await;
@@ -1019,7 +1128,7 @@ mod tests {
             vec![MockScript::Chunks(max_tokens_response("cut off"))],
             |_| {},
         );
-        let (mut writer, mut lines, serve, _registry) =
+        let (mut writer, mut lines, serve, _registry, _bridge) =
             start_bridge_with(Arc::new(registry), None).await;
         handshake(&mut writer, &mut lines).await;
         let session_id = create_session(&mut writer, &mut lines).await;
@@ -1118,7 +1227,7 @@ mod tests {
         let (_lock, previous) = pin_session_root();
         let (registry, adapter) =
             registry_with_scripts(vec![MockScript::Chunks(text_response("done"))], |_| {});
-        let (mut writer, mut lines, serve, _registry) =
+        let (mut writer, mut lines, serve, _registry, _bridge) =
             start_bridge_with(Arc::new(registry), None).await;
         handshake(&mut writer, &mut lines).await;
         let session_id = create_session(&mut writer, &mut lines).await;
@@ -1152,7 +1261,7 @@ mod tests {
             vec![MockScript::Fail(LlmError::new("boom", "UNKNOWN"))],
             |_| {},
         );
-        let (mut writer, mut lines, serve, _registry) =
+        let (mut writer, mut lines, serve, _registry, _bridge) =
             start_bridge_with(Arc::new(registry), None).await;
         handshake(&mut writer, &mut lines).await;
         let session_id = create_session(&mut writer, &mut lines).await;
@@ -1182,7 +1291,7 @@ mod tests {
             ],
             register_echo,
         );
-        let (mut writer, mut lines, serve, _registry) =
+        let (mut writer, mut lines, serve, _registry, _bridge) =
             start_bridge_with(Arc::new(registry), None).await;
         handshake(&mut writer, &mut lines).await;
         let session_id = create_session(&mut writer, &mut lines).await;
@@ -1237,7 +1346,7 @@ mod tests {
     async fn cancel_settles_inflight_as_cancelled() {
         let (_lock, previous) = pin_session_root();
         let (registry, adapter) = registry_with_scripts(vec![MockScript::Hang], |_| {});
-        let (mut writer, mut lines, serve, _registry) =
+        let (mut writer, mut lines, serve, _registry, _bridge) =
             start_bridge_with(Arc::new(registry), None).await;
         handshake(&mut writer, &mut lines).await;
         let session_id = create_session(&mut writer, &mut lines).await;
@@ -1264,7 +1373,7 @@ mod tests {
     async fn overlapping_prompt_is_invalid_params() {
         let (_lock, previous) = pin_session_root();
         let (registry, adapter) = registry_with_scripts(vec![MockScript::Hang], |_| {});
-        let (mut writer, mut lines, serve, _registry) =
+        let (mut writer, mut lines, serve, _registry, _bridge) =
             start_bridge_with(Arc::new(registry), None).await;
         handshake(&mut writer, &mut lines).await;
         let session_id = create_session(&mut writer, &mut lines).await;
@@ -1584,6 +1693,148 @@ mod tests {
         assert!(
             extra.is_err(),
             "no session/request_permission should be sent"
+        );
+        writer.shutdown().await.unwrap();
+        let _ = serve.await;
+        restore_session_root(previous);
+    }
+
+    #[tokio::test]
+    async fn demultiplexes_concurrent_sessions_by_id() {
+        let (_lock, previous) = pin_session_root();
+        let (registry, adapter) = registry_with_scripts(
+            vec![
+                MockScript::Chunks(text_response("answer-A")),
+                MockScript::Chunks(text_response("answer-B")),
+            ],
+            |_| {},
+        );
+        let (mut writer, mut lines, serve, _registry, _bridge) =
+            start_bridge_with(Arc::new(registry), None).await;
+        handshake(&mut writer, &mut lines).await;
+        let session_a = create_session_with_id(&mut writer, &mut lines, 2).await;
+        let session_b = create_session_with_id(&mut writer, &mut lines, 3).await;
+        write_line(
+            &mut writer,
+            &prompt_request(4, &session_a, json!([{"type":"text","text":"go A"}])),
+        )
+        .await;
+        wait_until_adapter_sees_n_requests(&adapter, 1).await;
+        write_line(
+            &mut writer,
+            &prompt_request(5, &session_b, json!([{"type":"text","text":"go B"}])),
+        )
+        .await;
+        let (updates, response_a, response_b) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            collect_prompt_results(&mut lines, 4, 5),
+        )
+        .await
+        .expect("both prompts should settle");
+        assert_eq!(response_a["result"]["stopReason"], json!("end_turn"));
+        assert_eq!(response_b["result"]["stopReason"], json!("end_turn"));
+        assert_eq!(agent_message_text_for(&updates, &session_a), "answer-A");
+        assert_eq!(agent_message_text_for(&updates, &session_b), "answer-B");
+        writer.shutdown().await.unwrap();
+        let _ = serve.await;
+        restore_session_root(previous);
+    }
+
+    #[tokio::test]
+    async fn cancel_one_session_leaves_the_other() {
+        let (_lock, previous) = pin_session_root();
+        let (registry, adapter) = registry_with_scripts(
+            vec![
+                MockScript::Hang,
+                MockScript::Chunks(text_response("B done")),
+            ],
+            |_| {},
+        );
+        let (mut writer, mut lines, serve, _registry, _bridge) =
+            start_bridge_with(Arc::new(registry), None).await;
+        handshake(&mut writer, &mut lines).await;
+        let session_a = create_session_with_id(&mut writer, &mut lines, 2).await;
+        let session_b = create_session_with_id(&mut writer, &mut lines, 3).await;
+        write_line(
+            &mut writer,
+            &prompt_request(4, &session_a, json!([{"type":"text","text":"hang A"}])),
+        )
+        .await;
+        wait_until_adapter_sees_n_requests(&adapter, 1).await;
+        write_line(&mut writer, &cancel_notification(&session_a)).await;
+        let (_updates, cancelled) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            read_until_id(&mut lines, 4),
+        )
+        .await
+        .expect("cancelled prompt should settle");
+        assert_eq!(cancelled["result"]["stopReason"], json!("cancelled"));
+        write_line(
+            &mut writer,
+            &prompt_request(5, &session_b, json!([{"type":"text","text":"go B"}])),
+        )
+        .await;
+        let (updates, response) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            read_until_id(&mut lines, 5),
+        )
+        .await
+        .expect("session B prompt should settle");
+        assert_eq!(response["result"]["stopReason"], json!("end_turn"));
+        assert_eq!(agent_message_text_for(&updates, &session_b), "B done");
+        writer.shutdown().await.unwrap();
+        let _ = serve.await;
+        restore_session_root(previous);
+    }
+
+    #[tokio::test]
+    async fn quiesce_cancels_inflight_and_unregisters() {
+        let (_lock, previous) = pin_session_root();
+        let (registry, adapter) =
+            registry_with_scripts(vec![MockScript::Hang, MockScript::Hang], |_| {});
+        let registry = Arc::new(registry);
+        let (mut writer, mut lines, serve, registry, bridge) =
+            start_bridge_with(registry, None).await;
+        handshake(&mut writer, &mut lines).await;
+        let session_a = create_session_with_id(&mut writer, &mut lines, 2).await;
+        let session_b = create_session_with_id(&mut writer, &mut lines, 3).await;
+        write_line(
+            &mut writer,
+            &prompt_request(4, &session_a, json!([{"type":"text","text":"A"}])),
+        )
+        .await;
+        write_line(
+            &mut writer,
+            &prompt_request(5, &session_b, json!([{"type":"text","text":"B"}])),
+        )
+        .await;
+        wait_until_adapter_sees_n_requests(&adapter, 2).await;
+        bridge.quiesce().await;
+        let (_updates, response_a, response_b) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            collect_prompt_results(&mut lines, 4, 5),
+        )
+        .await
+        .expect("quiesce should settle both prompts");
+        assert_eq!(response_a["result"]["stopReason"], json!("cancelled"));
+        assert_eq!(response_b["result"]["stopReason"], json!("cancelled"));
+        assert!(registry.get(&session_a).is_none());
+        assert!(registry.get(&session_b).is_none());
+        write_line(
+            &mut writer,
+            r#"{"jsonrpc":"2.0","id":6,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}"#,
+        )
+        .await;
+        let (_updates, created) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            read_until_id(&mut lines, 6),
+        )
+        .await
+        .expect("session/new after quiesce should reject");
+        assert_eq!(created["error"]["code"], json!(-32603));
+        assert_eq!(
+            created["error"]["message"],
+            json!("Internal error: the ACP bridge has been disposed")
         );
         writer.shutdown().await.unwrap();
         let _ = serve.await;

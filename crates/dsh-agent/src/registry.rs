@@ -365,6 +365,18 @@ impl AgentRegistry {
         self.agents.lock().expect("agents").get(session_id).cloned()
     }
 
+    /// Drop the live handle for `session_id` from the map.
+    ///
+    /// Does not dispose the kernel [`Context`]. After this call, [`get`](Self::get)
+    /// returns `None` for `session_id`.
+    ///
+    /// # Returns
+    ///
+    /// The removed handle, or `None` when that id was not registered.
+    pub fn unregister(&self, session_id: &str) -> Option<AgentHandle> {
+        self.agents.lock().expect("agents").remove(session_id)
+    }
+
     /// Live handles in unspecified order.
     #[must_use]
     pub fn list(&self) -> Vec<AgentHandle> {
@@ -545,6 +557,29 @@ mod tests {
     fn unknown_session_is_an_error() {
         let registry = registry_with_text("x");
         assert!(registry.get("missing").is_none());
+    }
+
+    #[test]
+    fn unregister_drops_live_handle() {
+        let registry = registry_with_text("x");
+        registry
+            .create(CreateAgentOptions {
+                session_id: SessionId::new("sess-unreg"),
+                cwd: None,
+                provider: "mock".into(),
+                model: "mock".into(),
+                max_tokens: None,
+            })
+            .unwrap();
+        assert!(registry.get("sess-unreg").is_some());
+        assert!(registry.unregister("sess-unreg").is_some());
+        assert!(registry.get("sess-unreg").is_none());
+        assert!(
+            registry
+                .list()
+                .iter()
+                .all(|handle| handle.id().as_str() != "sess-unreg")
+        );
     }
 
     #[test]
