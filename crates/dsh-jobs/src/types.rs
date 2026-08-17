@@ -49,13 +49,15 @@ impl fmt::Display for JobStatus {
     }
 }
 
-/// Producer kind; also the id prefix (`bash` / `subagent`).
+/// Producer kind; also the id prefix (`bash` / `subagent` / `pty-send`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum JobKind {
     /// Shell / bash producer namespace.
     Bash,
     /// Subagent producer namespace.
     Subagent,
+    /// Persistent-terminal send producer namespace.
+    PtySend,
 }
 
 impl JobKind {
@@ -65,6 +67,7 @@ impl JobKind {
         match self {
             Self::Bash => "bash",
             Self::Subagent => "subagent",
+            Self::PtySend => "pty-send",
         }
     }
 }
@@ -288,4 +291,15 @@ pub trait JobRegistry: Send + Sync {
         caller: Option<&SessionId>,
         reason: Option<String>,
     ) -> Result<KillResult, JobError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::JobKind;
+
+    #[test]
+    fn job_kind_pty_send_prefix() {
+        assert_eq!(JobKind::PtySend.as_str(), "pty-send");
+        assert_eq!(JobKind::PtySend.to_string(), "pty-send");
+    }
 }

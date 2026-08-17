@@ -2,9 +2,9 @@
 
 English | [中文](README.zh.md)
 
-Six model-facing `terminal_*` tools over [`dsh-terminal`](../dsh-terminal/README.md): `terminal_open`, `terminal_send`, `terminal_read`, `terminal_signal`, `terminal_close`, and `terminal_list`. YAML name `@deepseek-ai/dsh-tool-terminal`. Owner identity is `ToolExecution.session_id` (`SessionId`); a missing session fails closed with `terminal tools require an initiating session`. This crate does not depend on `dsh-agent`, `dsh-acp`, or `dsh-jobs`. It is not added to `register_spine_plugins` and is not mounted in `base.cordis.yml`.
+Six model-facing `terminal_*` tools over [`dsh-terminal`](../dsh-terminal/README.md): `terminal_open`, `terminal_send`, `terminal_read`, `terminal_signal`, `terminal_close`, and `terminal_list`. YAML name `@deepseek-ai/dsh-tool-terminal`. Owner identity is `ToolExecution.session_id` (`SessionId`); a missing session fails closed with `terminal tools require an initiating session`. This crate depends on [`dsh-jobs`](../dsh-jobs/README.md) and [`dsh-jobs-local`](../dsh-jobs-local/README.md) for background sends and does not depend on `dsh-agent` or `dsh-acp`. Plugin inject stays `tools` / `terminals` / `systemPrompt`; `jobs` is looked up at execute time. It is not added to `register_spine_plugins` and is not mounted in `base.cordis.yml`.
 
-`terminal_send` is foreground-only in this crate. `enableRunInBackground` default **true** advertises `run_in_background` and appends ` Background mode returns a job id for job_output/job_kill.` to the description; `run_in_background: true` still returns `background terminal sends require @deepseek-ai/dsh-jobs and @deepseek-ai/dsh-tool-jobs` until jobs are mounted. When `enableRunInBackground` is false, the schema omits `run_in_background` and a forced `true` fails with `background terminal sends are disabled by tool-terminal configuration`. `submit` defaults to true. Close reason is `model request`. Concurrent `kill` of an in-flight close renders `terminal session {id} was already closing`.
+`enableRunInBackground` default **true** advertises `run_in_background` and appends ` Background mode returns a job id for job_output/job_kill.` to the description. When `jobs` is provided, `run_in_background: true` starts a `pty-send` job and returns `{ kind: "background", jobId }` rendered as `started background job {jobId}`. Missing jobs still returns `background terminal sends require @deepseek-ai/dsh-jobs and @deepseek-ai/dsh-tool-jobs`. When `enableRunInBackground` is false, the schema omits `run_in_background` and a forced `true` fails with `background terminal sends are disabled by tool-terminal configuration`. `submit` defaults to true. Close reason is `model request`. Concurrent `kill` of an in-flight close renders `terminal session {id} was already closing`.
 
 `maxResultBytes` default `256 * 1024`, minimum `64`. Unknown config keys fail load. Null config uses defaults. Bounding is UTF-8 byte-oriented inside `render.rs` (`\n[output truncated]`). Presentation helpers (`present_*`) are pure functions of args and are not stored on `ToolDefinition`.
 
@@ -36,6 +36,5 @@ Prefix-stable guidance plus append-only tool results after the reusable request 
 
 ## Known Limitations and Deferred Work
 
-- Background `run_in_background` sends return the jobs-required sentence until `dsh-jobs` and `dsh-tool-jobs` are mounted.
 - `register` is not called from `register_base_plugins`.
 - Named ACP `pty-tools` is not assembled.

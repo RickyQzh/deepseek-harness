@@ -943,6 +943,8 @@ name = "dsh-tool-terminal"
 version = "0.1.0"
 dependencies = [
  "dsh-boot",
+ "dsh-jobs",
+ "dsh-jobs-local",
  "dsh-kernel",
  "dsh-session",
  "dsh-system-prompt",

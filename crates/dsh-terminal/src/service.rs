@@ -556,11 +556,51 @@ impl TerminalSendResult {
     }
 }
 
+/// Cloneable cancel and incremental-read handles for one live send.
+///
+/// [`TerminalSendOperation::share`] clones these so they stay callable while
+/// [`TerminalSendOperation::done`] is polled. Completing `done` or dropping the
+/// operation still clears the session's exclusive-send flag.
+#[derive(Clone)]
+pub struct TerminalSendShared {
+    read_output: Arc<dyn Fn() -> TerminalSendRead + Send + Sync>,
+    cancel: Arc<dyn Fn() -> bool + Send + Sync>,
+}
+
+impl TerminalSendShared {
+    /// Consume output produced since the prior call.
+    ///
+    /// # Parameters
+    ///
+    /// None.
+    ///
+    /// # Returns
+    ///
+    /// The incremental read.
+    #[must_use]
+    pub fn read_output(&self) -> TerminalSendRead {
+        (self.read_output)()
+    }
+
+    /// Request `SIGINT`. Snapshot `done` is already resolved, so this returns false.
+    ///
+    /// # Parameters
+    ///
+    /// None.
+    ///
+    /// # Returns
+    ///
+    /// `true` when cancellation was accepted; `false` after settlement.
+    #[must_use]
+    pub fn cancel(&self) -> bool {
+        (self.cancel)()
+    }
+}
+
 /// Live backend-owned send; exactly one may be active per PTY session.
 pub struct TerminalSendOperation {
     done: Pin<Box<dyn Future<Output = TerminalSendResult> + Send>>,
-    read_output: Box<dyn Fn() -> TerminalSendRead + Send + Sync>,
-    cancel: Box<dyn Fn() -> bool + Send + Sync>,
+    shared: TerminalSendShared,
     on_settle: Option<Box<dyn FnOnce() + Send>>,
 }
 
@@ -584,8 +624,10 @@ impl TerminalSendOperation {
     ) -> Self {
         Self {
             done,
-            read_output,
-            cancel,
+            shared: TerminalSendShared {
+                read_output: Arc::from(read_output),
+                cancel: Arc::from(cancel),
+            },
             on_settle: None,
         }
     }
@@ -593,6 +635,21 @@ impl TerminalSendOperation {
     pub(crate) fn with_on_settle(mut self, on_settle: Box<dyn FnOnce() + Send>) -> Self {
         self.on_settle = Some(on_settle);
         self
+    }
+
+    /// Clone cancel and read handles that stay callable while [`Self::done`] is polled.
+    ///
+    /// # Parameters
+    ///
+    /// None.
+    ///
+    /// # Returns
+    ///
+    /// A cloneable handle whose [`TerminalSendShared::cancel`] and
+    /// [`TerminalSendShared::read_output`] do not borrow this operation.
+    #[must_use]
+    pub fn share(&self) -> TerminalSendShared {
+        self.shared.clone()
     }
 
     /// Await settlement.
@@ -621,7 +678,7 @@ impl TerminalSendOperation {
     /// The incremental read.
     #[must_use]
     pub fn read_output(&self) -> TerminalSendRead {
-        (self.read_output)()
+        self.shared.read_output()
     }
 
     /// Request `SIGINT`. Snapshot `done` is already resolved, so this returns false.
@@ -635,7 +692,7 @@ impl TerminalSendOperation {
     /// `true` when cancellation was accepted; `false` after settlement.
     #[must_use]
     pub fn cancel(&self) -> bool {
-        (self.cancel)()
+        self.shared.cancel()
     }
 
     fn settle(&mut self) {
@@ -2194,7 +2251,10 @@ mod tests {
             .expect("close started");
         first.abort();
         assert!(
-            first.await.expect_err("first kill cancelled").is_cancelled(),
+            first
+                .await
+                .expect_err("first kill cancelled")
+                .is_cancelled(),
             "first kill task should be cancelled"
         );
         let _ = release_tx.send(());

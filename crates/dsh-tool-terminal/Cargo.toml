@@ -10,6 +10,8 @@ repository.workspace = true
 
 [dependencies]
 dsh-boot = { path = "../dsh-boot" }
+dsh-jobs = { path = "../dsh-jobs" }
+dsh-jobs-local = { path = "../dsh-jobs-local" }
 dsh-kernel = { path = "../dsh-kernel" }
 dsh-session = { path = "../dsh-session" }
 dsh-system-prompt = { path = "../dsh-system-prompt" }

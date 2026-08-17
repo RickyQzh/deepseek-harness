@@ -76,6 +76,7 @@ pub fn register(registry: &mut PluginRegistry) {
                 &mut tools.lock().unwrap_or_else(PoisonError::into_inner),
                 service,
                 resolved,
+                ctx.clone(),
             );
             Ok(())
         })
@@ -183,6 +184,35 @@ mod tests {
         boot_stack_yaml("").await
     }
 
+    const STACK_YAML_WITH_JOBS: &str = "\
+- name: '@deepseek-ai/dsh-tools'
+- name: '@deepseek-ai/dsh-system-prompt'
+- name: '@deepseek-ai/dsh-terminal'
+- name: pty-snapshot-backend
+- name: '@deepseek-ai/dsh-jobs-local'
+- name: '@deepseek-ai/dsh-tool-terminal'
+";
+
+    async fn boot_stack_with_jobs() -> Context {
+        let ctx = Context::new();
+        let mut registry = PluginRegistry::new();
+        dsh_tools::plugin::register(&mut registry);
+        dsh_system_prompt::plugin::register(&mut registry);
+        dsh_terminal::register_terminal_plugins(&mut registry);
+        dsh_jobs_local::register(&mut registry);
+        register(&mut registry);
+        boot_yaml(
+            &ctx,
+            STACK_YAML_WITH_JOBS,
+            &[],
+            &registry,
+            &process_interpolate_env(),
+        )
+        .await
+        .expect("boot tool-terminal stack with jobs");
+        ctx
+    }
+
     fn owner() -> SessionId {
         SessionId::new("owner-a")
     }
@@ -282,6 +312,51 @@ mod tests {
             failure_message(&result),
             "terminal tools require an initiating session"
         );
+    }
+
+    #[tokio::test]
+    async fn background_send_returns_job_id() {
+        let ctx = boot_stack_with_jobs().await;
+        let tools = ctx
+            .inject::<Mutex<ToolRuntime>>("tools")
+            .await
+            .expect("tools");
+        let opened = execute(
+            &tools,
+            "terminal_open",
+            json!({ "type": "shell" }),
+            Some(owner()),
+        )
+        .await;
+        assert!(!opened.is_error(), "{}", text_of(&opened));
+        let session_id = match &opened {
+            ToolExecutionResult::Success { value, .. } => {
+                value["sessionId"].as_str().expect("sessionId").to_string()
+            }
+            ToolExecutionResult::Failure { .. } => panic!("expected open success"),
+        };
+        let result = execute(
+            &tools,
+            "terminal_send",
+            json!({
+                "sessionId": session_id,
+                "text": "work",
+                "run_in_background": true,
+            }),
+            Some(owner()),
+        )
+        .await;
+        if result.is_error() {
+            panic!("{}", failure_message(&result));
+        }
+        match &result {
+            ToolExecutionResult::Success { value, .. } => {
+                assert_eq!(value["kind"], "background");
+                assert_eq!(value["jobId"], "pty-send-1");
+            }
+            ToolExecutionResult::Failure { .. } => panic!("expected success"),
+        }
+        assert_eq!(text_of(&result), "started background job pty-send-1");
     }
 
     #[tokio::test]

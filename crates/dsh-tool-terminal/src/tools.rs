@@ -1,18 +1,24 @@
 //! Execute bodies for the six `terminal_*` tools.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use dsh_jobs::{JobHooks, JobKind, JobOutcome, JobStart, JobStatus};
+use dsh_jobs_local::LocalJobRegistry;
+use dsh_kernel::Context;
 use dsh_session::{ContentBlock, SessionId};
 use dsh_terminal::{
-    TerminalReadRequest, TerminalSendRequest, TerminalSessionId, TerminalSessionService,
-    TerminalSessionSnapshot, TerminalSessionStatus, TerminalSignal, TerminalSpawnRequest,
-    TerminalSpawnResult, TerminalWaitReason,
+    TerminalReadRequest, TerminalSendOperation, TerminalSendRequest, TerminalSendResult,
+    TerminalSessionId, TerminalSessionService, TerminalSessionSnapshot, TerminalSessionStatus,
+    TerminalSignal, TerminalSpawnRequest, TerminalSpawnResult, TerminalWaitReason,
 };
 use dsh_tools::{ToolDefinition, ToolError, ToolExecution, ToolRuntime};
 use serde_json::{Map, Value, json};
 
 use crate::plugin::ToolTerminalConfig;
 use crate::render::{
-    list_from_json, read_from_json, render_list, render_read, render_send, render_spawn,
-    send_from_json, spawn_from_json,
+    RenderedSendRead, list_from_json, read_from_json, render_list, render_read, render_send,
+    render_send_read, render_spawn, send_from_json, spawn_from_json,
 };
 
 const MISSING_SESSION: &str = "terminal tools require an initiating session";
@@ -186,13 +192,14 @@ fn send_description(enable_run_in_background: bool) -> String {
     }
 }
 
-/// Register the six `terminal_*` tools. Clone `terminals` into each closure.
+/// Register the six `terminal_*` tools. Clone `terminals` and `ctx` into each closure.
 ///
 /// # Parameters
 ///
 /// * `runtime` - Tool registry that receives the six definitions.
 /// * `terminals` - Cloned session service captured by execute closures.
 /// * `config` - Validated `enableRunInBackground` and `maxResultBytes`.
+/// * `ctx` - Cloned into `terminal_send` so execute can look up `jobs` without injecting it.
 ///
 /// # Returns
 ///
@@ -201,6 +208,7 @@ pub(crate) fn register_terminal_tools(
     runtime: &mut ToolRuntime,
     terminals: TerminalSessionService,
     config: ToolTerminalConfig,
+    ctx: Context,
 ) {
     let max_result_bytes = config.max_result_bytes;
     let enable_run_in_background = config.enable_run_in_background;
@@ -241,18 +249,25 @@ pub(crate) fn register_terminal_tools(
 
     {
         let terminals = terminals.clone();
+        let ctx = ctx.clone();
         runtime.register(ToolDefinition {
             name: "terminal_send".into(),
             description: send_description(enable_run_in_background),
             parameters: send_parameters(enable_run_in_background),
             execute: Box::new(move |args, exec| {
                 let terminals = terminals.clone();
+                let ctx = ctx.clone();
                 Box::pin(async move {
-                    execute_send(terminals, args, exec, enable_run_in_background).await
+                    execute_send(ctx, terminals, args, exec, enable_run_in_background).await
                 })
             }),
             render: Box::new(move |_args, value| {
-                text_block(render_send(&send_from_json(value), max_result_bytes))
+                if value.get("kind").and_then(Value::as_str) == Some("background") {
+                    let job_id = value.get("jobId").and_then(Value::as_str).unwrap_or("");
+                    text_block(format!("started background job {job_id}"))
+                } else {
+                    text_block(render_send(&send_from_json(value), max_result_bytes))
+                }
             }),
             is_concurrency_safe: None,
         });
@@ -399,7 +414,71 @@ async fn execute_open(
     Ok(spawn_to_json(&result))
 }
 
+fn send_job_detail(result: &TerminalSendResult) -> String {
+    match result.session_status() {
+        TerminalSessionStatus::Running => {
+            format!("wait: {}", wait_reason_str(result.wait_reason()))
+        }
+        TerminalSessionStatus::Exited { exit_code, signal } => {
+            let detail = exit_code
+                .map(|code| code.to_string())
+                .or(signal)
+                .unwrap_or_else(|| "unknown".into());
+            format!("session exited: {detail}")
+        }
+    }
+}
+
+fn failed_pty_send_hooks(detail: String) -> JobHooks {
+    JobHooks {
+        cancel: Box::new(|_| {}),
+        done: Box::pin(async move {
+            JobOutcome {
+                status: JobStatus::Failed,
+                detail: Some(detail),
+                output: None,
+            }
+        }),
+        read_output: Some(Box::new(String::new)),
+    }
+}
+
+fn pty_send_hooks(mut operation: TerminalSendOperation) -> JobHooks {
+    let shared = operation.share();
+    let cancel_requested = Arc::new(AtomicBool::new(false));
+    let cancel_flag = Arc::clone(&cancel_requested);
+    let cancel_shared = shared.clone();
+    let read_shared = shared;
+    JobHooks {
+        cancel: Box::new(move |_reason| {
+            cancel_flag.store(true, Ordering::SeqCst);
+            let _ = cancel_shared.cancel();
+        }),
+        done: Box::pin(async move {
+            let result = operation.done().await;
+            let status = if cancel_requested.load(Ordering::SeqCst) {
+                JobStatus::Killed
+            } else {
+                JobStatus::Completed
+            };
+            JobOutcome {
+                status,
+                detail: Some(send_job_detail(&result)),
+                output: None,
+            }
+        }),
+        read_output: Some(Box::new(move || {
+            let read = read_shared.read_output();
+            render_send_read(&RenderedSendRead::new(
+                read.delta().to_string(),
+                read.truncated(),
+            ))
+        })),
+    }
+}
+
 async fn execute_send(
+    ctx: Context,
     terminals: TerminalSessionService,
     args: Value,
     exec: ToolExecution,
@@ -416,7 +495,33 @@ async fn execute_send(
         if !enable_run_in_background {
             return Err(tool_err(BACKGROUND_DISABLED));
         }
-        return Err(tool_err(JOBS_REQUIRED));
+        let Some(jobs) = ctx.get::<LocalJobRegistry>("jobs") else {
+            return Err(tool_err(JOBS_REQUIRED));
+        };
+        let label = format!(
+            "{id}: {}",
+            if text.is_empty() {
+                "(input)"
+            } else {
+                text.as_str()
+            }
+        );
+        let request = TerminalSendRequest::new(text, submit);
+        let job_id = jobs
+            .start(JobStart {
+                kind: JobKind::PtySend,
+                label,
+                owner_session: Some(owner.clone()),
+                run: Box::new(move || match terminals.start_send(&owner, &id, request) {
+                    Ok(operation) => pty_send_hooks(operation),
+                    Err(error) => failed_pty_send_hooks(error.to_string()),
+                }),
+            })
+            .map_err(tool_err)?;
+        return Ok(json!({
+            "kind": "background",
+            "jobId": job_id.as_str(),
+        }));
     }
     let mut operation = terminals
         .start_send(&owner, &id, TerminalSendRequest::new(text, submit))

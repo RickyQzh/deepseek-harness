@@ -11,7 +11,8 @@ pub use service::{
     TerminalBackend, TerminalBackendSession, TerminalBackendSpawnFuture, TerminalBackendSpawnSpec,
     TerminalError, TerminalErrorCode, TerminalReadRequest, TerminalReadResult,
     TerminalSendOperation, TerminalSendRead, TerminalSendRequest, TerminalSendResult,
-    TerminalSessionService, TerminalSessionSnapshot, TerminalSessionStatus, TerminalSignal,
-    TerminalSignalResult, TerminalSpawnRequest, TerminalSpawnResult, TerminalWaitReason,
+    TerminalSendShared, TerminalSessionService, TerminalSessionSnapshot, TerminalSessionStatus,
+    TerminalSignal, TerminalSignalResult, TerminalSpawnRequest, TerminalSpawnResult,
+    TerminalWaitReason,
 };
 pub use snapshot::SnapshotBackend;
