@@ -1,8 +1,18 @@
 //! ACP stdio adapter for the DeepSeek Harness Rust host.
 
+mod error;
 mod plugin;
+mod rpc;
 
+pub use error::{
+    AcpError, ERR_INTERNAL, ERR_INVALID_PARAMS, ERR_INVALID_REQUEST, ERR_METHOD_NOT_FOUND,
+    ERR_PARSE, internal_error, invalid_params, method_not_found,
+};
 pub use plugin::{ACP_SERVER_SERVICE, register, register_acp_plugins};
+pub use rpc::{
+    AcpNdjsonTransport, AcpTransportError, JSONRPC_VERSION, JsonRpcId, NotificationHandler,
+    RequestHandler,
+};
 
 #[cfg(test)]
 mod tests {
