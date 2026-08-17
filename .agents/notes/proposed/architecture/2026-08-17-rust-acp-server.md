@@ -20,7 +20,7 @@ Phase 8 item 1 keeps `pnpm run demo:acp` as the TypeScript example. Named scenar
 
 ## Wire freeze
 
-Transport is one UTF-8 JSON object per line. Stdout carries only those frames. Diagnostics go to stderr. There is no ready URL line.
+Transport is one UTF-8 JSON object per line. Stdout carries only those frames. Diagnostics go to stderr. There is no ready URL line. `AcpBridge::serve` returns from stdin EOF only after `quiesce` and after spawned inbound request handlers have written their JSON-RPC responses, so a one-line `initialize` pipe is not dropped when the process exits.
 
 `session/prompt` blocks until whole-agent idle and returns `{ "stopReason": … }`. Token-limit turn endings settle as `end_turn`. Explicit cancel, disposal, or a turnless slot settles as `cancelled`. The codec maps `max-tokens` to `max_tokens` for other callers; the prompt RPC does not use that value.
 

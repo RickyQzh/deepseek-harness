@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -82,6 +83,15 @@ struct TransportInner {
     request: std::sync::Mutex<Option<RequestHandler>>,
     notification: std::sync::Mutex<Option<NotificationHandler>>,
     next_id: tokio::sync::Mutex<u64>,
+    inflight_requests: AtomicUsize,
+}
+
+struct InflightGuard(Arc<TransportInner>);
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        self.0.inflight_requests.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// Line-delimited ACP JSON-RPC endpoint over caller-owned async streams.
@@ -240,6 +250,7 @@ impl AcpNdjsonTransport {
                 request: std::sync::Mutex::new(None),
                 notification: std::sync::Mutex::new(None),
                 next_id: tokio::sync::Mutex::new(1),
+                inflight_requests: AtomicUsize::new(0),
             }),
             reader: Arc::new(tokio::sync::Mutex::new(Some(Box::new(input)))),
         }
@@ -269,6 +280,7 @@ impl AcpNdjsonTransport {
 
     /// Read NDJSON until EOF. Empty and whitespace-only lines are skipped. Malformed lines are ignored.
     /// Each inbound request is spawned so the reader stays live while a handler awaits.
+    /// Returns on EOF without waiting for those spawned handlers; [`AcpBridge::serve`](crate::AcpBridge::serve) waits after `quiesce`.
     ///
     /// # Errors
     ///
@@ -297,7 +309,12 @@ impl AcpNdjsonTransport {
             match frame {
                 DecodedFrame::Request { id, method, params } => {
                     let transport = self.clone();
+                    transport
+                        .inner
+                        .inflight_requests
+                        .fetch_add(1, Ordering::SeqCst);
                     tokio::spawn(async move {
+                        let _guard = InflightGuard(Arc::clone(&transport.inner));
                         let _ = transport.handle_request(id, method, params).await;
                     });
                 }
@@ -387,6 +404,18 @@ impl AcpNdjsonTransport {
             .map_err(|error| internal_error(&error.to_string()))?;
         rx.await
             .map_err(|_| internal_error("JSON-RPC transport closed"))?
+    }
+
+    /// Wait until every spawned inbound request handler has finished writing.
+    ///
+    /// Call this after [`AcpBridge::quiesce`](crate::AcpBridge::quiesce) so a hanging
+    /// `session/prompt` can settle before the wait. Without it, stdin EOF returns
+    /// while handlers are still spawned and process exit drops the response.
+    pub(crate) async fn wait_inflight_requests(&self) {
+        while self.inner.inflight_requests.load(Ordering::SeqCst) > 0 {
+            tokio::task::yield_now().await;
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
     }
 
     /// Reject pending requests and shut down the writer so the peer `serve` reaches EOF.
@@ -505,6 +534,46 @@ mod tests {
         assert_eq!(value["result"], json!({"ok": true}));
         writer.shutdown().await.unwrap();
         let _ = serve.await;
+    }
+
+    #[tokio::test]
+    async fn wait_inflight_requests_finishes_slow_handler_after_eof() {
+        let (client, server) = duplex(64 * 1024);
+        let (client_read, client_write) = tokio::io::split(client);
+        let (server_read, server_write) = tokio::io::split(server);
+        let transport = AcpNdjsonTransport::new(BufReader::new(server_read), server_write);
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done_handler = Arc::clone(&done);
+        transport.on_request(Arc::new(move |_method, _params| {
+            let done_handler = Arc::clone(&done_handler);
+            Box::pin(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+                done_handler.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(serialize_result(&json!({"ok": true})))
+            })
+        }));
+        let serve = tokio::spawn({
+            let transport = transport.clone();
+            async move { transport.serve().await }
+        });
+        let mut writer = client_write;
+        writer
+            .write_all(br#"{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}"#)
+            .await
+            .unwrap();
+        writer.write_all(b"\n").await.unwrap();
+        writer.shutdown().await.unwrap();
+        serve.await.unwrap().unwrap();
+        transport.wait_inflight_requests().await;
+        assert!(done.load(std::sync::atomic::Ordering::SeqCst));
+        let line = BufReader::new(client_read)
+            .lines()
+            .next_line()
+            .await
+            .unwrap()
+            .expect("result");
+        let value: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(value["result"], json!({"ok": true}));
     }
 
     #[tokio::test]

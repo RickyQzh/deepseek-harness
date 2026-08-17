@@ -20,7 +20,7 @@ Status: proposed
 
 ## 线路冻结
 
-传输是每行一个 UTF-8 JSON 对象。stdout 只承载这些帧。诊断信息走 stderr。没有就绪 URL 行。
+传输是每行一个 UTF-8 JSON 对象。stdout 只承载这些帧。诊断信息走 stderr。没有就绪 URL 行。`AcpBridge::serve` 在 stdin EOF 之后，只有完成 `quiesce` 且已 spawn 的入站请求处理函数写完 JSON-RPC 响应后才返回，因此一行 `initialize` 的管道在进程退出时不会丢掉握手帧。
 
 `session/prompt` 阻塞到整个 agent（智能体）空闲，并返回 `{ "stopReason": … }`。token 上限导致的轮次结束结算为 `end_turn`。显式取消、dispose（资源释放）或无轮次槽位结算为 `cancelled`。编解码器把 `max-tokens` 映射为 `max_tokens` 供其他调用方使用；提示词 RPC 不使用该值。
 

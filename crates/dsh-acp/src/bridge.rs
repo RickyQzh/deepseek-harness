@@ -565,7 +565,8 @@ impl AcpBridge {
         }
     }
 
-    /// Read NDJSON until EOF, then [`quiesce`](Self::quiesce).
+    /// Read NDJSON until EOF, then [`quiesce`](Self::quiesce), then wait for spawned
+    /// inbound request handlers to write their JSON-RPC responses.
     ///
     /// # Errors
     ///
@@ -573,11 +574,12 @@ impl AcpBridge {
     ///
     /// # Returns
     ///
-    /// `Ok(())` when the input stream reaches EOF. `quiesce` still runs after a
-    /// transport error.
+    /// `Ok(())` when the input stream reaches EOF and in-flight request responses
+    /// have been written. `quiesce` still runs after a transport error.
     pub async fn serve(&self) -> Result<(), AcpTransportError> {
         let result = self.inner.transport.serve().await;
         self.quiesce().await;
+        self.inner.transport.wait_inflight_requests().await;
         result
     }
 }
