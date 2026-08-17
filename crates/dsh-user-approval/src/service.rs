@@ -5,10 +5,12 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use dsh_kernel::Context;
-use dsh_session::{ApprovalPolicyData, CallId, LogEvent, Session, SessionError, SessionEvent};
+use dsh_session::{
+    ApprovalPolicyData, CallId, LogEvent, Session, SessionError, SessionEvent, SessionId,
+};
 use dsh_tools::{ApprovalOutcome, Approver, ToolExecution};
 
-/// Kernel waterfall name. Default value is [`ApprovalOutcome::Unavailable`].
+/// Kernel waterfall name. Payload is [`ApprovalQuestion`]; default outcome is [`ApprovalOutcome::Unavailable`].
 pub const EVENT_APPROVAL_REQUEST: &str = "approval/request";
 
 static NEXT_APPROVAL_ID: AtomicU64 = AtomicU64::new(1);
@@ -105,6 +107,66 @@ impl ApprovalRequest {
     }
 }
 
+/// Waterfall payload for [`EVENT_APPROVAL_REQUEST`]: session identity plus the current outcome.
+#[derive(Clone)]
+pub struct ApprovalQuestion {
+    session_id: SessionId,
+    call_id: Option<CallId>,
+    tool_name: String,
+    outcome: ApprovalOutcome,
+}
+
+impl ApprovalQuestion {
+    /// Start a question with outcome [`ApprovalOutcome::Unavailable`].
+    #[must_use]
+    pub fn new(session_id: SessionId, tool_name: impl Into<String>) -> Self {
+        Self {
+            session_id,
+            call_id: None,
+            tool_name: tool_name.into(),
+            outcome: ApprovalOutcome::Unavailable,
+        }
+    }
+
+    /// Attach the tool-call id already presented to the model.
+    #[must_use]
+    pub fn with_call_id(mut self, id: CallId) -> Self {
+        self.call_id = Some(id);
+        self
+    }
+
+    /// Set the answerer outcome carried through the waterfall.
+    #[must_use]
+    pub fn with_outcome(mut self, outcome: ApprovalOutcome) -> Self {
+        self.outcome = outcome;
+        self
+    }
+
+    /// Session this question belongs to.
+    #[must_use]
+    pub fn session_id(&self) -> &SessionId {
+        &self.session_id
+    }
+
+    /// Exact tool call being decided, when the asker had one.
+    #[must_use]
+    pub fn call_id(&self) -> Option<&CallId> {
+        self.call_id.as_ref()
+    }
+
+    /// Tool the question is about.
+    #[must_use]
+    pub fn tool_name(&self) -> &str {
+        &self.tool_name
+    }
+
+    /// Current waterfall outcome; default is [`ApprovalOutcome::Unavailable`].
+    #[must_use]
+    pub fn outcome(&self) -> ApprovalOutcome {
+        self.outcome
+    }
+}
+
 /// Applies session policy, dispatches [`EVENT_APPROVAL_REQUEST`], and logs the audit pair.
 #[derive(Clone)]
 pub struct ApprovalService {
@@ -153,9 +215,14 @@ impl ApprovalService {
         let outcome = if self.effective_policy(session.events()) == ApprovalPolicy::Never {
             ApprovalOutcome::Rejected
         } else {
+            let mut question = ApprovalQuestion::new(session.id().clone(), req.tool_name());
+            if let Some(call_id) = req.call_id() {
+                question = question.with_call_id(call_id.clone());
+            }
             self.ctx
-                .waterfall(EVENT_APPROVAL_REQUEST, ApprovalOutcome::Unavailable)
+                .waterfall(EVENT_APPROVAL_REQUEST, question)
                 .await
+                .outcome()
         };
         let seq = session.events().len() as u64;
         session.append(SessionEvent::ApprovalDecided {
@@ -267,13 +334,16 @@ fn asked_data(id: &str, req: &ApprovalRequest) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use super::{
-        ApprovalError, ApprovalOutcome, ApprovalPolicy, ApprovalRequest, ApprovalService,
-        EVENT_APPROVAL_REQUEST, set_approval_policy,
+        ApprovalError, ApprovalOutcome, ApprovalPolicy, ApprovalQuestion, ApprovalRequest,
+        ApprovalService, EVENT_APPROVAL_REQUEST, set_approval_policy,
     };
     use dsh_kernel::Context;
     use dsh_session::{
-        SESSION_FORMAT_VERSION, Session, SessionEvent, SessionHeader, SessionId, TurnStartData,
+        CallId, SESSION_FORMAT_VERSION, Session, SessionEvent, SessionHeader, SessionId,
+        TurnStartData,
     };
 
     fn empty_header() -> SessionHeader {
@@ -328,8 +398,8 @@ mod tests {
     #[tokio::test]
     async fn never_policy_rejects_before_answerer() {
         let ctx = Context::new();
-        ctx.on_waterfall::<ApprovalOutcome, _, _>(EVENT_APPROVAL_REQUEST, |_o, _n| async {
-            ApprovalOutcome::AllowedOnce
+        ctx.on_waterfall::<ApprovalQuestion, _, _>(EVENT_APPROVAL_REQUEST, |question, _n| async {
+            question.with_outcome(ApprovalOutcome::AllowedOnce)
         })
         .unwrap();
         let svc = ApprovalService::new(ctx, ApprovalPolicy::Never);
@@ -358,8 +428,8 @@ mod tests {
     #[tokio::test]
     async fn auto_approve_grants_allowed_once() {
         let ctx = Context::new();
-        ctx.on_waterfall::<ApprovalOutcome, _, _>(EVENT_APPROVAL_REQUEST, |_o, _n| async {
-            ApprovalOutcome::AllowedOnce
+        ctx.on_waterfall::<ApprovalQuestion, _, _>(EVENT_APPROVAL_REQUEST, |question, _n| async {
+            question.with_outcome(ApprovalOutcome::AllowedOnce)
         })
         .unwrap();
         let svc = ApprovalService::new(ctx, ApprovalPolicy::Ask);
@@ -368,6 +438,38 @@ mod tests {
             .request(&mut session, ApprovalRequest::new("bash"))
             .await
             .unwrap();
+        assert!(matches!(out, ApprovalOutcome::AllowedOnce));
+    }
+
+    #[tokio::test]
+    async fn waterfall_question_carries_session_and_call_id() {
+        let ctx = Context::new();
+        let seen = Arc::new(Mutex::new(None::<(SessionId, Option<CallId>)>));
+        let seen_listener = Arc::clone(&seen);
+        ctx.on_waterfall::<ApprovalQuestion, _, _>(
+            EVENT_APPROVAL_REQUEST,
+            move |question, _next| {
+                let seen_listener = Arc::clone(&seen_listener);
+                async move {
+                    *seen_listener.lock().expect("seen") =
+                        Some((question.session_id().clone(), question.call_id().cloned()));
+                    question.with_outcome(ApprovalOutcome::AllowedOnce)
+                }
+            },
+        )
+        .unwrap();
+        let svc = ApprovalService::new(ctx, ApprovalPolicy::Ask);
+        let mut session = open_turn_session();
+        let out = svc
+            .request(
+                &mut session,
+                ApprovalRequest::new("bash").with_call_id(CallId::new("call-9")),
+            )
+            .await
+            .unwrap();
+        let (session_id, call_id) = seen.lock().expect("seen").clone().expect("listener ran");
+        assert_eq!(&session_id, session.id());
+        assert_eq!(call_id, Some(CallId::new("call-9")));
         assert!(matches!(out, ApprovalOutcome::AllowedOnce));
     }
 }

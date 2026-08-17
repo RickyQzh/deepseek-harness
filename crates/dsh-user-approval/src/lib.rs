@@ -9,6 +9,6 @@ mod phase6_exit;
 
 pub use dsh_tools::ApprovalOutcome;
 pub use service::{
-    ApprovalError, ApprovalPolicy, ApprovalRequest, ApprovalService, EVENT_APPROVAL_REQUEST,
-    effective_approval_policy, has_open_turn, set_approval_policy,
+    ApprovalError, ApprovalPolicy, ApprovalQuestion, ApprovalRequest, ApprovalService,
+    EVENT_APPROVAL_REQUEST, effective_approval_policy, has_open_turn, set_approval_policy,
 };
