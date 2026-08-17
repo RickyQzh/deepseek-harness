@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-08-16-rust-dsh-base-plugins.md
-2026-08-16-rust-dsh-base-plugins.md: 081e4e6fc258374aa4345d18250fbf019040aa2a
-2026-08-16-rust-dsh-base-plugins.zh.md: 16cce0e770bd830aac107ef6e857454d17fbde5f
+2026-08-16-rust-dsh-base-plugins.md: d9a5b087373df92df3d733c950db34454c6df720
+2026-08-16-rust-dsh-base-plugins.zh.md: 6a49829ac3d4f3a74a099bad373440c3b60c5f44

@@ -5,8 +5,9 @@ use dsh_boot::PluginRegistry;
 /// Register Phase 6 product plugins by YAML name.
 ///
 /// Does not register spine, execution, headless, or `sdk-jsonrpc-server` plugins.
-/// Time-context and the tool-result pruner are registered so a later `--patch` can
-/// mount them; default base YAML omits those rows.
+/// Time-context, the tool-result pruner, and `@deepseek-ai/dsh-mcp-client` are
+/// registered so a later `--patch` can mount them; default base YAML omits those
+/// rows.
 pub fn register_base_plugins(registry: &mut PluginRegistry) {
     dsh_user_approval::plugin::register(registry);
     dsh_user_approval::plugin::register_auto_approve(registry);
@@ -30,6 +31,7 @@ pub fn register_base_plugins(registry: &mut PluginRegistry) {
     dsh_subagent_in_process::plugin::register_spawn(registry);
     dsh_subagent_in_process::plugin::register_fork(registry);
     dsh_tool_subagent::plugin::register(registry);
+    dsh_mcp_client::register_mcp_plugins(registry);
 }
 
 #[cfg(test)]
@@ -142,5 +144,48 @@ mod tests {
         .map(|_| ())
         .expect_err("unknown");
         assert!(err.to_string().contains("@deepseek-ai/dsh-not-a-plugin"));
+    }
+
+    #[tokio::test]
+    async fn register_base_plugins_resolves_mcp_client_yaml_name() {
+        let yaml = "\
+- name: '@deepseek-ai/dsh-tools'
+- name: '@deepseek-ai/dsh-mcp-client'
+  config:
+    transport: stdio
+    serverName: baseMcpTrue
+    command: /bin/true
+    reconnect:
+      enabled: false
+    failOnStartupError: false
+";
+        assert!(!yaml.contains("!!js"));
+        let ctx = Context::new();
+        let mut registry = PluginRegistry::new();
+        register_spine_plugins(&mut registry);
+        register_base_plugins(&mut registry);
+        let result = boot_yaml(&ctx, yaml, &[], &registry, &process_interpolate_env()).await;
+        ctx.dispose().await;
+        result.expect("mcp-client yaml name must resolve");
+    }
+
+    #[test]
+    fn minimal_yaml_does_not_mention_mcp_client() {
+        assert!(!include_str!("../../dsh-headless/minimal.cordis.yml").contains("dsh-mcp-client"));
+        assert!(!include_str!("../../dsh-headless/base.cordis.yml").contains("dsh-mcp-client"));
+        assert!(!include_str!("../../dsh-acp/acp.cordis.yml").contains("dsh-mcp-client"));
+        assert!(!include_str!("../../dsh-host/web.cordis.yml").contains("dsh-mcp-client"));
+        assert!(
+            !include_str!("../../dsh-sdk-jsonrpc-server/base.cordis.yml")
+                .contains("dsh-mcp-client")
+        );
+        assert!(
+            !include_str!("../../../examples/jsonrpc-agent/rust.snapshot.cordis.yml")
+                .contains("dsh-mcp-client")
+        );
+        assert!(
+            !include_str!("../../../examples/acp-agent/rust.snapshot.cordis.yml")
+                .contains("dsh-mcp-client")
+        );
     }
 }

@@ -318,6 +318,7 @@ dependencies = [
  "dsh-jobs-local",
  "dsh-kernel",
  "dsh-llm",
+ "dsh-mcp-client",
  "dsh-permission-presets",
  "dsh-skill",
  "dsh-subagent",

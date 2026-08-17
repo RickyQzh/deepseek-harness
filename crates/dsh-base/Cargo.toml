@@ -14,6 +14,7 @@ dsh-boot = { path = "../dsh-boot" }
 dsh-compaction-basic = { path = "../dsh-compaction-basic" }
 dsh-jobs-local = { path = "../dsh-jobs-local" }
 dsh-llm = { path = "../dsh-llm" }
+dsh-mcp-client = { path = "../dsh-mcp-client" }
 dsh-permission-presets = { path = "../dsh-permission-presets" }
 dsh-skill = { path = "../dsh-skill" }
 dsh-subagent = { path = "../dsh-subagent" }
