@@ -1,14 +1,16 @@
-//! GUI host `/api` trust fence, static SPA files, plugin bundles, and `__DSH_BOOT__` injection.
-//!
-//! The axum listener lands in later tasks. This crate does not listen.
+//! GUI host loopback HTTP listener, `/api` trust fence, static SPA files, plugin bundles, and `__DSH_BOOT__` injection.
 
 mod boot;
+mod dispatch;
 mod plugins;
+mod server;
 mod static_files;
 mod trust;
 
 pub use boot::{WebBootEntry, WebBootGraph, inject_boot_manifest};
+pub use dispatch::{RpcHandler, StubHandler};
 pub use plugins::{HostError, scan_client_packages, serve_plugin_js, serve_plugin_source_map};
+pub use server::{HostBind, HostPaths, HostState, ListeningHost, serve};
 pub use static_files::{StaticResponse, serve_spa};
 pub use trust::{
     TrustError, assert_trusted_authority, is_loopback_hostname, is_privileged_method,

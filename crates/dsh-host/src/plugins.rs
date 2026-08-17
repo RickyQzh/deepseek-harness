@@ -1,11 +1,13 @@
 //! `/plugins` bundle helper and `packages/client/*/package.json` `dsh.client` scan.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::boot::{WebBootEntry, WebBootGraph, sha256_hex};
 use crate::static_files::{StaticResponse, resolve_under_root};
+use crate::trust::TrustError;
 
-/// Scan or bundle failure. Malformed `dsh` / `dsh.client` and missing web bundles fail loud.
+/// Scan, bind, or bundle failure. Malformed `dsh` / `dsh.client` and missing web bundles fail loud.
 #[derive(Debug, thiserror::Error)]
 pub enum HostError {
     /// Built `lib/client.js` is missing for a `dsh.client.platform == "web"` package.
@@ -21,6 +23,24 @@ pub enum HostError {
     /// `package.json` or nested `dsh` / `dsh.client` is not the declared object/fields.
     #[error("{0}")]
     Malformed(String),
+    /// `listen_host` is not the locked loopback address `127.0.0.1`.
+    #[error("listen_host must be 127.0.0.1, got {got}")]
+    InvalidListenHost {
+        /// Rejected listen_host value.
+        got: String,
+    },
+    /// TCP bind failed.
+    #[error("failed to bind {addr}")]
+    Bind {
+        /// Address passed to `TcpListener::bind`.
+        addr: String,
+        /// OS error from bind.
+        #[source]
+        source: std::io::Error,
+    },
+    /// A `trustedHosts` entry failed [`assert_trusted_authority`](crate::assert_trusted_authority).
+    #[error(transparent)]
+    Trust(#[from] TrustError),
     /// Filesystem failure while reading a client package tree.
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -35,6 +55,17 @@ impl HostError {
         Self::ClientBundleNotFound {
             package_name: package_name.into(),
             path: path.into(),
+        }
+    }
+
+    pub(crate) fn invalid_listen_host(got: impl Into<String>) -> Self {
+        Self::InvalidListenHost { got: got.into() }
+    }
+
+    pub(crate) fn bind(addr: impl Into<String>, source: std::io::Error) -> Self {
+        Self::Bind {
+            addr: addr.into(),
+            source,
         }
     }
 }
@@ -87,7 +118,16 @@ fn plugin_js_path(root: &Path, package_name: &str) -> Option<PathBuf> {
 ///
 /// The declaration is the nested object `dsh.client`, not a top-level `"dsh.client"` key. Packages with no `dsh` object are skipped. `platform == "web"` requires `{package}/lib/client.js` or fails with a message containing `pnpm run build` / `client bundle not found`.
 pub fn scan_client_packages(packages_client_dir: &Path) -> Result<WebBootGraph, HostError> {
+    let (graph, _dirs) = scan_client_graph_and_dirs(packages_client_dir)?;
+    Ok(graph)
+}
+
+/// Scan like [`scan_client_packages`], plus graph id → directory name for `/plugins` lookup.
+pub(crate) fn scan_client_graph_and_dirs(
+    packages_client_dir: &Path,
+) -> Result<(WebBootGraph, HashMap<String, String>), HostError> {
     let mut entries = Vec::new();
+    let mut plugin_dirs = HashMap::new();
     let mut dirs = Vec::new();
     for child in std::fs::read_dir(packages_client_dir)? {
         let child = child?;
@@ -99,10 +139,16 @@ pub fn scan_client_packages(packages_client_dir: &Path) -> Result<WebBootGraph, 
     dirs.sort();
     for dir in dirs {
         if let Some(entry) = scan_one_package(&dir)? {
+            if let Some(folder) = dir.file_name() {
+                plugin_dirs.insert(
+                    entry.id().to_string(),
+                    folder.to_string_lossy().into_owned(),
+                );
+            }
             entries.push(entry);
         }
     }
-    Ok(WebBootGraph::from_entries(entries))
+    Ok((WebBootGraph::from_entries(entries), plugin_dirs))
 }
 
 fn scan_one_package(dir: &Path) -> Result<Option<WebBootEntry>, HostError> {

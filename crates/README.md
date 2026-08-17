@@ -52,4 +52,4 @@ Rust workspace members for the DeepSeek Harness host process. Layout, keep-or-dr
 | [`dsh-base`](dsh-base/README.md) | Phase 6 product plugin aggregator (`register_base_plugins`) and static headless/jsonrpc `base.cordis.yml`. |
 | [`dsh-cli`](dsh-cli/README.md) | `dsh` clap launcher: `--profile headless`, `--patch`, one positional task. |
 | [`dsh-rpc`](dsh-rpc/README.md) | GUI four-quadrant envelopes (`RpcMessage`, `RpcResult`, `RpcReceipt`) and closed kebab-case error codes. |
-| [`dsh-host`](dsh-host/README.md) | GUI `/api` trust fence and privileged-method set. The axum listener lands in later tasks. |
+| [`dsh-host`](dsh-host/README.md) | GUI loopback HTTP listener, unary `/api` dotted RPC, trust fence, SPA, and `/plugins`. |
