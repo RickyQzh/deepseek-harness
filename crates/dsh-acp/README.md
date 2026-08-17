@@ -8,6 +8,8 @@ ACP stdio adapter for the DeepSeek Harness Rust host. This crate is not the SDK 
 
 `initialize` ignores the client's `protocolVersion` and always returns `protocolVersion` 1, `agentInfo.name` `deepseek-harness-acp`, `agentInfo.version` `0.0.1`, empty `authMethods`, and `promptCapabilities` with `image`, `audio`, and `embeddedContext` all false; `sessionCapabilities` and `mcpCapabilities` are omitted. `authenticate` returns `{}`. Unknown requests, including `session/load`, return JSON-RPC `-32601` with message `"Method not found": {method}` and `data.method`.
 
+`acp_prompt_to_text` concatenates `text` blocks verbatim and renders each `resource_link` as a bracketed `[resource_link name=<json-string> uri=<json-string>]` reference; other blocks contribute nothing. `prompt_has_unsupported_content` is true when any block is neither `text` nor `resource_link`. `turn_end_to_stop_reason` maps harness `TurnEndReason` to ACP `StopReason` (`MaxTokens` → `max_tokens`). `prompt_stop_reason` is the prompt-RPC map: missing end reason → `cancelled`, `MaxTokens` → `end_turn`, otherwise `turn_end_to_stop_reason`.
+
 ## Known Limitations and Deferred Work
 
 - Session load, list, resume, delete, and fork are unsupported.

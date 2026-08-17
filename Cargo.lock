@@ -236,6 +236,7 @@ dependencies = [
  "dsh-boot",
  "dsh-kernel",
  "dsh-llm",
+ "dsh-session",
  "dsh-system-prompt",
  "dsh-tools",
  "serde",

@@ -1,12 +1,17 @@
 //! ACP stdio adapter for the DeepSeek Harness Rust host.
 
 mod bridge;
+mod codec;
 mod error;
 mod plugin;
 mod rpc;
 mod types;
 
 pub use bridge::AcpBridge;
+pub use codec::{
+    AcpContentBlock, StopReason, acp_prompt_to_text, prompt_has_unsupported_content,
+    prompt_stop_reason, turn_end_to_stop_reason,
+};
 pub use error::{
     AcpError, ERR_INTERNAL, ERR_INVALID_PARAMS, ERR_INVALID_REQUEST, ERR_METHOD_NOT_FOUND,
     ERR_PARSE, internal_error, invalid_params, method_not_found,
