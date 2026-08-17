@@ -1,8 +1,13 @@
 //! MCP client for the DeepSeek Harness Rust host.
 
+mod client;
 mod name;
 mod result;
 mod rpc;
+mod stdio;
+
+#[cfg(test)]
+mod test_server;
 
 use std::sync::Arc;
 
@@ -10,6 +15,7 @@ use dsh_boot::PluginSetup;
 use dsh_kernel::KernelError;
 use serde_json::Value;
 
+pub use client::{McpSession, McpToolDraft};
 pub use name::public_tool_name;
 pub use result::extract_text;
 pub use rpc::{McpRpcError, encode_frame, read_frame};

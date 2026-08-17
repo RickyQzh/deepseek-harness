@@ -26,6 +26,18 @@ pub enum McpRpcError {
     /// A read from the byte stream failed.
     #[error("MCP stdio read failed: {0}")]
     Io(String),
+    /// A write to the byte stream failed.
+    #[error("MCP stdio write failed: {0}")]
+    Write(String),
+    /// Frame body bytes are not a JSON value.
+    #[error("MCP JSON-RPC body is not JSON: {0}")]
+    InvalidJson(String),
+    /// JSON-RPC response `error` object.
+    #[error("MCP JSON-RPC error: {0}")]
+    Rpc(String),
+    /// JSON-RPC response or listed tool is missing required fields.
+    #[error("MCP JSON-RPC response is invalid: {0}")]
+    InvalidResponse(String),
 }
 
 impl McpRpcError {
