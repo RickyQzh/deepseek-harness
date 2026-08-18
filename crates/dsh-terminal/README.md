@@ -23,3 +23,8 @@ No direct invalidation.
 - The crate ships an in-memory snapshot backend only; real bash PTY allocation lives in `dsh-terminal-bash`.
 - Sessions are process-local and are not restored after a harness restart.
 - The plugins are not mounted in `base.cordis.yml` in this phase.
+- Windows ConPTY is out.
+- TUI rewrite is out.
+- Headless `pty-tools` stays Node.
+- JSON-RPC `persistent-tools` stays Node.
+- Full-screen / alternate-screen PTY is out.

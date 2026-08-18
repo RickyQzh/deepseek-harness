@@ -21,3 +21,8 @@ No direct invalidation.
 ## Known Limitations and Deferred Work
 
 - Model-facing `terminal_*` tools live in `dsh-tool-terminal`.
+- Windows ConPTY is out.
+- TUI rewrite is out.
+- Headless `pty-tools` stays Node.
+- JSON-RPC `persistent-tools` stays Node.
+- Full-screen / alternate-screen PTY is out.

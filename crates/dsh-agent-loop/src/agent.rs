@@ -1365,7 +1365,7 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_identity_skips_duplicate_runtime_context() {
-        let mut prompt = SystemPrompt::new(SystemPromptConfig::default()).unwrap();
+        let prompt = SystemPrompt::new(SystemPromptConfig::default()).unwrap();
         prompt
             .context(dsh_system_prompt::PromptContext {
                 name: "cwd".into(),

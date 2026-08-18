@@ -37,4 +37,8 @@ Prefix-stable guidance plus append-only tool results after the reusable request 
 ## Known Limitations and Deferred Work
 
 - `register` is called from `register_base_plugins`; default YAML still omits the PTY rows.
-- Named ACP `pty-tools` is not assembled.
+- Named ACP `pty-tools` runs on the Rust bin via overlay YAML; headless `pty-tools` stays Node.
+- Windows ConPTY is out.
+- TUI rewrite is out.
+- JSON-RPC `persistent-tools` stays Node.
+- Full-screen / alternate-screen PTY is out.

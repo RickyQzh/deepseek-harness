@@ -23,3 +23,8 @@ PLUGIN_TERMINAL 不接受任何配置键；未知键导致加载失败。PLUGIN_
 - 本 crate 只提供内存 snapshot 后端；真实 bash PTY 分配在 `dsh-terminal-bash`。
 - 会话是进程内的，harness 重启后不会恢复。
 - 本阶段不把这些插件挂入 `base.cordis.yml`。
+- Windows ConPTY 不在范围内。
+- TUI 重写不在范围内。
+- Headless `pty-tools` 仍留在 Node。
+- JSON-RPC `persistent-tools` 仍留在 Node。
+- 全屏 / alternate-screen PTY 不在范围内。

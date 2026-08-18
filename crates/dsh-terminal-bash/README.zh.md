@@ -21,3 +21,8 @@
 ## 已知限制与延后工作
 
 - 面向模型的 `terminal_*` 工具在 `dsh-tool-terminal`。
+- Windows ConPTY 不在范围内。
+- TUI 重写不在范围内。
+- Headless `pty-tools` 仍留在 Node。
+- JSON-RPC `persistent-tools` 仍留在 Node。
+- 全屏 / alternate-screen PTY 不在范围内。
