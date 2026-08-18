@@ -8,7 +8,7 @@
 
 `FS_SANDBOX_DENIED` 是进程内围栏拒绝。`FS_PERMISSION_DENIED` 是内核或操作系统权限失败。二者不可互换。
 
-`LocalFileSystem` 将相对路径接到 `cwd`（或单次调用的 cwd），对最深的已存在祖先做 realpath 再拼上剩余后缀，并用该规范字符串同时作为 `target_key` 与 `display_path`。`read_text` 只接受常规 UTF-8 文件，拒绝前 8192 字节中的 NUL 以及非法 UTF-8，并将 `\r\n` 规范为 `\n`。`write_text` 先写入同目录 `0o600` 临时文件再 `rename` 发布；省略 intent 即为无条件创建或覆盖。`edit_text` 在 LF 规范化文本上做字面替换，若原文件为 CRLF 则发布时恢复 CRLF。版本令牌为 `{dev}:{ino}:{size}:{mtime_nsec}:{ctime_nsec}`。
+`LocalFileSystem` 将相对路径接到 `cwd`（或单次调用的 cwd），对最深的已存在祖先做 realpath 再拼上剩余后缀，并用该规范字符串同时作为 `target_key` 与 `display_path`。`read_text` 只接受常规 UTF-8 文件，拒绝前 8192 字节中的 NUL 以及非法 UTF-8，并将 `\r\n` 规范为 `\n`。`stream_text` 使用同样的常规文件、前 8192 字节 NUL 与 UTF-8 规则，按原始解码块产出且不改写 CRLF。`file_url` 是 `process_path` 的 POSIX `file:` URI，百分号编码与 unix 上 Node `pathToFileURL` 一致。`write_text` 先写入同目录 `0o600` 临时文件再 `rename` 发布；省略 intent 即为无条件创建或覆盖。`edit_text` 在 LF 规范化文本上做字面替换，若原文件为 CRLF 则发布时恢复 CRLF。版本令牌为 `{dev}:{ino}:{size}:{mtime_nsec}:{ctime_nsec}`。
 
 `LocalFileSystem::new` 无围栏：`sandbox_mode()` 为 `None`，并忽略 `sandbox_policy`。`LocalFileSystem::sandboxed` 安装 `SandboxFence`；`sandbox_mode()` 为该策略的模式。围栏是进程内容纳检查，不是内核边界。`read-only` 以 `FS_SANDBOX_DENIED` 拒绝变更。`workspace-write` 重新解析 `display_path`，要求其落在 `dsh_sandbox::writable_roots` 的某一根下（`is_path_under`），然后对新鲜目标执行变更。`danger-full-access` 返回原始目标。读取从不围栏。`is_path_under` 在 Linux 上使用带 `MAIN_SEPARATOR` 的区分大小写词法前缀；拼写不同时沿祖先比较 `(dev, ino)`；缺失的根不算包含。
 

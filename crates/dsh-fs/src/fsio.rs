@@ -7,12 +7,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use dsh_tools::AbortFlag;
 use tokio::fs;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::{FsError, FsErrorCode, FsInfoType, FsTarget, FsTargetKey, FsVersion};
 
 /// Bytes inspected for a leading NUL when classifying a read as binary.
 pub(crate) const BINARY_SAMPLE_BYTES: usize = 8192;
+
+/// Read size for [`stream_whole_text`]. Matches Node `createReadStream` default.
+const STREAM_CHUNK_BYTES: usize = 64 * 1024;
 
 /// Default exclusive UTF-8 byte limit on each overwrite-diff side (10 MiB).
 pub(crate) const DEFAULT_DIFF_BASIS_MAX_BYTES: usize = 10 * 1024 * 1024;
@@ -222,24 +225,73 @@ fn not_text(verb: &str, display: &str, binary: bool) -> FsError {
     )
 }
 
-/// Read a regular UTF-8 file and normalize `\r\n` to `\n`.
-pub(crate) async fn read_whole_text(io_path: &str, display_path: &str) -> Result<String, FsError> {
+async fn require_regular_file(
+    io_path: &str,
+    display_path: &str,
+    verb: &str,
+) -> Result<(), FsError> {
     let meta = match fs::metadata(io_path).await {
         Ok(meta) => meta,
         Err(err) if is_absent(&err) => {
             return Err(FsError::new(
-                format!("cannot read \"{display_path}\": not found"),
+                format!("cannot {verb} \"{display_path}\": not found"),
                 FsErrorCode::NotFound,
             ));
         }
-        Err(err) => return Err(io_fs_error("read", display_path, err)),
+        Err(err) => return Err(io_fs_error(verb, display_path, err)),
     };
     if !meta.is_file() {
         return Err(FsError::new(
-            format!("cannot read \"{display_path}\": not a regular file"),
+            format!("cannot {verb} \"{display_path}\": not a regular file"),
             FsErrorCode::NotRegularFile,
         ));
     }
+    Ok(())
+}
+
+fn utf8_stream_valid_up_to(pending: &[u8]) -> Option<usize> {
+    match std::str::from_utf8(pending) {
+        Ok(_) => Some(pending.len()),
+        Err(err) => {
+            if err.error_len().is_some() {
+                None
+            } else {
+                Some(err.valid_up_to())
+            }
+        }
+    }
+}
+
+fn posix_file_url_keep_ascii(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"!$&'()*+,-./:;=@_".contains(&byte)
+}
+
+fn push_percent_encoded_byte(out: &mut String, byte: u8) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    out.push('%');
+    out.push(HEX[(byte >> 4) as usize] as char);
+    out.push(HEX[(byte & 0x0F) as usize] as char);
+}
+
+/// POSIX `file:` URI of an absolute host path, matching Node `pathToFileURL` on unix.
+///
+/// Unencoded ASCII bytes are RFC 3986 `pchar` plus `/`, except `~`, which Node
+/// encodes. Other bytes, including non-ASCII UTF-8, are percent-encoded.
+pub(crate) fn posix_file_url(process_path: &str) -> String {
+    let mut out = String::from("file://");
+    for &byte in process_path.as_bytes() {
+        if posix_file_url_keep_ascii(byte) {
+            out.push(byte as char);
+        } else {
+            push_percent_encoded_byte(&mut out, byte);
+        }
+    }
+    out
+}
+
+/// Read a regular UTF-8 file and normalize `\r\n` to `\n`.
+pub(crate) async fn read_whole_text(io_path: &str, display_path: &str) -> Result<String, FsError> {
+    require_regular_file(io_path, display_path, "read").await?;
     let bytes = fs::read(io_path)
         .await
         .map_err(|err| io_fs_error("read", display_path, err))?;
@@ -248,6 +300,63 @@ pub(crate) async fn read_whole_text(io_path: &str, display_path: &str) -> Result
     }
     let raw = std::str::from_utf8(&bytes).map_err(|_| not_text("read", display_path, false))?;
     Ok(normalize_line_endings(raw))
+}
+
+/// Stream a regular UTF-8 file as decoded chunks with no CRLF rewrite.
+pub(crate) async fn stream_whole_text(
+    io_path: &str,
+    display_path: &str,
+    signal: Option<&AbortFlag>,
+    on_chunk: &mut dyn FnMut(&str) -> Result<(), FsError>,
+) -> Result<(), FsError> {
+    throw_if_aborted(signal, "read")?;
+    require_regular_file(io_path, display_path, "read").await?;
+    throw_if_aborted(signal, "read")?;
+
+    let mut file = fs::File::open(io_path)
+        .await
+        .map_err(|err| io_fs_error("read", display_path, err))?;
+    let mut buf = vec![0u8; STREAM_CHUNK_BYTES];
+    let mut pending = Vec::new();
+    let mut sampled = 0usize;
+
+    loop {
+        throw_if_aborted(signal, "read")?;
+        let n = file
+            .read(&mut buf)
+            .await
+            .map_err(|err| io_fs_error("read", display_path, err))?;
+        if n == 0 {
+            break;
+        }
+        let chunk = &buf[..n];
+        if sampled < BINARY_SAMPLE_BYTES {
+            let take = std::cmp::min(chunk.len(), BINARY_SAMPLE_BYTES - sampled);
+            if chunk[..take].contains(&0) {
+                return Err(not_text("read", display_path, true));
+            }
+            sampled += take;
+        }
+        pending.extend_from_slice(chunk);
+        let Some(valid_up_to) = utf8_stream_valid_up_to(&pending) else {
+            return Err(not_text("read", display_path, false));
+        };
+        if valid_up_to == 0 {
+            continue;
+        }
+        let text =
+            std::str::from_utf8(&pending[..valid_up_to]).expect("valid_up_to is a UTF-8 prefix");
+        if !text.is_empty() {
+            on_chunk(text)?;
+        }
+        pending.drain(..valid_up_to);
+    }
+
+    throw_if_aborted(signal, "read")?;
+    if !pending.is_empty() {
+        return Err(not_text("read", display_path, false));
+    }
+    Ok(())
 }
 
 /// Dominant newline style in a file before LF normalization.

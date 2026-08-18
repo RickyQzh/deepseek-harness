@@ -9,9 +9,9 @@ use dsh_tools::AbortFlag;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::fsio::{
-    DEFAULT_DIFF_BASIS_MAX_BYTES, apply_literal_edit, normalize_line_endings, probe, read_for_edit,
-    read_text_for_diff, read_whole_text, resolve_local_target, restore_line_endings,
-    throw_if_aborted, write_file_atomic,
+    DEFAULT_DIFF_BASIS_MAX_BYTES, apply_literal_edit, normalize_line_endings, posix_file_url,
+    probe, read_for_edit, read_text_for_diff, read_whole_text, resolve_local_target,
+    restore_line_endings, stream_whole_text, throw_if_aborted, write_file_atomic,
 };
 use crate::sandbox::{SandboxFence, checked_target};
 use crate::{
@@ -122,6 +122,23 @@ impl LocalFileSystem {
         target.target_key.as_str().to_string()
     }
 
+    /// `file:` URI of [`Self::process_path`].
+    ///
+    /// POSIX form is `file:///abs/path` with percent-encoding matching Node
+    /// `pathToFileURL` on unix. Does not inspect the filesystem.
+    ///
+    /// # Parameters
+    ///
+    /// * `target` - Resolved filesystem target.
+    ///
+    /// # Returns
+    ///
+    /// A `file:` URI for the canonical process path.
+    #[must_use]
+    pub fn file_url(&self, target: &FsTarget) -> String {
+        posix_file_url(&self.process_path(target))
+    }
+
     /// Whether `child`'s canonical key is `parent` or a lexical path under it.
     #[must_use]
     pub fn contains(&self, parent: &FsTarget, child: &FsTarget) -> bool {
@@ -170,6 +187,45 @@ impl LocalFileSystem {
         let text = read_whole_text(target.target_key.as_str(), &target.display_path).await?;
         throw_if_aborted(signal, "read")?;
         Ok(text)
+    }
+
+    /// Stream decoded UTF-8 chunks with no CRLF rewrite.
+    ///
+    /// Same regular-file, first-8192 NUL, and UTF-8 rules as TypeScript
+    /// `streamWholeText`. Chunk boundaries carry no meaning. Does not emit
+    /// `fs/observed`.
+    ///
+    /// # Parameters
+    ///
+    /// * `target` - Canonical file to stream.
+    /// * `signal` - When aborted, fail with [`FsErrorCode::Aborted`].
+    /// * `on_chunk` - Receives each decoded chunk in file order. The `&str` is
+    ///   valid only for the duration of the call.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` after every chunk has been delivered.
+    ///
+    /// # Errors
+    ///
+    /// [`FsErrorCode::NotFound`] when missing. [`FsErrorCode::NotRegularFile`]
+    /// when the target is not a regular file. [`FsErrorCode::NotText`] when the
+    /// first 8192 bytes contain NUL or the contents are not UTF-8.
+    /// [`FsErrorCode::Aborted`] when cancelled. Errors returned from `on_chunk`
+    /// propagate unchanged.
+    pub async fn stream_text(
+        &self,
+        target: &FsTarget,
+        signal: Option<&AbortFlag>,
+        on_chunk: &mut dyn FnMut(&str) -> Result<(), FsError>,
+    ) -> Result<(), FsError> {
+        stream_whole_text(
+            target.target_key.as_str(),
+            &target.display_path,
+            signal,
+            on_chunk,
+        )
+        .await
     }
 
     /// Atomically create or replace a UTF-8 file.
@@ -604,5 +660,57 @@ mod tests {
         let target = fs.resolve("bin.txt", None, None).await.unwrap();
         let err = fs.read_text(&target, None).await.unwrap_err();
         assert_eq!(err.code, FsErrorCode::NotText);
+    }
+
+    #[tokio::test]
+    async fn stream_text_preserves_crlf_when_read_text_normalizes() {
+        let (fs, dir) = setup();
+        std::fs::write(dir.join("a.txt"), b"a\r\nb").unwrap();
+        let target = fs.resolve("a.txt", None, None).await.unwrap();
+        assert_eq!(fs.read_text(&target, None).await.unwrap(), "a\nb");
+        let mut collected = String::new();
+        fs.stream_text(&target, None, &mut |chunk| {
+            collected.push_str(chunk);
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(collected, "a\r\nb");
+    }
+
+    #[tokio::test]
+    async fn stream_text_rejects_nul() {
+        let (fs, dir) = setup();
+        std::fs::write(dir.join("bin.txt"), b"ok\0no").unwrap();
+        let target = fs.resolve("bin.txt", None, None).await.unwrap();
+        let err = fs
+            .stream_text(&target, None, &mut |_| Ok(()))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, FsErrorCode::NotText);
+    }
+
+    #[tokio::test]
+    async fn file_url_is_file_scheme_of_process_path() {
+        let (fs, _) = setup();
+        let target = fs.resolve("a.txt", None, None).await.unwrap();
+        let process = fs.process_path(&target);
+        let url = fs.file_url(&target);
+        assert!(process.starts_with('/'), "{process}");
+        assert_eq!(url, format!("file://{process}"));
+
+        let special = crate::FsTarget {
+            target_key: crate::FsTargetKey::new("/tmp/foo bar#[].txt~"),
+            display_path: "/tmp/foo bar#[].txt~".into(),
+        };
+        assert_eq!(
+            fs.file_url(&special),
+            "file:///tmp/foo%20bar%23%5B%5D.txt%7E"
+        );
+        let cafe = crate::FsTarget {
+            target_key: crate::FsTargetKey::new("/tmp/café"),
+            display_path: "/tmp/café".into(),
+        };
+        assert_eq!(fs.file_url(&cafe), "file:///tmp/caf%C3%A9");
     }
 }
