@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-08-16-rust-wait-llm-providers.md
+2026-08-16-rust-wait-llm-providers.md: 5fc2f5d949bd83711913912f97af3dbba3a67962
+2026-08-16-rust-wait-llm-providers.zh.md: e6017ae319da2822309e781a6df140d125998d68

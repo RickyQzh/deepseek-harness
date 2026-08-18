@@ -87,6 +87,10 @@ pnpm run build
 
 `pnpm run hygiene` includes `publint`, which validates package entrypoints against the built `lib/*.js` files, and `verify-node-next-types`, which validates built declarations against a temporary NodeNext consumer. A fresh worktree has no bundled JS or declarations until `pnpm run build` runs; ordinary commits and pushes do not require that build unless their selected checks consume it.
 
+### Rust project layout
+
+Host backend crates live in `crates/` under the root Cargo workspace. `rust-toolchain.toml` pins rustc 1.85.0 (edition 2024). `cargo test`, `cargo clippy`, and `cargo fmt --check` are the source plane and must pass on a clean tree. `cargo build --release` and the installed `dsh` binary are the artifact plane; snapshot, SDK, and other shipping-product checks must declare that they consume the binary once it exists. The [Rust tooling Agent Note](../.agents/notes/proposed/process/2026-08-14-rust-tooling-and-gates.md) owns the pin, CI path filters, and coverage follow-up. Do not mix a source-plane import of crate source into an artifact-plane product test.
+
 ### Environment variables
 
 The real DeepSeek adapter and key-backed agent demos read credentials from the environment or from a gitignored `.env` at the repo root:

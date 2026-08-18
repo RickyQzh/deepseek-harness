@@ -1,0 +1,61 @@
+//! MCP client for the DeepSeek Harness Rust host.
+
+mod client;
+mod connection;
+mod name;
+mod plugin;
+mod result;
+mod rpc;
+mod stdio;
+mod sync;
+
+#[cfg(test)]
+mod phase8_mcp_exit;
+
+#[cfg(test)]
+mod test_server;
+
+pub use client::{McpSession, McpToolDraft};
+pub use connection::{ResolvedReconnectPolicy, resolve_reconnect_policy};
+pub use name::public_tool_name;
+pub use plugin::{register, register_mcp_plugins};
+pub use result::extract_text;
+pub use rpc::{McpRpcError, encode_frame, read_frame};
+pub use stdio::{StdioSpawnError, spawn_stdio, stdio_child_env, stdio_command};
+pub use sync::{SyncError, sync_tools};
+
+/// Serializes stdio-fixture integration tests in this crate.
+///
+/// One test's leftover-child kill must not SIGKILL another test's live
+/// `dsh-mcp-fixture`.
+///
+/// # Parameters
+///
+/// None.
+///
+/// # Returns
+///
+/// A mutex guard. Hold it for the whole fixture-using test body.
+#[doc(hidden)]
+pub async fn lock_stdio_fixture_tests() -> tokio::sync::MutexGuard<'static, ()> {
+    static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    LOCK.lock().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::register_mcp_plugins;
+    use dsh_boot::PluginRegistry;
+
+    #[test]
+    fn plugin_name_is_typescript_package_name() {
+        assert_eq!(dsh_boot::PLUGIN_MCP_CLIENT, "@deepseek-ai/dsh-mcp-client");
+    }
+
+    #[test]
+    fn register_mcp_plugins_installs_yaml_name() {
+        let mut registry = PluginRegistry::new();
+        register_mcp_plugins(&mut registry);
+        assert!(registry.get(dsh_boot::PLUGIN_MCP_CLIENT).is_some());
+    }
+}

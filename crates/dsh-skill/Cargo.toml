@@ -1,0 +1,26 @@
+[package]
+name = "dsh-skill"
+version = "0.1.0"
+description = "Skill provider registry, local filesystem provider, and skill tool for the DeepSeek Harness Rust host"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+dsh-agent-loop = { path = "../dsh-agent-loop" }
+dsh-boot = { path = "../dsh-boot" }
+dsh-fs = { path = "../dsh-fs" }
+dsh-kernel = { path = "../dsh-kernel" }
+dsh-session = { path = "../dsh-session" }
+dsh-tools = { path = "../dsh-tools" }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

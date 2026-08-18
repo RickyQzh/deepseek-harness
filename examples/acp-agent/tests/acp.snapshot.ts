@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { mkdir, utimes, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -612,13 +612,32 @@ const SCENARIOS: Scenario[] = [
 // host with only an install-location pwsh still runs the scenario.
 const hasPwsh = spawnSync(resolvePwshPath(), ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '$true'], { encoding: 'utf8' }).status === 0
 
+const rustRuntime = process.env.DSH_RUNTIME === 'rust'
+const scenarios = rustRuntime
+  ? SCENARIOS.map((scenario) =>
+      scenario.name === 'text-turn' || scenario.name === 'pty-tools'
+        ? { ...scenario, comparesLog: false }
+        : scenario,
+    )
+  : SCENARIOS
+
 defineAcpSnapshotSuite({
   agent: AGENT,
   snapshotsDir: SNAPSHOTS_DIR,
-  scenarios: SCENARIOS,
+  scenarios,
   mode: snapshotModeFromEnv(process.env.DSH_SNAPSHOT),
+  rustSubset: ['handshake', 'reject-extra-dirs', 'text-turn', 'pty-tools'],
   hasPwsh,
 })
+
+it.each(['rust.snapshot.cordis.yml', 'rust.pty.snapshot.cordis.yml'] as const)(
+  'rust snapshot yaml %s has no js tag',
+  (name) => {
+    const p = fileURLToPath(new URL(`../${name}`, import.meta.url))
+    if (!existsSync(p)) return
+    expect(readFileSync(p, 'utf8')).not.toContain('!!js')
+  },
+)
 
 it('packed ACP fixture retains every chunk row kind without changing the logical session', () => {
   const source = fixtureRecords(PACKED_CHUNKS_SOURCE)

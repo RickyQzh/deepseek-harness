@@ -1,0 +1,22 @@
+[package]
+name = "dsh-web"
+version = "0.1.0"
+description = "Web search capability: provider registry, selection, and search execution for the DeepSeek Harness Rust host"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+dsh-boot = { path = "../dsh-boot" }
+dsh-kernel = { path = "../dsh-kernel" }
+dsh-tools = { path = "../dsh-tools" }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

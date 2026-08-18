@@ -1,0 +1,22 @@
+[package]
+name = "dsh-fs"
+version = "0.1.0"
+description = "Filesystem types, FS_* error codes, local UTF-8 backend, in-process sandbox fence, and per-owner observation policy for the DeepSeek Harness Rust host"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+dsh-boot = { path = "../dsh-boot" }
+dsh-brand = { path = "../dsh-brand" }
+dsh-kernel = { path = "../dsh-kernel" }
+dsh-sandbox = { path = "../dsh-sandbox" }
+dsh-tools = { path = "../dsh-tools" }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["fs"] }
+
+[lints]
+workspace = true

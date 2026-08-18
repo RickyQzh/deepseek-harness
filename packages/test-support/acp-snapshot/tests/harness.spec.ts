@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { once } from 'node:events'
 import { tmpdir } from 'node:os'
-import { delimiter, join, relative, sep } from 'node:path'
+import { delimiter, dirname, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
@@ -9,6 +9,9 @@ import { runScenario, snapshotSpillRoot, type AgentUnderTest, type InputStep } f
 import { launchAcpTestAgent } from '../src/launcher.ts'
 
 const fsControl = vi.hoisted(() => ({ cleanupFailure: undefined as Error | undefined }))
+const rustSpawn = vi.hoisted(() => ({
+  last: undefined as { command: string; args: string[]; env: NodeJS.ProcessEnv | undefined } | undefined,
+}))
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
@@ -26,6 +29,25 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   }
 })
 
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>()
+  return {
+    ...actual,
+    spawn(
+      command: string,
+      args?: readonly string[] | import('node:child_process').SpawnOptions,
+      options?: import('node:child_process').SpawnOptions,
+    ): ReturnType<typeof actual.spawn> {
+      if (process.env.DSH_RUNTIME === 'rust') {
+        const argv = Array.isArray(args) ? args.map(String) : []
+        const opts = Array.isArray(args) ? options : args
+        rustSpawn.last = { command, args: argv, env: opts?.env }
+      }
+      return actual.spawn(command, args as never, options as never)
+    },
+  }
+})
+
 /**
  * Unit tests for the subprocess harness, driven through the REAL spawn path
  * (mode-aware launcher, temp cwd, env plumbing) against the scripted fake ACP bin in
@@ -34,6 +56,17 @@ vi.mock('node:fs/promises', async (importOriginal) => {
  * workspace, permission outcomes) into `agent_message_chunk` text, so the
  * assertions read plain `rawStdout`.
  */
+
+function restoreProcessEnv(name: string, previous: string | undefined): void {
+  if (previous === undefined) delete process.env[name]
+  else process.env[name] = previous
+}
+
+// Package specs drive the fake ACP bin. A parent `DSH_RUNTIME=rust` would spawn `dsh` instead.
+const parentDshRuntime = process.env.DSH_RUNTIME
+const parentDshRuntimeBin = process.env.DSH_RUNTIME_BIN
+delete process.env.DSH_RUNTIME
+delete process.env.DSH_RUNTIME_BIN
 
 const fakeAgent = fileURLToPath(new URL('./fixtures/fake-acp-agent.ts', import.meta.url))
 const AGENT: AgentUnderTest = {
@@ -47,6 +80,8 @@ const AGENT: AgentUnderTest = {
 /** Temp scenario dirs to drop after the suite. */
 const tempDirs: string[] = []
 afterAll(async () => {
+  restoreProcessEnv('DSH_RUNTIME', parentDshRuntime)
+  restoreProcessEnv('DSH_RUNTIME_BIN', parentDshRuntimeBin)
   for (const dir of tempDirs) await rm(dir, { recursive: true, force: true })
 })
 
@@ -1207,5 +1242,159 @@ describe('runScenario', () => {
       { steps: [...boot, { op: 'prompt', text: 'impossible click' }], permissionAnswers: [{ kind: 'allow_always' }] },
       { agent: AGENT, mode: 'replay', fixtureFile },
     )).rejects.toThrow(/allow_always not among the offered options \[allow_once, reject_once\]/)
+  })
+})
+
+describe('launchAcpTestAgent rust runtime', () => {
+  it('throws when DSH_RUNTIME_BIN points at a missing rust bin, before spawn', () => {
+    const previousRuntime = process.env.DSH_RUNTIME
+    const previousBin = process.env.DSH_RUNTIME_BIN
+    const missing = join(tmpdir(), 'missing-dsh-runtime-bin', 'dsh')
+    let launched: ReturnType<typeof launchAcpTestAgent> | undefined
+    try {
+      process.env.DSH_RUNTIME = 'rust'
+      process.env.DSH_RUNTIME_BIN = missing
+      expect(() => {
+        launched = launchAcpTestAgent({ agent: AGENT, cwd: tmpdir() })
+      }).toThrow(`DSH_RUNTIME=rust but ${missing} is missing; run cargo build -p dsh-cli`)
+    } finally {
+      restoreProcessEnv('DSH_RUNTIME', previousRuntime)
+      restoreProcessEnv('DSH_RUNTIME_BIN', previousBin)
+      void launched?.close()
+    }
+  })
+
+  it('throws the default rust bin path when DSH_RUNTIME_BIN is empty', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'acp-snap-rust-default-'))
+    tempDirs.push(dir)
+    const previousRuntime = process.env.DSH_RUNTIME
+    const previousBin = process.env.DSH_RUNTIME_BIN
+    const rustBin = join(dir, 'target/debug/dsh')
+    let launched: ReturnType<typeof launchAcpTestAgent> | undefined
+    try {
+      process.env.DSH_RUNTIME = 'rust'
+      process.env.DSH_RUNTIME_BIN = ''
+      expect(() => {
+        launched = launchAcpTestAgent({
+          agent: { ...AGENT, tsconfigPath: join(dir, 'tsconfig.json') },
+          cwd: dir,
+        })
+      }).toThrow(`DSH_RUNTIME=rust but ${rustBin} is missing; run cargo build -p dsh-cli`)
+    } finally {
+      restoreProcessEnv('DSH_RUNTIME', previousRuntime)
+      restoreProcessEnv('DSH_RUNTIME_BIN', previousBin)
+      void launched?.close()
+    }
+  })
+
+  it('spawns dsh --profile acp with DSH_CORDIS_CONFIG next to agent.configPath when overlay configPath is unset', { timeout: 20_000 }, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'acp-snap-rust-shared-'))
+    tempDirs.push(dir)
+    const rustYaml = join(dir, 'rust.snapshot.cordis.yml')
+    await writeFile(rustYaml, '# rust snapshot yaml\n')
+
+    const previousRuntime = process.env.DSH_RUNTIME
+    const previousBin = process.env.DSH_RUNTIME_BIN
+    rustSpawn.last = undefined
+    let launched: ReturnType<typeof launchAcpTestAgent> | undefined
+    try {
+      process.env.DSH_RUNTIME = 'rust'
+      process.env.DSH_RUNTIME_BIN = process.execPath
+      launched = launchAcpTestAgent({
+        agent: { ...AGENT, configPath: join(dir, 'cordis.yml') },
+        cwd: dir,
+      })
+    } finally {
+      restoreProcessEnv('DSH_RUNTIME', previousRuntime)
+      restoreProcessEnv('DSH_RUNTIME_BIN', previousBin)
+    }
+    if (launched === undefined) throw new Error('expected rust spawn to return a handle')
+    try {
+      await launched.spawned
+      expect(rustSpawn.last?.env?.DSH_CORDIS_CONFIG).toBe(rustYaml)
+    } finally {
+      await launched.close()
+    }
+  })
+
+  it('spawns dsh --profile acp with DSH_CORDIS_CONFIG next to agent.configPath', { timeout: 20_000 }, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'acp-snap-rust-spawn-'))
+    tempDirs.push(dir)
+    const rustYaml = join(dir, 'rust.snapshot.cordis.yml')
+    const shouldNotWin = join(dir, 'should-not-win.yml')
+    await writeFile(rustYaml, '# rust snapshot yaml\n')
+    // Windows CreateProcess ignores shebang; process.execPath is a PE there and an ELF here.
+    // `node --profile acp` exits 9 — assert the captured spawn, not an ACP handshake.
+
+    const previousRuntime = process.env.DSH_RUNTIME
+    const previousBin = process.env.DSH_RUNTIME_BIN
+    rustSpawn.last = undefined
+    let launched: ReturnType<typeof launchAcpTestAgent> | undefined
+    try {
+      process.env.DSH_RUNTIME = 'rust'
+      process.env.DSH_RUNTIME_BIN = process.execPath
+      launched = launchAcpTestAgent({
+        agent: { ...AGENT, configPath: join(dir, 'cordis.yml') },
+        cwd: dir,
+        configPath: join(dir, 'overlay.cordis.yml'),
+        env: {
+          DSH_CORDIS_CONFIG: shouldNotWin,
+        },
+      })
+    } finally {
+      restoreProcessEnv('DSH_RUNTIME', previousRuntime)
+      restoreProcessEnv('DSH_RUNTIME_BIN', previousBin)
+    }
+    if (launched === undefined) throw new Error('expected rust spawn to return a handle')
+    try {
+      await launched.spawned
+      const captured = rustSpawn.last
+      expect(captured).toBeDefined()
+      expect(captured?.command).toBe(process.execPath)
+      expect(captured?.args).toEqual(['--profile', 'acp'])
+      expect(captured?.args).not.toContain('--config')
+      expect(captured?.command).not.toContain('--config')
+      expect(captured?.env?.DSH_CORDIS_CONFIG).toBe(rustYaml)
+      expect(captured?.env?.DSH_CORDIS_CONFIG).not.toBe(shouldNotWin)
+      expect(dirname(rustYaml)).toBe(dir)
+    } finally {
+      await launched.close()
+    }
+  })
+
+  it('selects sibling rust.pty.snapshot.cordis.yml for overlay configPath pty.cordis.yml', { timeout: 20_000 }, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'acp-snap-rust-pty-overlay-'))
+    tempDirs.push(dir)
+    const sharedYaml = join(dir, 'rust.snapshot.cordis.yml')
+    const overlayYaml = join(dir, 'rust.pty.snapshot.cordis.yml')
+    await writeFile(sharedYaml, '# rust snapshot yaml\n')
+    await writeFile(overlayYaml, '# rust pty overlay yaml\n')
+
+    const previousRuntime = process.env.DSH_RUNTIME
+    const previousBin = process.env.DSH_RUNTIME_BIN
+    rustSpawn.last = undefined
+    let launched: ReturnType<typeof launchAcpTestAgent> | undefined
+    try {
+      process.env.DSH_RUNTIME = 'rust'
+      process.env.DSH_RUNTIME_BIN = process.execPath
+      launched = launchAcpTestAgent({
+        agent: { ...AGENT, configPath: join(dir, 'cordis.yml') },
+        cwd: dir,
+        configPath: join(dir, 'pty.cordis.yml'),
+      })
+    } finally {
+      restoreProcessEnv('DSH_RUNTIME', previousRuntime)
+      restoreProcessEnv('DSH_RUNTIME_BIN', previousBin)
+    }
+    if (launched === undefined) throw new Error('expected rust spawn to return a handle')
+    try {
+      await launched.spawned
+      const captured = rustSpawn.last
+      expect(captured).toBeDefined()
+      expect(captured?.env?.DSH_CORDIS_CONFIG).toBe(overlayYaml)
+      expect(captured?.env?.DSH_CORDIS_CONFIG).not.toBe(sharedYaml)
+    } finally {
+      await launched.close()
+    }
   })
 })

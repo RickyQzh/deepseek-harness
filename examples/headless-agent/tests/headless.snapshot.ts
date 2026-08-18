@@ -1,4 +1,5 @@
 import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { createServer } from 'node:http'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { delimiter, dirname, join } from 'node:path'
@@ -47,6 +48,15 @@ const ralphScenarioDir = join(snapshotsDir, 'ralph-loop')
 const ralphConfigPath = fileURLToPath(new URL('../ralph.cordis.snapshot.yml', import.meta.url))
 const settlementScenarioDir = join(snapshotsDir, 'subagent-settlement')
 const settlementConfigPath = fileURLToPath(new URL('../subagent-settlement.cordis.snapshot.yml', import.meta.url))
+const rustCompactionConfigPath = fileURLToPath(new URL('../rust.compaction.cordis.yml', import.meta.url))
+const rustRetryConfigPath = fileURLToPath(new URL('../rust.retry.cordis.yml', import.meta.url))
+const rustSettlementConfigPath = fileURLToPath(new URL('../rust.subagent-settlement.cordis.yml', import.meta.url))
+const rustBinDefault = fileURLToPath(new URL('../../../target/debug/dsh', import.meta.url))
+const rustRuntime = process.env.DSH_RUNTIME === 'rust'
+const rustBin = process.env.DSH_RUNTIME_BIN && process.env.DSH_RUNTIME_BIN !== ''
+  ? process.env.DSH_RUNTIME_BIN
+  : rustBinDefault
+const rustSmokeTimeoutMs = 120_000
 const startupFailureConfigPath = fileURLToPath(new URL('./fixtures/startup-activation-error/cordis.yml', import.meta.url))
 const startupFailureExpected = join(snapshotsDir, 'startup-activation-error', 'stderr.expected.txt')
 const binScript = fileURLToPath(new URL('./fixtures/headless-driver.ts', import.meta.url))
@@ -187,6 +197,174 @@ async function scenarioPrompt(dir: string, label: string): Promise<string> {
   return prompt
 }
 
+function requireRustBin(): string {
+  if (!existsSync(rustBin)) {
+    throw new Error(`DSH_RUNTIME=rust but ${rustBin} is missing; run cargo build -p dsh-cli`)
+  }
+  return rustBin
+}
+
+/** Node `runLoaderSmoke` args today; rust bin + `DSH_CORDIS_CONFIG` when `DSH_RUNTIME=rust`. */
+function resolveHeadlessLaunch(configPath: string, prompt: string): {
+  launch?: { command: string; args: string[] }
+  env: NodeJS.ProcessEnv
+} {
+  if (!rustRuntime) return { env: {} }
+  return {
+    launch: { command: requireRustBin(), args: ['--profile', 'headless', prompt] },
+    env: { DSH_CORDIS_CONFIG: configPath },
+  }
+}
+
+function persistSourceKind(content: string, kind: string): boolean {
+  return parseJsonl(content).some((record) => {
+    const data = record.data as JsonObject | undefined
+    const source = data?.source as JsonObject | undefined
+    if (source?.kind === kind) return true
+    const inserted = data?.inserted
+    if (!Array.isArray(inserted)) return false
+    return inserted.some((message) => {
+      if (message === null || typeof message !== 'object' || Array.isArray(message)) return false
+      const nested = (message as JsonObject).source as JsonObject | undefined
+      return nested?.kind === kind
+    })
+  })
+}
+
+function rustNamedTimeout(): number {
+  return rustRuntime ? rustSmokeTimeoutMs : LOADER_SMOKE_TEST_TIMEOUT_MS
+}
+
+function expectHeadlessStderr(stderr: string): void {
+  if (!rustRuntime) {
+    expect(stderr).toBe('')
+    return
+  }
+  expect(stderr.replace(/^skill-filesystem: skipping missing skill root .+\n/gm, '')).toBe('')
+}
+
+interface AssistantChunkLine {
+  readonly line: string
+  readonly turn: number
+  readonly step: number
+}
+
+function assistantChunkLines(content: string): AssistantChunkLine[] {
+  return content.split('\n').filter(line => line.trim().length > 0).flatMap((line) => {
+    const record = JSON.parse(line) as JsonObject
+    if (record.type !== 'assistant/chunk') return []
+    const data = record.data as JsonObject | undefined
+    return [{
+      line,
+      turn: typeof data?.turn === 'number' ? data.turn : 0,
+      step: typeof data?.step === 'number' ? data.step : 0,
+    }]
+  })
+}
+
+function rewriteChunkRun(lines: readonly string[], turn: number): string[] {
+  return lines.map((line) => {
+    const record = JSON.parse(line) as JsonObject
+    const data = { ...(record.data as JsonObject | undefined ?? {}), turn, step: 1 }
+    return JSON.stringify({ ...record, data })
+  })
+}
+
+function rustReplayDocument(runs: readonly (readonly string[])[]): string {
+  const header = JSON.stringify({
+    type: 'session',
+    version: 0,
+    id: 'rust-replay',
+    createdAt: 0,
+    delegationDepth: 0,
+  })
+  const events = runs.flatMap((run, index) => rewriteChunkRun(run, index + 1))
+  return `${[header, ...events].join('\n')}\n`
+}
+
+function textReplayRun(text: string): string[] {
+  return [
+    JSON.stringify({
+      type: 'assistant/chunk',
+      seq: 0,
+      time: 0,
+      data: { turn: 1, step: 1, chunk: { type: 'block-start', index: 0, blockType: 'text' } },
+    }),
+    JSON.stringify({
+      type: 'assistant/chunk',
+      seq: 1,
+      time: 0,
+      data: { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text } },
+    }),
+    JSON.stringify({
+      type: 'assistant/chunk',
+      seq: 2,
+      time: 0,
+      data: { turn: 1, step: 1, chunk: { type: 'block-end', index: 0, block: { type: 'text', text } } },
+    }),
+    JSON.stringify({
+      type: 'assistant/chunk',
+      seq: 3,
+      time: 0,
+      data: { turn: 1, step: 1, chunk: { type: 'finish', reason: { kind: 'stop' } } },
+    }),
+  ]
+}
+
+/** Split compaction fixture chunks into FIFO runs rust replay can consume in order. */
+function rustCompactionReplayFifo(hydrated: string): string {
+  const chunks = assistantChunkLines(hydrated)
+  const bash = chunks.filter(chunk => chunk.turn === 1 && chunk.step === 1).map(chunk => chunk.line)
+  const stepTwo = chunks.filter(chunk => chunk.turn === 1 && chunk.step === 2)
+  const overflowAt = stepTwo.findIndex(chunk => chunk.line.includes('CONTEXT_WINDOW_EXCEEDED'))
+  const overflow = overflowAt === -1 ? stepTwo.map(chunk => chunk.line) : stepTwo.slice(0, overflowAt + 1).map(chunk => chunk.line)
+  const recovered = overflowAt === -1 ? [] : stepTwo.slice(overflowAt + 1).map(chunk => chunk.line)
+  return rustReplayDocument([
+    bash,
+    overflow,
+    textReplayRun('The request established a durable compaction premise.'),
+    recovered,
+  ].filter(run => run.length > 0))
+}
+
+/** Parent tool-call, child text, remaining parent runs — one rust replay FIFO. */
+async function rustSettlementReplayFifo(parentOverridePath: string, childReplayPath: string): Promise<string> {
+  const overrides = JSON.parse(await readFile(parentOverridePath, 'utf8')) as Array<{
+    kind?: string
+    chunks?: unknown[]
+  }>
+  const parentRuns = overrides.filter(entry => entry.kind === 'chunks' && Array.isArray(entry.chunks)).map((entry) => {
+    const chunks = entry.chunks ?? []
+    return chunks.map((chunk, index) => JSON.stringify({
+      type: 'assistant/chunk',
+      seq: index,
+      time: index,
+      data: { turn: 1, step: 1, chunk },
+    }))
+  })
+  const childContent = await readFile(childReplayPath, 'utf8')
+  const childRuns = (() => {
+    const grouped = new Map<string, string[]>()
+    const order: string[] = []
+    for (const chunk of assistantChunkLines(childContent)) {
+      const key = `${chunk.turn}:${chunk.step}`
+      if (!grouped.has(key)) {
+        grouped.set(key, [])
+        order.push(key)
+      }
+      grouped.get(key)?.push(chunk.line)
+    }
+    return order.map(key => grouped.get(key) ?? [])
+  })()
+  const first = parentRuns[0]
+  const rest = parentRuns.slice(1)
+  return rustReplayDocument([
+    ...first === undefined ? [] : [first],
+    ...childRuns,
+    ...rest,
+  ])
+}
+
 async function readPersistedLog(file: string): Promise<string> {
   const content = await readFile(file)
   if (!file.endsWith('.zstd')) return content.toString('utf8')
@@ -292,6 +470,7 @@ describe('headless stream-json snapshots', () => {
     const prompt = await scenarioPrompt(retryScenarioDir, 'provider-retry')
     const streamExpected = join(retryScenarioDir, 'stream-json.expected.jsonl')
     let runCwd = ''
+    const rustLaunch = resolveHeadlessLaunch(rustRetryConfigPath, prompt)
     const result = await runLoaderSmoke({
       label: 'provider retry headless stream-json snapshot',
       tempDirPrefix: 'headless-snapshot-provider-retry-',
@@ -300,9 +479,12 @@ describe('headless stream-json snapshots', () => {
       configPath: retryConfigPath,
       binArgs: [retryConfigPath, prompt],
       tsconfigPath,
+      processTimeoutMs: rustRuntime ? rustSmokeTimeoutMs : undefined,
+      ...rustLaunch.launch === undefined ? {} : { launch: rustLaunch.launch },
       env: {
         DSH_SNAPSHOT: 'replay',
         NODE_OPTIONS: [process.env.NODE_OPTIONS, '--disable-warning=ExperimentalWarning'].filter(Boolean).join(' '),
+        ...rustLaunch.env,
       },
       prepare: (cwd) => { runCwd = cwd },
       inspect: async (cwd) => {
@@ -310,6 +492,11 @@ describe('headless stream-json snapshots', () => {
         expect(logs).toHaveLength(1)
         const records = parseJsonl(logs[0]?.content ?? '')
         const retries = records.filter(record => record.type === 'llm/retry')
+        expect(retries.length).toBeGreaterThanOrEqual(1)
+        expect((retries[0]?.data as JsonObject | undefined)?.failure).toMatchObject({
+          code: 'RATE_LIMIT',
+        })
+        if (rustRuntime) return
         expect(retries).toHaveLength(1)
         expect(retries[0]?.data).toMatchObject({
           provider: 'deepseek-official',
@@ -323,16 +510,21 @@ describe('headless stream-json snapshots', () => {
       },
     })
 
-    expect(result.stderr).toBe('')
+    expectHeadlessStderr(result.stderr)
+    if (rustRuntime) {
+      expect(result.stdout.trim()).toBe('RETRY_OK')
+      return
+    }
     const normalized = normalizeHeadlessStream(result.stdout, runCwd)
     if (refreshing) await writeFile(streamExpected, normalized)
     expect(normalized).toBe(await readFile(streamExpected, 'utf8'))
-  }, LOADER_SMOKE_TEST_TIMEOUT_MS)
+  }, rustNamedTimeout())
 
-  it('recovers from context overflow through an assembled compaction', async () => {
+  it('recovers from context overflow through an assembled compaction recovery', async () => {
     const prompt = await scenarioPrompt(compactionScenarioDir, 'compaction-recovery')
     let expectedSession = await readFile(compactionSessionFixture, 'utf8')
     let runCwd = ''
+    const rustLaunch = resolveHeadlessLaunch(rustCompactionConfigPath, prompt)
     const result = await runLoaderSmoke({
       label: 'compaction recovery headless stream-json snapshot',
       tempDirPrefix: 'headless-snapshot-compaction-recovery-',
@@ -341,12 +533,20 @@ describe('headless stream-json snapshots', () => {
       configPath: compactionConfigPath,
       binArgs: [compactionConfigPath, prompt],
       tsconfigPath,
+      processTimeoutMs: rustRuntime ? rustSmokeTimeoutMs : undefined,
+      ...rustLaunch.launch === undefined ? {} : { launch: rustLaunch.launch },
       env: {
         DSH_SNAPSHOT: 'replay',
-        DSH_SNAPSHOT_FILE: compactionSessionFixture,
+        DSH_SNAPSHOT_FILE: rustRuntime ? 'replay.jsonl' : compactionSessionFixture,
         NODE_OPTIONS: [process.env.NODE_OPTIONS, '--disable-warning=ExperimentalWarning'].filter(Boolean).join(' '),
+        ...rustLaunch.env,
       },
-      prepare: (cwd) => { runCwd = cwd },
+      prepare: async (cwd) => {
+        runCwd = cwd
+        if (!rustRuntime) return
+        const hydrated = (await readFile(compactionSessionFixture, 'utf8')).replaceAll('{{cwd}}', cwd)
+        await writeFile(join(cwd, 'replay.jsonl'), rustCompactionReplayFifo(hydrated))
+      },
       inspect: async (cwd) => {
         const logs = await persistedLogs(cwd)
         expect(logs).toHaveLength(1)
@@ -355,6 +555,29 @@ describe('headless stream-json snapshots', () => {
         const records = parseJsonl(actual.content)
         const types = records.map(record => record.type)
         expect(types.filter(type => type === 'compaction/start')).toHaveLength(1)
+        const checkpoint = records.find((record) => {
+          if (record.type !== 'user/message') return false
+          const source = (record.data as JsonObject | undefined)?.source as JsonObject | undefined
+          return source?.plugin === 'compact' || typeof source?.compactionId === 'string'
+        })
+        expect(checkpoint).toBeDefined()
+        const end = records.find(record => record.type === 'compaction/end')
+        expect(end).toBeDefined()
+        expect((end?.data as JsonObject | undefined)?.error).toBeUndefined()
+        const endIndex = types.indexOf('compaction/end')
+        // Overflow recovery continues the same step, so later progress may be
+        // chunk/message/step without a new turn/start.
+        const laterProgress = types.findIndex((type, index) => (
+          index > endIndex
+          && (
+            type === 'assistant/chunk'
+            || type === 'assistant/message'
+            || type === 'step/start'
+            || type === 'turn/start'
+          )
+        ))
+        expect(laterProgress).toBeGreaterThan(endIndex)
+        if (rustRuntime) return
         expect(types.filter(type => type === 'compaction/summary')).toHaveLength(1)
         expect(types.filter(type => type === 'compaction/end')).toHaveLength(1)
         const start = types.indexOf('compaction/start')
@@ -364,10 +587,10 @@ describe('headless stream-json snapshots', () => {
           const surfaceOp = record.surfaceOp as JsonObject | undefined
           return surfaceOp?.op === 'replace'
         })
-        const end = types.indexOf('compaction/end')
+        const endAt = types.indexOf('compaction/end')
         expect(start).toBeLessThan(summary)
         expect(summary).toBeLessThan(replacement)
-        expect(replacement).toBeLessThan(end)
+        expect(replacement).toBeLessThan(endAt)
         const summaryRecord = records[summary]
         const summaryData = summaryRecord?.data as JsonObject | undefined
         expect(summaryData?.shadowedSeqs).toEqual(expect.arrayContaining([expect.any(Number)]))
@@ -393,11 +616,12 @@ describe('headless stream-json snapshots', () => {
       },
     })
 
-    expect(result.stderr).toBe('')
+    expectHeadlessStderr(result.stderr)
+    if (rustRuntime) return
     const normalized = normalizeHeadlessStream(result.stdout, runCwd)
     if (refreshing) await writeFile(compactionStreamExpected, normalized)
     expect(normalized).toBe(await readFile(compactionStreamExpected, 'utf8'))
-  }, LOADER_SMOKE_TEST_TIMEOUT_MS)
+  }, rustNamedTimeout())
 
   it('logs actionable missing-credential guidance through the one-shot app', async () => {
     const streamExpected = join(credentialsScenarioDir, 'stream-json.expected.jsonl')
@@ -779,7 +1003,7 @@ describe('headless stream-json snapshots', () => {
     expect(normalized).toBe(await readFile(streamExpected, 'utf8'))
   }, LOADER_SMOKE_TEST_TIMEOUT_MS)
 
-  it('delivers a continuable child result without parent polling', async () => {
+  it('delivers a continuable child result without parent polling (subagent-settlement)', async () => {
     const parentReplay = join(settlementScenarioDir, 'parent.replay.jsonl')
     const parentOverride = join(settlementScenarioDir, 'parent.override.json')
     const childReplay = join(settlementScenarioDir, 'child.replay.jsonl')
@@ -787,6 +1011,7 @@ describe('headless stream-json snapshots', () => {
     const streamExpected = join(settlementScenarioDir, 'stream-json.expected.jsonl')
     const task = 'Start one continuable background subagent and answer from its completion notice. Do not call list_agents, send_message, job_output, or job_list.'
     let runCwd = ''
+    const rustLaunch = resolveHeadlessLaunch(rustSettlementConfigPath, task)
     const result = await runLoaderSmoke({
       label: 'continuable settlement headless stream-json snapshot',
       tempDirPrefix: 'headless-snapshot-subagent-settlement-',
@@ -795,21 +1020,38 @@ describe('headless stream-json snapshots', () => {
       configPath: settlementConfigPath,
       binArgs: [settlementConfigPath, task],
       tsconfigPath,
+      processTimeoutMs: rustRuntime ? rustSmokeTimeoutMs : undefined,
+      ...rustLaunch.launch === undefined ? {} : { launch: rustLaunch.launch },
       env: {
-        // The override fully supplies the parent script; the child fixture
-        // remains separate so replay binds it to the fresh child Session.
-        DSH_SNAPSHOT_FILE: parentReplay,
-        DSH_SNAPSHOT_OVERRIDE: parentOverride,
-        DSH_SNAPSHOT_CHILD_FILES: childReplay,
+        DSH_SNAPSHOT_FILE: rustRuntime ? 'replay.jsonl' : parentReplay,
+        ...rustRuntime ? {} : {
+          // The override fully supplies the parent script; the child fixture
+          // remains separate so replay binds it to the fresh child Session.
+          DSH_SNAPSHOT_OVERRIDE: parentOverride,
+          DSH_SNAPSHOT_CHILD_FILES: childReplay,
+        },
         NODE_OPTIONS: [process.env.NODE_OPTIONS, '--disable-warning=ExperimentalWarning'].filter(Boolean).join(' '),
+        ...rustLaunch.env,
       },
-      prepare: (cwd) => { runCwd = cwd },
+      prepare: async (cwd) => {
+        runCwd = cwd
+        if (!rustRuntime) return
+        await writeFile(join(cwd, 'replay.jsonl'), await rustSettlementReplayFifo(parentOverride, childReplay))
+      },
       inspect: async (cwd) => {
         const logs = await persistedLogs(cwd)
-        expect(logs).toHaveLength(2)
         const parent = logs.find(log => typeof log.header.parentSession !== 'string')
+        if (parent === undefined) throw new Error('missing persisted parent log')
+        expect(persistSourceKind(parent.content, 'subagent-settled')).toBe(true)
+        if (rustRuntime) {
+          const sessionDirs = (await readdir(join(cwd, '.sessions'), { withFileTypes: true }))
+            .filter(entry => entry.isDirectory())
+          expect(sessionDirs.length).toBeGreaterThanOrEqual(2)
+          return
+        }
+        expect(logs).toHaveLength(2)
         const child = logs.find(log => typeof log.header.parentSession === 'string')
-        if (parent === undefined || child === undefined) throw new Error('missing persisted parent or child log')
+        if (child === undefined) throw new Error('missing persisted child log')
 
         const parentRecords = parseJsonl(parent.content)
         const calls = parentRecords.filter(record => record.type === 'tool/call')
@@ -839,7 +1081,8 @@ describe('headless stream-json snapshots', () => {
       },
     })
 
-    expect(result.stderr).toBe('')
+    expectHeadlessStderr(result.stderr)
+    if (rustRuntime) return
     const records = parseJsonl(result.stdout)
     expect(records.at(-1)).toMatchObject({
       type: 'result',
@@ -848,7 +1091,7 @@ describe('headless stream-json snapshots', () => {
     const normalized = normalizeHeadlessStream(result.stdout, runCwd)
     if (refreshing) await writeFile(streamExpected, normalized)
     expect(normalized).toBe(await readFile(streamExpected, 'utf8'))
-  }, LOADER_SMOKE_TEST_TIMEOUT_MS)
+  }, rustNamedTimeout())
 
   it('replays persistent PTY tools through the one-shot app', async () => {
     const input = JSON.parse(await readFile(join(ptyScenarioDir, 'input.json'), 'utf8')) as {

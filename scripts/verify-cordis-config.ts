@@ -38,6 +38,8 @@ const appOverlayFiles = new Set([
   'examples/web-schedule/cordis.yml',
   ...globSync('examples/mcp-memory/*.cordis.yml', { cwd: root }),
 ])
+// Loaded by the Rust host bins, not the Node Loader: names are kernel plugins.
+const rustHostConfigFiles = new Set(globSync('examples/**/rust*.cordis.yml', { cwd: root }))
 const metadataFields = ['id', 'name', 'group', 'inject', 'intercept', 'isolate'] as const
 
 /** The adaptive directory-picker chooser package (mounts a backend row at boot). */
@@ -231,6 +233,7 @@ function validateEntry(value: unknown, file: string, path: string): void {
 }
 
 function recordPlugin(entry: Record<string, unknown>, file: string): void {
+  if (rustHostConfigFiles.has(file)) return
   if (typeof entry.name === 'string') pluginReferences.push({ file, name: entry.name })
 }
 

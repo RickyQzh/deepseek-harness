@@ -1,0 +1,12 @@
+# dsh-kernel
+
+English | [中文](README.zh.md)
+
+Context, Fiber lifecycle, named services, effects, isolate realms, and the in-process event bus for the Rust host. This crate keeps Cordis semantics (named services, inject-wait, reverse-order dispose, waterfall `next()`, isolate realms) and does not implement Proxies, declaration merging, or `!!js`.
+
+Fiber states are PENDING → LOADING → ACTIVE | FAILED | UNLOADING → DISPOSED. `Context::effect` registers an async disposer; unload and failed setup run cleanups in reverse registration order, and `effect` is rejected while the fiber is `Unloading`. Isolate uses explicit `RealmKey` values on the service store; a preset row that `provide`s into the root realm is a load failure. `Context::plugin` mounts a child fiber; `await_ready` settles on Active or returns the setup error. `Context::provide` publishes a named service under `(realm, name)` and registers a cleanup that removes the slot; a second `provide` of the same name in that realm returns `ServiceAlreadyProvided`. `get` returns the value when it is present and the requested type matches; `inject` waits until that read succeeds or this fiber is `Failed`, `Unloading`, or `Disposed`. `plugin_injecting` stays `Pending` until every listed name is present, then runs setup. The event bus is implemented here; `dsh-events` re-exports it.
+
+## Known Limitations and Deferred Work
+
+- v1 plugins are trusted in-process Rust crates listed in a profile manifest; this crate does not load cdylibs.
+- Logging stays with the caller; this crate does not depend on `tracing`.

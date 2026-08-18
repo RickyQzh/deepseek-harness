@@ -1,0 +1,40 @@
+[package]
+name = "dsh-host"
+version = "0.1.0"
+description = "GUI host loopback HTTP listener, unary /api carrier, WebSocket downlinks, trust fence, SPA, and /plugins"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+axum = { workspace = true }
+dsh-agent = { path = "../dsh-agent" }
+dsh-boot = { path = "../dsh-boot" }
+dsh-commands = { path = "../dsh-commands" }
+dsh-credentials = { path = "../dsh-credentials" }
+dsh-kernel = { path = "../dsh-kernel" }
+dsh-rpc = { path = "../dsh-rpc" }
+dsh-session = { path = "../dsh-session" }
+dsh-session-persist = { path = "../dsh-session-persist" }
+dsh-settings = { path = "../dsh-settings" }
+dsh-skill = { path = "../dsh-skill" }
+dsh-workspace = { path = "../dsh-workspace" }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+dsh-base = { path = "../dsh-base" }
+dsh-llm = { path = "../dsh-llm" }
+dsh-system-prompt = { path = "../dsh-system-prompt" }
+dsh-tools = { path = "../dsh-tools" }
+reqwest = { workspace = true }
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect"] }
+
+[lints]
+workspace = true

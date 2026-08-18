@@ -1,0 +1,19 @@
+[package]
+name = "dsh-boot"
+version = "0.1.0"
+description = "Closed plugin-name registry and YAML mount for the DeepSeek Harness Rust host"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+dsh-compose = { path = "../dsh-compose" }
+dsh-kernel = { path = "../dsh-kernel" }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

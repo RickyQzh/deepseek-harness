@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/proposed/architecture/2026-08-14-rust-rewrite.md
+2026-08-14-rust-rewrite.md: 5e93f971a7180a2794ae71d6021c72729b240b8c
+2026-08-14-rust-rewrite.zh.md: d4e333b5e520e37019bf46dcf035ad73dd04c4b4

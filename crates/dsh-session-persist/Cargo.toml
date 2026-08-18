@@ -1,0 +1,21 @@
+[package]
+name = "dsh-session-persist"
+version = "0.1.0"
+description = "JSONL and zstd session-log codec for the DeepSeek Harness Rust host"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+dsh-boot = { path = "../dsh-boot" }
+dsh-kernel = { path = "../dsh-kernel" }
+dsh-session = { path = "../dsh-session" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+zstd = { workspace = true }
+
+[lints]
+workspace = true

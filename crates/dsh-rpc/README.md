@@ -1,0 +1,18 @@
+# dsh-rpc
+
+English | [中文](README.zh.md)
+
+GUI four-quadrant RPC envelopes for the DeepSeek Harness Rust host. This crate is the GUI wire, not SDK JSON-RPC (`dsh-sdk-protocol`).
+
+`RpcMessage` is the internally tagged union `client-request` | `server-response` | `server-request` | `client-response`. Field names are camelCase (`rpcId`). A response `result` is `RpcResult`: `{ "ok": true, "value": ... }` or `{ "ok": false, "error": { "code", "message", "details" } }`. `details` is required; `{}` is valid. Error `code` is a closed kebab-case set; unknown codes fail decode. `RpcId` is a local newtype (`new` / `as_str`).
+
+`RpcReceipt` is a carrier receipt, not an `RpcMessage`: `{ "accepted": true }` or `{ "accepted": false, "reason": "not-pending" | "bad-response" }`. It has no `type` field.
+
+Other crates inspect decoded envelopes through accessors (`rpc_id`, `method`, `payload`, `result`, `as_ok`/`as_err`, `is_accepted`/`reject_reason`); variant fields are private, so field matches will not compile outside this crate.
+
+Payload and error details stay `serde_json::Value`. This crate has no HTTP server and does not depend on `dsh-session`.
+
+## Known Limitations and Deferred Work
+
+- Unary HTTP dispatch, WebSocket frames, and method handlers live in `dsh-host`, not here.
+- Per-code TypeScript detail structs are not ported; details remain JSON values.

@@ -1,0 +1,27 @@
+[package]
+name = "dsh-tool-terminal"
+version = "0.1.0"
+description = "Six model-facing terminal_* tools, render, and tool:pty guidance for the DeepSeek Harness Rust host"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+dsh-boot = { path = "../dsh-boot" }
+dsh-jobs = { path = "../dsh-jobs" }
+dsh-jobs-local = { path = "../dsh-jobs-local" }
+dsh-kernel = { path = "../dsh-kernel" }
+dsh-session = { path = "../dsh-session" }
+dsh-system-prompt = { path = "../dsh-system-prompt" }
+dsh-terminal = { path = "../dsh-terminal" }
+dsh-tools = { path = "../dsh-tools" }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

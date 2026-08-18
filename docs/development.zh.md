@@ -87,6 +87,10 @@ pnpm run build
 
 `pnpm run hygiene` 包含 `publint`（用构建出的 `lib/*.js` 文件校验包入口点）和 `verify-node-next-types`（用一个临时的 NodeNext 消费方校验构建出的声明文件）。新 worktree 在 `pnpm run build` 运行之前没有打包的 JS 和声明文件；普通提交和推送无需构建，除非所选检查会使用这些产物。
 
+### Rust 项目布局
+
+宿主后端 crate 位于根 Cargo workspace 下的 `crates/`。`rust-toolchain.toml` 钉住 rustc 1.85.0（edition 2024）。`cargo test`、`cargo clippy` 和 `cargo fmt --check` 是源码平面，必须在干净树上通过。`cargo build --release` 与已安装的 `dsh` 二进制是产物平面；快照、SDK 和其他交付产品检查一旦二进制存在，就必须声明消费该二进制。[Rust 工具链 Agent Note](../.agents/notes/proposed/process/2026-08-14-rust-tooling-and-gates.md) 拥有钉住、CI 路径过滤和覆盖率后续。不要把 crate 源码的源码平面导入混进产物平面的产品测试。
+
 ### 环境变量
 
 真实的 DeepSeek 适配器和需要密钥的 agent 演示从环境变量或仓库根目录一个被 gitignore 的 `.env` 文件读取凭证：

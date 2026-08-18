@@ -1,0 +1,18 @@
+[package]
+name = "dsh-events"
+version = "0.1.0"
+description = "Re-export of the dsh-kernel event bus"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+dsh-kernel = { path = "../dsh-kernel" }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

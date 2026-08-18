@@ -1,0 +1,63 @@
+# crates
+
+English | [中文](README.zh.md)
+
+Rust workspace members for the DeepSeek Harness host process. Layout, keep-or-drop, and crate boundaries are recorded in the [Rust rewrite Agent Note](../.agents/notes/proposed/architecture/2026-08-14-rust-rewrite.md). TypeScript packages under `packages/` remain the shipping host until a later phase cuts over.
+
+## Members
+
+| Crate | Responsibility |
+|---|---|
+| [`dsh-brand`](dsh-brand/README.md) | Branded-id primitive (`Branded<B>`). Product ids live in owning crates. |
+| [`dsh-kernel`](dsh-kernel/README.md) | Context, Fiber, services, effects, isolate, event bus. |
+| [`dsh-events`](dsh-events/README.md) | Re-export of the kernel event bus (`emit` / `serial` / `parallel` / `waterfall`). |
+| [`dsh-schema`](dsh-schema/README.md) | Plugin config schema + JSON Schema for Settings UI. |
+| [`dsh-compose`](dsh-compose/README.md) | Closed YAML dialect: interpolators, patches, layer order, disabled predicates. |
+| [`dsh-boot`](dsh-boot/README.md) | Closed YAML-name registry and compose mount into kernel fibers. |
+| [`dsh-session`](dsh-session/README.md) | Session ids, closed `SessionEvent` enum, surface, derive, repair, chunk rows. |
+| [`dsh-session-persist`](dsh-session-persist/README.md) | JSONL + zstd session codec (SQLite later). |
+| [`dsh-tools`](dsh-tools/README.md) | Tool execution types and lossless-JSON argument freeze. |
+| [`dsh-user-approval`](dsh-user-approval/README.md) | Fail-closed `approval/request` waterfall, per-session ask/never policy, and `headless-auto-approve`. |
+| [`dsh-permission-presets`](dsh-permission-presets/README.md) | Pin `permission/preset`, `sandbox/mode`, and `approval/policy` at session creation. |
+| [`dsh-system-prompt`](dsh-system-prompt/README.md) | Ordered system-prompt sections, runtime-context snapshots, and strict `{{var}}` interpolation. |
+| [`dsh-credentials`](dsh-credentials/README.md) | Per-request POSIX credential-reference resolve (env, YAML map, memory) and durable `credentials.yaml` writes. |
+| [`dsh-settings`](dsh-settings/README.md) | User-settings namespaces (`ui-onboarding`) and revisioned JSON files. |
+| [`dsh-commands`](dsh-commands/README.md) | In-process slash-command registry: parse, name-sorted list, and execute. |
+| [`dsh-llm`](dsh-llm/README.md) | Provider-neutral LLM stream contract, block assembler, and mock adapter. |
+| [`dsh-llm-deepseek`](dsh-llm-deepseek/README.md) | DeepSeek `POST /chat/completions` SSE adapter: serialize, translate, per-request key, idle timeout. |
+| [`dsh-token-meter`](dsh-token-meter/README.md) | Replay token meter: fixed 4-chars-per-token heuristic, surface fold, provider-usage anchors. |
+| [`dsh-compaction`](dsh-compaction/README.md) | Compaction engine types, checkpoint source, and tool-pairing cut helpers. |
+| [`dsh-compaction-basic`](dsh-compaction-basic/README.md) | Log-only compaction lock, surface replace, and overflow retry. |
+| [`dsh-agent-instructions`](dsh-agent-instructions/README.md) | Workspace `AGENTS.md` / `CLAUDE.md` baseline inject and JSONL resume. |
+| [`dsh-time-context`](dsh-time-context/README.md) | Optional pre-step clock injection; std UTC timestamps and compact duration text. |
+| [`dsh-skill`](dsh-skill/README.md) | Skill provider registry, local filesystem provider, and model-facing `skill` tool. |
+| [`dsh-web`](dsh-web/README.md) | Web search Service Definition: provider registry, selection, and `search`. Fetch is omitted (SSRF). |
+| [`dsh-web-search-deepseek`](dsh-web-search-deepseek/README.md) | DeepSeek Anthropic-compatible `web_search_20250305` search provider. |
+| [`dsh-tool-web`](dsh-tool-web/README.md) | Model-facing `web_search` tool. `web_fetch` stays off. |
+| [`dsh-jobs`](dsh-jobs/README.md) | Background-job Service Definition: branded ids, snapshots, and `JobRegistry`. |
+| [`dsh-jobs-local`](dsh-jobs-local/README.md) | Process-local `jobs` provider (`LocalJobRegistry`). |
+| [`dsh-tool-jobs`](dsh-tool-jobs/README.md) | Model-facing `job_output` / `job_list` / `job_kill` tools. |
+| [`dsh-subagent`](dsh-subagent/README.md) | Subagent Service Definition: named providers, one-shot `start`, and continuable `start_continuable`. |
+| [`dsh-subagent-in-process`](dsh-subagent-in-process/README.md) | In-process spawn/fork one-shot providers and shared child driver. |
+| [`dsh-tool-subagent`](dsh-tool-subagent/README.md) | Model-facing `subagent`, `subagent_fork`, `send_message`, `list_agents`, and `report`. |
+| [`dsh-agent`](dsh-agent/README.md) | Live LoopAgent registry keyed by session id; Session append-sink factory. |
+| [`dsh-agent-loop`](dsh-agent-loop/README.md) | Scripted loop: durable inbox, idle / maintenance / running, runtime-context snapshots, request reconstruction, tool-call scheduler. |
+| [`dsh-subprocess`](dsh-subprocess/README.md) | Fully specified argv spawn and credential-scrubbed child env. |
+| [`dsh-sandbox`](dsh-sandbox/README.md) | Fail-closed sandbox modes, writable roots, and escalation. |
+| [`dsh-fs`](dsh-fs/README.md) | Filesystem types and `FS_*` error codes. |
+| [`dsh-shell`](dsh-shell/README.md) | Shell request/spec types, POSIX bash executor, and exit-status parse. |
+| [`dsh-tool-fs`](dsh-tool-fs/README.md) | Model-facing read/write/edit/glob/grep filesystem tools. |
+| [`dsh-tool-bash`](dsh-tool-bash/README.md) | Model-facing bash tool. |
+| [`dsh-sdk-protocol`](dsh-sdk-protocol/README.md) | SDK JSON-RPC 2.0 wire types (`initialize`, `session/prompt`, `shutdown`, four notifications). |
+| [`dsh-sdk-jsonrpc-server`](dsh-sdk-jsonrpc-server/README.md) | NDJSON JSON-RPC SDK server and `dsh-jsonrpc-agent` stdio bin. |
+| [`dsh-acp`](dsh-acp/README.md) | ACP stdio adapter: NDJSON JSON-RPC, not the SDK JSON-RPC server. |
+| [`dsh-mcp-client`](dsh-mcp-client/README.md) | MCP client: `mcp__` public tool names, `extract_text`, and YAML `@deepseek-ai/dsh-mcp-client`. |
+| [`dsh-terminal`](dsh-terminal/README.md) | Owner-scoped PTY registry, branded ids, and in-memory YAML `pty-snapshot-backend`. |
+| [`dsh-terminal-bash`](dsh-terminal-bash/README.md) | Interactive bash PTY backend: config, env overlays, and prompt/silence/timeout readiness. |
+| [`dsh-tool-terminal`](dsh-tool-terminal/README.md) | Six model-facing `terminal_*` tools, render, and `tool:pty` guidance. |
+| [`dsh-headless`](dsh-headless/README.md) | One-shot headless runner: last assistant text plus newline; exit 0 iff `turn/end` is `completed`. |
+| [`dsh-base`](dsh-base/README.md) | Phase 6 product plugin aggregator (`register_base_plugins`) and static headless/jsonrpc `base.cordis.yml`. |
+| [`dsh-cli`](dsh-cli/README.md) | `dsh` clap launcher: `--profile headless` / `web` / `acp`, `dsh web` / `dsh acp` aliases, `--patch`. |
+| [`dsh-rpc`](dsh-rpc/README.md) | GUI four-quadrant envelopes (`RpcMessage`, `RpcResult`, `RpcReceipt`) and closed kebab-case error codes. |
+| [`dsh-workspace`](dsh-workspace/README.md) | Durable JSON workspace registry (`workspaces.json`): path, title, session account, and archive set. |
+| [`dsh-host`](dsh-host/README.md) | GUI loopback HTTP listener, unary `/api` dotted and slash RPC, trust fence, SPA, and `/plugins`. |

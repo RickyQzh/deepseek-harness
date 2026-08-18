@@ -33,6 +33,17 @@ import {
   unknownToolCallIds,
 } from '../src/suite.ts'
 
+function restoreProcessEnv(name: string, previous: string | undefined): void {
+  if (previous === undefined) delete process.env[name]
+  else process.env[name] = previous
+}
+
+// Package specs drive the fake ACP bin. A parent `DSH_RUNTIME=rust` would spawn `dsh` instead.
+const parentDshRuntime = process.env.DSH_RUNTIME
+const parentDshRuntimeBin = process.env.DSH_RUNTIME_BIN
+delete process.env.DSH_RUNTIME
+delete process.env.DSH_RUNTIME_BIN
+
 /**
  * Unit tests for the suite factory, by running it: two synthetic suites over the scripted fake
  * ACP bin (./fixtures/fake-acp-agent.ts) register real describe/it trees at collection time,
@@ -119,6 +130,8 @@ const refreshDir = mkdtempSync(join(tmpdir(), 'acp-snap-refresh-suite-'))
 cpSync(REPLAY_DIR, refreshDir, { recursive: true })
 staleRefreshFixtures(refreshDir)
 afterAll(async () => {
+  restoreProcessEnv('DSH_RUNTIME', parentDshRuntime)
+  restoreProcessEnv('DSH_RUNTIME_BIN', parentDshRuntimeBin)
   if (!BOOTSTRAP) await rm(recordDir, { recursive: true, force: true })
   await rm(refreshDir, { recursive: true, force: true })
 })
@@ -501,6 +514,27 @@ describe('scenarioSkipped', () => {
     expect(scenarioSkipped(pwsh, false, 'win32', true)).toBe(false)
     expect(scenarioSkipped(pwsh, false, 'linux', true)).toBe(false)
     expect(scenarioSkipped(authored, false, 'linux', false)).toBe(false)
+  })
+
+  it('skips a rust-runtime scenario that is not in rustSubset', () => {
+    expect(scenarioSkipped(authored, false, 'linux', false, true, ['handshake'])).toBe(true)
+  })
+
+  it('keeps a rust-runtime scenario that is in rustSubset', () => {
+    const handshake: Scenario = { name: 'handshake', hasModelTurn: false, recorded: false }
+    expect(scenarioSkipped(handshake, false, 'linux', false, true, ['handshake'])).toBe(false)
+  })
+
+  it('ignores rustSubset on Node', () => {
+    expect(scenarioSkipped(authored, false, 'linux', false, false, ['handshake'])).toBe(false)
+  })
+
+  it('does not extra-skip rust runtime when rustSubset is omitted', () => {
+    expect(scenarioSkipped(authored, false, 'linux', false, true)).toBe(false)
+  })
+
+  it('skips every rust-runtime scenario when rustSubset is empty', () => {
+    expect(scenarioSkipped(authored, false, 'linux', false, true, [])).toBe(true)
   })
 })
 

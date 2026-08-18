@@ -1,4 +1,4 @@
-"""Locate the bundled DeepSeek Harness SDK runtime shipped with this package.
+"""Locate the bundled DeepSeek Harness SDK runtime shipped with this package; modes are ``exe``, ``node``, and ``rust`` (``$DSH_RUNTIME_MODE=rust`` plus optional ``$DSH_RUNTIME_BIN``, default checkout ``target/debug/dsh-jsonrpc-agent``).
 
 Two runtime carriers coexist under ``runtime/``, both injected by the repo's
 ``scripts/build-exe-for-python-sdk.ts`` build (neither is checked into git):
@@ -30,6 +30,7 @@ from pathlib import Path
 PACKAGE_METADATA_FILENAME = "deepseek-harness-runtime.json"
 
 RUNTIME_MODE_ENV_VAR = "DSH_RUNTIME_MODE"
+RUNTIME_BIN_ENV_VAR = "DSH_RUNTIME_BIN"
 
 _PLATFORM_TAGS = {"linux": "linux", "darwin": "macos"}
 _ARCH_TAGS = {"x86_64": "x64", "amd64": "x64", "arm64": "arm64", "aarch64": "arm64"}
@@ -97,22 +98,51 @@ def resolve_bundled_launch_args(mode: str | None = None) -> tuple[str, ...]:
     """The argv tuple that launches the bundled runtime.
 
     Mode selection: the explicit ``mode`` argument wins, then the
-    ``DSH_RUNTIME_MODE`` environment variable (``exe`` | ``node``), then
+    ``DSH_RUNTIME_MODE`` environment variable (``exe`` | ``node`` | ``rust``), then
     automatic resolution. Automatic resolution finds the production exe ONLY —
-    the dev-only node carrier must be selected explicitly so a production
-    deployment can never silently ride on a source build. Returns
-    ``(exe_path,)`` in exe mode and ``(node_path, bin_js_path)`` in node mode;
-    raises FileNotFoundError when the selected carrier is unavailable and
-    ValueError for an unknown mode value.
+    the dev-only node carrier and the checkout-only rust carrier must be selected
+    explicitly so a production deployment can never silently ride on a source
+    build. Returns ``(exe_path,)`` in exe mode, ``(node_path, bin_js_path)`` in
+    node mode, and ``(bin,)`` in rust mode; raises FileNotFoundError when the
+    selected carrier is unavailable and ValueError for an unknown mode value.
     """
     selected = mode if mode is not None else os.environ.get(RUNTIME_MODE_ENV_VAR)
     if selected is None or selected == "exe":
         return (str(bundled_runtime_path()),)
     if selected == "node":
         return _node_launch_args()
+    if selected == "rust":
+        return _rust_launch_args()
     raise ValueError(
-        f"unsupported DeepSeek Harness runtime mode {selected!r}: expected 'exe' or 'node' "
+        f"unsupported DeepSeek Harness runtime mode {selected!r}: expected 'exe', 'node', or 'rust' "
         f"(explicit argument or ${RUNTIME_MODE_ENV_VAR})"
+    )
+
+
+def _checkout_root() -> Path | None:
+    """Walk parents of this file for a DeepSeek Harness Cargo workspace."""
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "Cargo.toml").is_file() and (parent / "crates" / "dsh-sdk-jsonrpc-server").is_dir():
+            return parent
+    return None
+
+
+def _rust_launch_args() -> tuple[str, ...]:
+    override = os.environ.get(RUNTIME_BIN_ENV_VAR)
+    candidates: list[Path] = []
+    if override is not None and override != "":
+        candidates.append(Path(override))
+    checkout = _checkout_root()
+    if checkout is not None:
+        candidates.append(checkout / "target" / "debug" / "dsh-jsonrpc-agent")
+    for path in candidates:
+        if path.is_file():
+            return (str(path),)
+    raise FileNotFoundError(
+        "Rust runtime mode needs a built dsh-jsonrpc-agent. Set "
+        f"{RUNTIME_BIN_ENV_VAR} to that executable, or run "
+        "`cargo build -p dsh-sdk-jsonrpc-server` in a deepseek-harness checkout "
+        f"(looked for target/debug/dsh-jsonrpc-agent). ({RUNTIME_MODE_ENV_VAR}=rust)"
     )
 
 
@@ -157,6 +187,7 @@ def _node_launch_args() -> tuple[str, str]:
 __all__ = [
     "PACKAGE_METADATA_FILENAME",
     "RUNTIME_MODE_ENV_VAR",
+    "RUNTIME_BIN_ENV_VAR",
     "bundled_default_config_path",
     "bundled_package_dir",
     "bundled_runtime_path",

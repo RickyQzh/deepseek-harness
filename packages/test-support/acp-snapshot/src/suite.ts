@@ -189,14 +189,20 @@ export interface Scenario {
 /**
  * Whether a scenario's run test is skipped for this mode and host: record mode
  * skips authored (non-`recorded`) scenarios, {@link Scenario.posixOnly}
- * scenarios skip on Windows, and {@link Scenario.pwshOnly} scenarios skip
- * when the caller's `hasPwsh` probe is false.
+ * scenarios skip on Windows, {@link Scenario.pwshOnly} scenarios skip when
+ * the caller's `hasPwsh` probe is false, and a rust-runtime subset skips
+ * names that are not members of {@link SnapshotSuiteOptions.rustSubset}.
  *
  * @param scenario The scenario whose run test is being registered.
  * @param recording Whether the suite runs in record mode.
  * @param platform The running Node platform, injectable for unit coverage.
  * @param hasPwsh The caller's pwsh-availability probe; `pwshOnly` scenarios
  *   skip unless it is true.
+ * @param rustRuntime Whether this suite is launching the Rust ACP bin
+ *   (`DSH_RUNTIME=rust`).
+ * @param rustSubset Scenario names whose run tests execute when
+ *   `rustRuntime` is true. When set, every other name is skipped. Ignored
+ *   unless `rustRuntime` is true. An empty array skips every scenario.
  * @returns True when the scenario's run test must not execute.
  */
 export function scenarioSkipped(
@@ -204,10 +210,13 @@ export function scenarioSkipped(
   recording: boolean,
   platform: NodeJS.Platform = process.platform,
   hasPwsh?: boolean,
+  rustRuntime?: boolean,
+  rustSubset?: string[],
 ): boolean {
   if (recording && !scenario.recorded) return true
   if (scenario.posixOnly === true && platform === 'win32') return true
-  return scenario.pwshOnly === true && hasPwsh !== true
+  if (scenario.pwshOnly === true && hasPwsh !== true) return true
+  return rustRuntime === true && rustSubset !== undefined && !rustSubset.includes(scenario.name)
 }
 
 /** One stdout expected output selected for a platform run. */
@@ -253,6 +262,12 @@ export interface SnapshotSuiteOptions {
    * caller owns; `pwshOnly` scenarios skip when this is not true).
    */
   hasPwsh?: boolean
+  /**
+   * Names whose run tests execute when `DSH_RUNTIME=rust`. Omitted or unused
+   * on Node. Does not drop entries from the scenario table; fixture guards
+   * still iterate every scenario.
+   */
+  rustSubset?: string[]
 }
 
 /** One scenario's generated claim on a shared snapshot file. */
@@ -1169,7 +1184,15 @@ export function defineAcpSnapshotSuite(options: SnapshotSuiteOptions): void {
       // In RECORD mode, only re-run the `recorded` (live-API) scenarios; the `authored` ones
       // (sidecar-driven errors/cancel) are never re-recorded. `posixOnly` scenarios skip on Windows;
       // `pwshOnly` scenarios skip when the caller's `hasPwsh` probe is false.
-      it.skipIf(scenarioSkipped(scenario, RECORDING, process.platform, options.hasPwsh))(`snapshot: ${scenario.name} matches the expected outputs`, async ({ expect }) => {
+      // `rustSubset` skips non-member run tests when `DSH_RUNTIME=rust`.
+      it.skipIf(scenarioSkipped(
+        scenario,
+        RECORDING,
+        process.platform,
+        options.hasPwsh,
+        process.env.DSH_RUNTIME === 'rust',
+        options.rustSubset,
+      ))(`snapshot: ${scenario.name} matches the expected outputs`, async ({ expect }) => {
         const dir = join(snapshotsDir, scenario.name)
         const input = JSON.parse(await readFile(join(dir, 'input.json'), 'utf8')) as InputScript
         const overrideFile = join(dir, 'replay.override.json')

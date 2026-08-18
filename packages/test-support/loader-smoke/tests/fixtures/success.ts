@@ -10,6 +10,8 @@ process.stdin.on('end', () => {
     cwd: process.cwd(),
     dshHome: process.env.DSH_HOME,
     agentsHome: process.env.DSH_AGENTS_HOME,
+    dshCwd: process.env.DSH_CWD,
+    dshSessionRoot: process.env.DSH_SESSION_ROOT,
     marker: process.env.LOADER_SMOKE_MARKER,
     input,
   }))

@@ -67,6 +67,33 @@ describe('runLoaderSmoke', () => {
     expect(existsSync(inspected)).toBe(false)
   }, LOADER_SMOKE_TEST_TIMEOUT_MS)
 
+  it('spawns an explicit launch command without resolving the example bin', async () => {
+    const result = await runLoaderSmoke({
+      label: 'launch override fixture',
+      tempDirPrefix: 'loader-smoke-launch-',
+      binScript: fixture('fail'),
+      libBinScript: fixture('fail'),
+      configPath,
+      tsconfigPath,
+      launch: { command: process.execPath, args: [fixture('success')] },
+      env: { LOADER_SMOKE_MARKER: 'launch-override' },
+    })
+    const output = JSON.parse(result.stdout) as {
+      cwd: string
+      dshHome: string
+      dshCwd: string
+      dshSessionRoot: string
+      marker: string
+      input: string
+    }
+    expect(output.marker).toBe('launch-override')
+    expect(output.input).toBe('')
+    expect(canonicalTempPath(output.dshHome)).toBe(canonicalTempPath(join(output.cwd, '.dsh')))
+    expect(canonicalTempPath(output.dshCwd)).toBe(canonicalTempPath(output.cwd))
+    expect(canonicalTempPath(output.dshSessionRoot)).toBe(canonicalTempPath(join(output.cwd, '.sessions')))
+    expect(existsSync(output.cwd)).toBe(false)
+  }, LOADER_SMOKE_TEST_TIMEOUT_MS)
+
   it('rejects a non-zero exit with captured diagnostics', async () => {
     await expect(runLoaderSmoke({
       label: 'failure fixture',
