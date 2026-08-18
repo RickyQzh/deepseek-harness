@@ -38,6 +38,8 @@ struct HandleInner {
     pid: i32,
     stdout: Option<Arc<Mutex<OutputCollector>>>,
     stderr: Option<Arc<Mutex<OutputCollector>>>,
+    stdin_pipe: std::sync::Mutex<Option<tokio::process::ChildStdin>>,
+    stdout_pipe: std::sync::Mutex<Option<tokio::process::ChildStdout>>,
     grace_ms: u64,
     escalating: AtomicBool,
     outcome: Mutex<Option<Result<SubprocessOutcome, SubprocessError>>>,
@@ -58,6 +60,44 @@ impl SubprocessHandle {
     pub fn collected_stdout(&self) -> Option<SubprocessOutputRead> {
         let collector = self.stdout_reader()?;
         collector.try_lock().ok().map(|guard| guard.read_from(0))
+    }
+
+    /// Take the live child stdin writer when spawn used [`SubprocessStdin::Pipe`]. One-shot.
+    ///
+    /// # Parameters
+    ///
+    /// None.
+    ///
+    /// # Returns
+    ///
+    /// `Some` writer on the first take after a Pipe spawn; `None` after a prior take or when spawn did not use Pipe.
+    #[must_use]
+    pub fn take_stdin(&self) -> Option<tokio::process::ChildStdin> {
+        self.inner
+            .stdin_pipe
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+
+    /// Take the live child stdout reader when spawn used [`SubprocessOutput::Pipe`]. One-shot.
+    ///
+    /// Collect-mode stdout stays on [`Self::stdout_reader`]; this method does not start or return a Collect drain.
+    ///
+    /// # Parameters
+    ///
+    /// None.
+    ///
+    /// # Returns
+    ///
+    /// `Some` reader on the first take after a Pipe spawn; `None` after a prior take or when spawn did not use Pipe.
+    #[must_use]
+    pub fn take_stdout(&self) -> Option<tokio::process::ChildStdout> {
+        self.inner
+            .stdout_pipe
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
     }
 
     /// Collect-mode stdout collector, when stdout was [`SubprocessOutput::Collect`].
@@ -217,31 +257,45 @@ fn spawn_unix(
         .map(|id| i32::try_from(id).unwrap_or(-1))
         .unwrap_or(-1);
 
-    if let SubprocessStdin::Data(data) = stdin_mode {
-        if let Some(mut stdin) = child.stdin.take() {
-            tokio::spawn(async move {
-                let _ = stdin.write_all(data.as_bytes()).await;
-                let _ = stdin.shutdown().await;
-            });
+    let stdin_pipe = match stdin_mode {
+        SubprocessStdin::Pipe => child.stdin.take(),
+        SubprocessStdin::Data(data) => {
+            if let Some(mut stdin) = child.stdin.take() {
+                tokio::spawn(async move {
+                    let _ = stdin.write_all(data.as_bytes()).await;
+                    let _ = stdin.shutdown().await;
+                });
+            }
+            None
         }
-    }
+        SubprocessStdin::Ignore => None,
+    };
 
-    let stdout_pipe = match stdout_mode {
-        SubprocessOutput::Collect(_) => child.stdout.take(),
-        _ => None,
+    let (stdout_live, stdout_collect_pipe) = match &stdout_mode {
+        SubprocessOutput::Pipe => (child.stdout.take(), None),
+        SubprocessOutput::Collect(_) => (None, child.stdout.take()),
+        SubprocessOutput::Inherit => (None, None),
     };
     let stderr_pipe = match stderr_mode {
         SubprocessOutput::Collect(_) => child.stderr.take(),
         _ => None,
     };
     let mut drains = JoinSet::new();
-    let stdout = start_collect(stdout_pipe, &stdout_mode, "stdout", spill_dir, &mut drains);
+    let stdout = start_collect(
+        stdout_collect_pipe,
+        &stdout_mode,
+        "stdout",
+        spill_dir,
+        &mut drains,
+    );
     let stderr = start_collect(stderr_pipe, &stderr_mode, "stderr", spill_dir, &mut drains);
 
     let inner = Arc::new(HandleInner {
         pid,
         stdout,
         stderr,
+        stdin_pipe: std::sync::Mutex::new(stdin_pipe),
+        stdout_pipe: std::sync::Mutex::new(stdout_live),
         grace_ms,
         escalating: AtomicBool::new(false),
         outcome: Mutex::new(None),
@@ -443,6 +497,7 @@ mod tests {
         SubprocessStdin, SubprocessStdio,
     };
     use dsh_tools::AbortFlag;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn echo_spec(arg: &str) -> SubprocessSpawnSpec {
         SubprocessSpawnSpec {
@@ -595,5 +650,78 @@ mod tests {
     async fn bounds_inherited_stdout_when_stderr_is_redirected() {
         let handle = spawn_subprocess(background_sleep_spec("sleep 30 2>/dev/null &")).unwrap();
         done_then_reap(handle).await;
+    }
+
+    fn pipe_stdio() -> SubprocessStdio {
+        SubprocessStdio {
+            stdin: SubprocessStdin::Pipe,
+            stdout: SubprocessOutput::Pipe,
+            stderr: SubprocessOutput::Inherit,
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pipe_stdin_stdout_round_trips_bytes() {
+        let spec = SubprocessSpawnSpec {
+            argv: vec!["/bin/cat".into()],
+            cwd: "/".into(),
+            stdio: pipe_stdio(),
+            grace_ms: 3_000,
+            signal: None,
+            env: None,
+        };
+        let handle = spawn_subprocess(spec).unwrap();
+        let mut stdin = handle.take_stdin().expect("pipe stdin");
+        let mut stdout = handle.take_stdout().expect("pipe stdout");
+        assert!(handle.take_stdin().is_none());
+        assert!(handle.take_stdout().is_none());
+        stdin.write_all(b"hello\n").await.unwrap();
+        stdin.flush().await.unwrap();
+        let mut buf = [0u8; 6];
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            stdout.read_exact(&mut buf),
+        )
+        .await
+        .expect("read")
+        .unwrap();
+        assert_eq!(&buf, b"hello\n");
+        handle.terminate();
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle.done())
+            .await
+            .expect("done")
+            .unwrap();
+        assert!(handle.wait_for_exit().await);
+    }
+
+    #[tokio::test]
+    async fn pipe_take_stdin_is_none_when_ignore() {
+        let handle = spawn_subprocess(echo_spec("x")).unwrap();
+        assert!(handle.take_stdin().is_none());
+        let outcome = handle.done().await.unwrap();
+        assert_eq!(outcome.exit_code, Some(0));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn terminate_still_escalates_pipe_child() {
+        let spec = SubprocessSpawnSpec {
+            argv: vec!["/bin/sleep".into(), "30".into()],
+            cwd: "/".into(),
+            stdio: pipe_stdio(),
+            grace_ms: 200,
+            signal: None,
+            env: None,
+        };
+        let handle = spawn_subprocess(spec).unwrap();
+        assert!(handle.pid() > 0);
+        handle.terminate();
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), handle.done())
+            .await
+            .expect("done")
+            .unwrap();
+        assert!(outcome.exit_code != Some(0) || outcome.signal.is_some());
+        assert!(handle.wait_for_exit().await);
     }
 }
