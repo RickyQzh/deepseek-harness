@@ -64,6 +64,7 @@ When `DSH_RUNTIME=rust`, those named ACP drivers spawn `target/debug/dsh` (or `D
 | ACP `reject-extra-dirs` | same | Rust when `DSH_RUNTIME=rust`; Node otherwise | `examples/acp-agent/tests/snapshots/reject-extra-dirs/` |
 | ACP `text-turn` | same | Rust when `DSH_RUNTIME=rust`; Node otherwise | `examples/acp-agent/tests/snapshots/text-turn/` |
 | ACP `pty-tools` | same | Rust when `DSH_RUNTIME=rust`; Node otherwise | `examples/acp-agent/tests/snapshots/pty-tools/` |
+| ACP `lsp-definition` | same | Rust when `DSH_RUNTIME=rust`; Node otherwise | `examples/acp-agent/tests/snapshots/lsp-definition/` |
 | remaining ACP scenarios | same suite | Node only | existing dirs |
 
 `DSH_RUNTIME=rust` must not drop scenarios from the table (orphan-dir guard) and must skip non-subset **runs**. Remaining ACP scenarios are every name not listed as Rust in this table. This note does not claim full `pnpm run test:snapshot` on Rust.
@@ -75,6 +76,10 @@ Phase 8 item 2 does not add named Vitest snapshot scenarios. TypeScript `@deepse
 ## Phase 8 PTY subset
 
 Phase 8 item 3 names ACP `pty-tools` as a Rust scenario when `DSH_RUNTIME=rust`. The rust ACP launcher loads `examples/acp-agent/rust.pty.snapshot.cordis.yml` when the Node overlay basename is `pty.cordis.yml` (sibling `rust.<stem>.snapshot.cordis.yml`). Shared `rust.snapshot.cordis.yml` stays without PTY rows so handshake and `text-turn` schemas stay stable. Coverage for real bash PTY and Linux `stdin_read` is `cargo test`. Headless `pty-tools` and jsonrpc `persistent-tools` stay on the Node bin.
+
+## Phase 8 LSP subset
+
+Phase 8 item 4 names ACP `lsp-definition` as a Rust scenario when `DSH_RUNTIME=rust`. The rust ACP launcher loads `examples/acp-agent/rust.lsp.snapshot.cordis.yml` when the Node overlay basename is `lsp.cordis.yml` (sibling `rust.<stem>.snapshot.cordis.yml`). Shared `rust.snapshot.cordis.yml` stays without LSP rows so handshake and `text-turn` schemas stay stable. Coverage for Content-Length framing, `workspace/applyEdit` refusal, workspace jail, UTF-16, and `includeDeclaration` is `cargo test`. Real `typescript-language-server` e2e stays TypeScript. Full `pnpm run test:snapshot` on Rust is not Phase 8 item 4's exit.
 
 ## Alternatives considered
 
@@ -92,6 +97,8 @@ Phase 8 item 3 names ACP `pty-tools` as a Rust scenario when `DSH_RUNTIME=rust`.
 
 **Put PTY tools on shared `rust.snapshot.cordis.yml`.** Rejected: handshake and `text-turn` schema pins would gain six tools.
 
+**Mount LSP on shared `rust.snapshot.cordis.yml`.** Rejected: handshake and `text-turn` schema pins would gain the `lsp` tool. Overlay `rust.lsp.snapshot.cordis.yml` is the cutover file.
+
 ## Acceptance criteria
 
 - The rewrite note follow-up table links to this file instead of the placeholder ``proposed/testing/…-rust-snapshot-harness.md``.
@@ -100,7 +107,8 @@ Phase 8 item 3 names ACP `pty-tools` as a Rust scenario when `DSH_RUNTIME=rust`.
 - Fixture directories are reused; the plan does not add parallel `*.rust.expected.jsonl` files.
 - Phase 7 names web `rust-host-smoke` and `cold-blank-session` as the Rust subset; remaining `test:web` files stay Node. This note does not claim full `pnpm run test:web` on Rust.
 - Phase 8 item 1 names ACP `handshake`, `reject-extra-dirs`, and `text-turn` as the Rust subset. This note does not claim full `pnpm run test:snapshot` on Rust.
-- Phase 8 item 3 names ACP `pty-tools` as a Rust scenario when `DSH_RUNTIME=rust`; remaining ACP scenarios stay Node; shared rust ACP YAML stays without PTY rows; headless pty-tools and jsonrpc persistent-tools stay Node.
+- Phase 8 item 3 names ACP `pty-tools` as a Rust scenario when `DSH_RUNTIME=rust`; remaining ACP scenarios stay Node except names listed as Rust in the Phase 8 ACP subset table; shared rust ACP YAML stays without PTY rows; headless pty-tools and jsonrpc persistent-tools stay Node.
+- Phase 8 item 4 names ACP `lsp-definition` as a Rust scenario when `DSH_RUNTIME=rust`; remaining ACP scenarios stay Node except handshake, reject-extra-dirs, text-turn, pty-tools, and lsp-definition; shared rust ACP YAML stays without LSP rows.
 - `docs/architecture.md` is not edited.
 
 ## Risks

@@ -415,6 +415,7 @@ Do **not** start from [docs/architecture.md](../../../../docs/architecture.md) o
 | [2026-08-17-rust-acp-server.md](2026-08-17-rust-acp-server.md) | Phase 8 item 1: ACP NDJSON subset and named Vitest scenarios |
 | [2026-08-17-rust-mcp-client.md](2026-08-17-rust-mcp-client.md) | Phase 8 item 2: MCP stdio client and `mcp__` public names |
 | [2026-08-17-rust-persistent-pty.md](2026-08-17-rust-persistent-pty.md) | Phase 8 item 3: POSIX persistent PTY and named ACP pty-tools |
+| [2026-08-17-rust-lsp-host.md](2026-08-17-rust-lsp-host.md) | Phase 8 item 4: LSP stdio host, transient open, named ACP lsp-definition |
 | `proposed/architecture/…-dynamic-plugins.md` | Only if self-modification is reintroduced |
 
 This note partially answers [typed event schemas](2026-06-16-typed-event-schemas.md) for a Rust host: first-party events are a closed enum; `ignorable` covers unknowns; a composition-dependent runtime registry stays rejected for first-party readers. That proposal remains open for the TypeScript tree until the host cutover.

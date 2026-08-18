@@ -415,6 +415,7 @@ TypeScript 包仍在交付时，其 Vitest + 覆盖率仍为必需。快照与 e
 | [2026-08-17-rust-acp-server.md](2026-08-17-rust-acp-server.md) | 阶段 8 第 1 项：ACP NDJSON 子集与具名 Vitest 场景 |
 | [2026-08-17-rust-mcp-client.md](2026-08-17-rust-mcp-client.md) | 阶段 8 第 2 项：MCP stdio 客户端与 mcp__ 公开名称 |
 | [2026-08-17-rust-persistent-pty.md](2026-08-17-rust-persistent-pty.md) | 阶段 8 第 3 项：POSIX 持久 PTY 与具名 ACP pty-tools |
+| [2026-08-17-rust-lsp-host.md](2026-08-17-rust-lsp-host.md) | 阶段 8 第 4 项：LSP stdio 宿主、瞬时打开与具名 ACP lsp-definition |
 | `proposed/architecture/…-dynamic-plugins.md` | 仅当重新引入自修改时 |
 
 本笔记在 Rust 宿主上部分回答了[带类型的事件 schema](2026-06-16-typed-event-schemas.md)：第一方事件是封闭 enum；`ignorable` 覆盖未知项；依赖组合的运行时注册表对第一方读取器仍被否决。该提案在宿主切换之前对 TypeScript 树保持开放。
